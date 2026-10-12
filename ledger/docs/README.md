@@ -17,7 +17,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `list_accounts/2` | `finance.ledger.view` | The chart of accounts by code |
 | `create_account/3` | `finance.ledger.accounts.manage` | Adds an account: `code`, `name`, `account_type`, optional `parent_id`, `active`, `retained_earnings` |
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
-| `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
+| `post_entry/3,4` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines`; option `settlement_account_ids` lists accounts that may be inactive in this entry |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
 | `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, and `after` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
@@ -79,7 +79,8 @@ An account has a code unique in the company, a name, one of five types
 optional parent of the same type in the same company for grouping, and an
 active flag. Code and type never change once created, and an account is never
 deleted: deactivate it instead. A deactivated account takes no new postings,
-but its history stays and reversals of entries that used it still post. An
+but its history stays and reversals of entries that used it still post, as do
+settlement entries that name it (see Journal entries). An
 account can be deactivated only once its balance (its posted debits less its
 credits) is zero; otherwise `update_account/4` returns a changeset whose
 `active` error names the account and its balance, so an account that still
@@ -93,9 +94,9 @@ the company's choice; designating another account moves the designation.
 
 ## Journal entries
 
-`post_entry/3` stores an entry only when it has at least two lines, each line
+`post_entry/3,4` stores an entry only when it has at least two lines, each line
 names an active account of the company with exactly one positive amount, and
-debits equal credits; otherwise it returns a changeset whose `lines` errors
+debits equal credits (the one exception is the settlement exception below); otherwise it returns a changeset whose `lines` errors
 say why, per line where one line is at fault. Its `entry_date` must fall in
 an open period (see Period closing); otherwise the changeset's `entry_date`
 error says the period is closed or locked, or that the date is before the
@@ -107,6 +108,17 @@ is a reversal plus a new entry. A reversal is dated into an open period like
 any entry, and a year-end closing entry is reversed only by reopening its
 year (`{:error, :closing_entry}`). `get_entry/3` shows `reversed_by_entry_id`
 on a reversed entry. There are no draft entries in this slice.
+
+**Settlement exception.** An inactive account blocks new business, not the
+settlement of what was posted before it was deactivated. `post_entry/4` takes
+the option `settlement_account_ids`, a list of account IDs that may be
+inactive in that one entry, for a module that settles a document it posted
+earlier (receivables does so for a payment or a credit note against an
+invoice whose receivable account has since been deactivated). It is not a
+general bypass: each listed account must still be an account of the company,
+every other line still needs an active account, and any other option, or a
+list of anything but integers, is `{:error, :invalid_option}`. Reversals
+already post into inactive accounts.
 
 Each entry has an `entry_number`, its book's sequence number: the database
 numbers a company's entries 1, 2, 3, ... in posting order, so a number is never

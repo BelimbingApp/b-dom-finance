@@ -208,21 +208,43 @@ defmodule Bilimbi.Finance.Ledger do
   units, and `entry_date` falls in an open period, or after the company's
   last fiscal year, but not before its first. `{:error, :book_not_open}`
   before the book is opened.
+
+  The one option, `settlement_account_ids`, is the settlement exception to
+  the active-account rule: a list of account IDs that may be inactive in this
+  entry only, for a module that settles a document it posted earlier (such
+  as a payment against an invoice recorded on an account deactivated since).
+  Every listed account must still be an account of the company, and every
+  other line still needs an active account. Anything else in `options`, or a
+  list of anything but integers, is `{:error, :invalid_option}`.
   """
-  @spec post_entry(Scope.t(), term(), map()) ::
-          {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
-  def post_entry(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
+  @spec post_entry(Scope.t(), term(), map(), keyword()) ::
+          {:ok, map()}
+          | {:error, write_refusal() | :book_not_open | :invalid_option | Changeset.t()}
+  def post_entry(%Scope{} = scope, company_id, attributes, options \\ [])
+      when is_map(attributes) and is_list(options) do
     write(scope, company_id, @post_entries, fn ->
-      with {:ok, book} <- open_book_for_write(scope, company_id) do
+      with {:ok, settlement_ids} <- settlement_option(options),
+           {:ok, book} <- open_book_for_write(scope, company_id) do
         lines = attributes |> fetch(:lines) |> List.wrap()
 
         scope
         |> entry_changeset(book, Map.drop(attributes, [:lines, "lines"]), lines)
         |> validate_open_period(scope, company_id)
-        |> validate_accounts(scope, company_id, :active)
+        |> validate_accounts(scope, company_id, settlement_ids)
         |> insert_entry(scope)
       end
     end)
+  end
+
+  defp settlement_option(options) do
+    with true <- Keyword.keyword?(options),
+         {:ok, [settlement_account_ids: ids]} when is_list(ids) <-
+           Keyword.validate(options, settlement_account_ids: []),
+         true <- Enum.all?(ids, &is_integer/1) do
+      {:ok, ids}
+    else
+      _invalid -> {:error, :invalid_option}
+    end
   end
 
   @doc """
@@ -1069,8 +1091,10 @@ defmodule Bilimbi.Finance.Ledger do
   end
 
   # Every line must name an account of this company; a new posting also
-  # needs it active. The company lock serializes this with deactivation.
-  defp validate_accounts(changeset, scope, company_id, requirement) do
+  # needs it active, except the accounts `inactive_ok` lists (`:any` for a
+  # reversal or a closing entry). The company lock serializes this with
+  # deactivation.
+  defp validate_accounts(changeset, scope, company_id, inactive_ok) do
     lines = Changeset.get_change(changeset, :lines, [])
 
     ids =
@@ -1086,22 +1110,24 @@ defmodule Bilimbi.Finance.Ledger do
       |> Repo.all()
       |> Map.new(&{&1.id, &1})
 
-    checked = Enum.map(lines, &check_account(&1, accounts, requirement))
+    checked = Enum.map(lines, &check_account(&1, accounts, inactive_ok))
 
     changeset
     |> Map.update!(:changes, &Map.put(&1, :lines, checked))
     |> Map.update!(:valid?, &(&1 and Enum.all?(checked, fn line -> line.valid? end)))
   end
 
-  defp check_account(line, accounts, requirement) do
+  defp check_account(line, accounts, inactive_ok) do
     account_id = Changeset.get_field(line, :account_id)
 
     case Map.get(accounts, account_id) do
       nil when is_integer(account_id) ->
         Changeset.add_error(line, :account_id, "is not an account of this company")
 
-      %Account{active: false} when requirement == :active ->
-        Changeset.add_error(line, :account_id, "is inactive")
+      %Account{active: false} ->
+        if inactive_ok == :any or account_id in inactive_ok,
+          do: line,
+          else: Changeset.add_error(line, :account_id, "is inactive")
 
       _account ->
         line
@@ -1286,8 +1312,6 @@ defmodule Bilimbi.Finance.Ledger do
 
   ## Accounts
 
-  # One account carries the retained-earnings designation: designating
-  # another releases the current one first, in the same transaction.
   defp validate_deactivation(changeset, scope, company_id) do
     with false <- Changeset.get_change(changeset, :active),
          balance = account_balance(scope, company_id, changeset.data.id),
@@ -1318,6 +1342,8 @@ defmodule Bilimbi.Finance.Ledger do
     Decimal.sub(debits, credits)
   end
 
+  # One account carries the retained-earnings designation: designating
+  # another releases the current one first, in the same transaction.
   defp save_account(changeset, scope, company_id, save) do
     with :ok <- release_designation(changeset, scope, company_id) do
       changeset |> save.() |> public_result(&account_view/1)

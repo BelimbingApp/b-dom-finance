@@ -26,10 +26,15 @@ defmodule Bilimbi.Finance.Receivables.LedgerAccounts do
     end
   end
 
-  def problem(accounts, id, type) do
+  @doc """
+  What is wrong with account `id` as an account of `type`, or nil. An
+  inactive account is a problem unless `require_active` is false, as for
+  settling a document recorded against it.
+  """
+  def problem(accounts, id, type, require_active \\ true) do
     case Map.get(accounts, id) do
       nil -> "is not a ledger account of this company"
-      %{active: false} -> "is an inactive ledger account"
+      %{active: false} when require_active -> "is an inactive ledger account"
       %{account_type: ^type} -> nil
       %{} -> "must be a ledger #{type} account"
     end

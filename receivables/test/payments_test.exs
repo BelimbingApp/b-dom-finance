@@ -309,8 +309,58 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
              } = errors_on(changeset)
     end
 
-    test "a payment is refused with an error naming the invoice", context do
+    test "payments, reversals, and credit notes still settle the invoices", context do
       %{operator: operator, accounts: accounts, first: first, second: second} = context
+      old = accounts.receivable.id
+
+      {:ok, payment} =
+        pay(context, "150", [
+          %{document_id: first.id, amount: "100"},
+          %{document_id: second.id, amount: "50"}
+        ])
+
+      assert {:ok, %{active: false}} =
+               Ledger.update_account(operator, 73, old, %{active: false})
+
+      assert {:ok, _} =
+               Receivables.reverse_payment(operator, 73, payment.id, %{
+                 reversal_date: ~D[2026-10-15],
+                 reason: "Returned by the bank"
+               })
+
+      assert owed(context, first) == "100.00"
+
+      {:ok, draft} =
+        Receivables.create_draft(operator, 73, %{
+          kind: "credit_note",
+          series_id: context.credit_series.id,
+          customer_id: context.customer.id,
+          credited_document_id: first.id,
+          issue_date: ~D[2026-10-16],
+          lines: [%{description: "Credit", quantity: "1", unit_price: "30"}]
+        })
+
+      assert {:ok, %{receivable_account_id: ^old}} =
+               Receivables.issue_document(operator, 73, draft.id)
+
+      assert {:ok, again} =
+               pay(
+                 context,
+                 "120",
+                 [
+                   %{document_id: first.id, amount: "70"},
+                   %{document_id: second.id, amount: "50"}
+                 ],
+                 ~D[2026-10-17]
+               )
+
+      assert [%{account_id: ^old}] = credited_lines(operator, again.ledger_entry_id)
+      assert owed(context, first) == "0.00"
+      assert owed(context, second) == "0.00"
+    end
+
+    test "a new invoice on an inactive receivable account is refused", context do
+      %{operator: operator} = context
 
       {:ok, other} =
         Ledger.create_account(operator, 73, %{
@@ -319,40 +369,14 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
           account_type: "asset"
         })
 
-      {:ok, _} =
-        Ledger.post_entry(operator, 73, %{
-          entry_date: ~D[2026-10-02],
-          description: "Move the balance",
-          lines: [
-            %{account_id: other.id, debit: "150"},
-            %{account_id: accounts.receivable.id, credit: "150"}
-          ]
-        })
+      {:ok, _} = Receivables.configure(operator, 73, %{receivable_account_id: other.id})
+      {:ok, draft} = create_invoice(context, "10")
+      {:ok, _} = Ledger.update_account(operator, 73, other.id, %{active: false})
 
-      {:ok, _} = Ledger.update_account(operator, 73, accounts.receivable.id, %{active: false})
+      assert {:error, changeset} = Receivables.issue_document(operator, 73, draft.id)
 
-      assert {:error, changeset} =
-               pay(context, "150", [
-                 %{document_id: first.id, amount: "100"},
-                 %{document_id: second.id, amount: "50"}
-               ])
-
-      assert %{
-               allocations: [
-                 %{
-                   document_id: [
-                     "INV-0001 cannot be settled: its receivable account is an inactive ledger account"
-                   ]
-                 },
-                 %{
-                   document_id: [
-                     "INV-0002 cannot be settled: its receivable account is an inactive ledger account"
-                   ]
-                 }
-               ]
-             } = errors_on(changeset)
-
-      assert {:ok, []} = Receivables.list_payments(operator, 73)
+      assert %{lines: ["receivable account is an inactive ledger account"]} =
+               errors_on(changeset)
     end
   end
 

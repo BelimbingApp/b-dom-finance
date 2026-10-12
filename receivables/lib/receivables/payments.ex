@@ -47,8 +47,10 @@ defmodule Bilimbi.Finance.Receivables.Payments do
         |> put_allocations(scope, company_id, attributes, book.minor_units, accounts)
 
       with {:ok, changeset} <- valid(changeset),
+           entry = entry(changeset, scope, company_id),
+           settled = for(%{credit: _credit, account_id: id} <- entry.lines, do: id),
            {:ok, entry} <-
-             Ledger.post_entry(scope, company_id, entry(changeset, scope, company_id)) do
+             Ledger.post_entry(scope, company_id, entry, settlement_account_ids: settled) do
         changeset
         |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
         |> Repo.insert()
@@ -114,8 +116,9 @@ defmodule Bilimbi.Finance.Receivables.Payments do
 
   # Each allocation names a distinct issued invoice of the payment's
   # customer, dated on or before the payment, for no more than it owes, whose
-  # recorded receivable account can still be posted to; the allocations add
-  # up to the payment's amount.
+  # recorded receivable account is an asset account, active or not, because
+  # settling an invoice never needs it active; the allocations add up to the
+  # payment's amount.
   defp put_allocations(changeset, scope, company_id, attributes, minor_units, accounts) do
     allocations =
       attributes
@@ -190,7 +193,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
       amount && Decimal.gt?(amount, Map.fetch!(owed, invoice.id)) ->
         "owes less than the allocated amount"
 
-      problem = LedgerAccounts.problem(accounts, invoice.receivable_account_id, "asset") ->
+      problem = LedgerAccounts.problem(accounts, invoice.receivable_account_id, "asset", false) ->
         "#{invoice.document_reference} cannot be settled: its receivable account #{problem}"
 
       true ->

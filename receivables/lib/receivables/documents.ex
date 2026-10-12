@@ -222,7 +222,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     with {:ok, context} <- Configuration.context(scope, company_id),
          {:ok, draft} <- draft(scope, company_id, document_id),
          {:ok, changeset} <- issue_changeset(scope, company_id, context, draft),
-         {:ok, entry} <- Ledger.post_entry(scope, company_id, entry(changeset)) do
+         {:ok, entry} <- post_entry(scope, company_id, changeset) do
       changeset
       |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
       |> Repo.update()
@@ -313,20 +313,23 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     end)
   end
 
-  # Accounts may have been deactivated since the draft was saved.
+  # Accounts may have been deactivated since the draft was saved. A credit
+  # note's receivable account is its invoice's, which it settles, so it need
+  # not be active.
   defp validate_posting_accounts(changeset, context) do
     draft = changeset.data
+    receivable_id = Changeset.get_field(changeset, :receivable_account_id)
 
     checks =
-      [{"receivable account", Changeset.get_field(changeset, :receivable_account_id), "asset"}] ++
-        Enum.map(draft.lines, &{"line #{&1.line_number} account", &1.account_id, "income"}) ++
+      [{"receivable account", receivable_id, "asset", draft.kind == "invoice"}] ++
+        Enum.map(draft.lines, &{"line #{&1.line_number} account", &1.account_id, "income", true}) ++
         Enum.map(
           draft.tax_lines,
-          &{"tax code #{&1.tax_code} account", &1.account_id, "liability"}
+          &{"tax code #{&1.tax_code} account", &1.account_id, "liability", true}
         )
 
-    Enum.reduce(checks, changeset, fn {label, id, type}, acc ->
-      case LedgerAccounts.problem(context.accounts, id, type) do
+    Enum.reduce(checks, changeset, fn {label, id, type, require_active}, acc ->
+      case LedgerAccounts.problem(context.accounts, id, type, require_active) do
         nil -> acc
         message -> Changeset.add_error(acc, :lines, "#{label} #{message}")
       end
@@ -357,6 +360,17 @@ defmodule Bilimbi.Finance.Receivables.Documents do
       %Document{} ->
         changeset
     end
+  end
+
+  # A credit note settles its invoice, so it may post to the receivable
+  # account the invoice recorded even after that account was deactivated.
+  defp post_entry(scope, company_id, changeset) do
+    settled =
+      if Changeset.get_field(changeset, :kind) == "credit_note",
+        do: [Changeset.get_field(changeset, :receivable_account_id)],
+        else: []
+
+    Ledger.post_entry(scope, company_id, entry(changeset), settlement_account_ids: settled)
   end
 
   # An invoice debits the receivable and credits income and tax; a credit

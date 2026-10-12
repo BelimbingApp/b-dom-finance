@@ -292,11 +292,12 @@ defmodule Bilimbi.Finance.Receivables do
   @doc """
   Issues a draft. It needs an `issue_date`, at least one line, a total above
   zero, an active customer and series, and active ledger accounts of the
-  right types; an invoice without a `due_date` falls due after the
+  right types (a credit note's receivable account is its invoice's and may
+  be inactive, as it settles that invoice); an invoice without a `due_date` falls due after the
   customer's payment terms; a credit note is dated no earlier than its
   invoice and credits no more than the invoice still owes. Issuing numbers
   the document next in its series, copies the customer's party fields onto
-  it, and posts its entry through `Bilimbi.Finance.Ledger.post_entry/3`
+  it, and posts its entry through `Bilimbi.Finance.Ledger.post_entry/4`
   (so it also needs `finance.ledger.entries.post`): an invoice debits the
   setup's receivable account with its total and credits each income account
   and each tax code's account; a credit note posts the reverse, against the
@@ -369,10 +370,11 @@ defmodule Bilimbi.Finance.Receivables do
   invoice of the customer dated on or before the payment, for no more than
   it owes. The allocations add up to the amount; a payment may settle an
   invoice in part. It is numbered next in its series and posted through
-  `Bilimbi.Finance.Ledger.post_entry/3` (so it also needs
+  `Bilimbi.Finance.Ledger.post_entry/4` (so it also needs
   `finance.ledger.entries.post`), debiting the deposit account and crediting
   each allocated invoice's recorded receivable account with the amount
-  allocated to it.
+  allocated to it, even if that account has been deactivated since: an
+  inactive account blocks new business, not settling an existing invoice.
   """
   @spec record_payment(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | context_refusal() | Changeset.t()}

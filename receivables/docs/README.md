@@ -86,14 +86,15 @@ unnumbered, with who discarded it and when.
 
 `issue_document/3` checks the draft as it stands (an issue date, at least
 one line, a total above zero, an active customer and series, active ledger
-accounts of the right types) and then, in one transaction:
+accounts of the right types, except that a credit note's receivable account
+is its invoice's and may be inactive: it settles that invoice) and then, in one transaction:
 
 1. numbers it next in its series and gives it the series' reference;
 2. copies the customer's party fields onto it, so the document keeps the
    party as it was even when the customer changes later;
 3. sets an invoice's due date from the customer's payment terms when the
    draft names none;
-4. posts its entry through `Bilimbi.Finance.Ledger.post_entry/3`: an invoice
+4. posts its entry through `Bilimbi.Finance.Ledger.post_entry/4`: an invoice
    debits the receivable account with its total and credits each income
    account and each tax code's account; a credit note posts the reverse;
 5. records the entry's ID and number and who issued it; the database stamps
@@ -115,9 +116,9 @@ were not reversed.
 account (an asset), allocated to one or more of that customer's issued
 invoices. The allocations add up to the payment, each invoice appears once,
 each is dated on or before the payment, none is allocated more than it
-owes, and each one's recorded receivable account is still an active asset
-account (otherwise the allocation's error names the invoice), so an invoice can be settled in part and by several payments. The
-payment is numbered next in its payment series and posted through the
+owes, and each one's recorded receivable account is an asset account
+(otherwise the allocation's error names the invoice), so an invoice can be
+settled in part and by several payments. The payment is numbered next in its payment series and posted through the
 ledger, debiting the deposit account the whole amount and crediting each
 allocated invoice's receivable account with the amount allocated to it.
 
@@ -128,9 +129,19 @@ and its reversal post to the account of each invoice they settle. Changing
 the setup's account later therefore only affects new invoices, and each
 receivable account's ledger balance stays what its own documents owe. The
 line income accounts, tax line accounts, and a payment's deposit account are
-recorded on their own rows in the same way. The ledger refuses to deactivate
-an account with a balance, so a receivable account that invoices still owe on
-stays open for their payments and credit notes.
+recorded on their own rows in the same way.
+
+An inactive account blocks new business, never the settlement of an existing
+document. The ledger refuses to deactivate an account with a balance, and a
+new invoice needs the setup's receivable account, and every line's income and
+tax account, to be active. But a payment, a credit note, and a payment's
+reversal against an existing invoice may post to that invoice's recorded
+receivable account even when it has been deactivated since (for example
+after a reversal reopened an invoice, or a manual ledger entry moved the
+balance): a payment and a credit note pass the account to
+`Bilimbi.Finance.Ledger.post_entry/4` as a `settlement_account_ids` entry for
+that entry only, and a reversal posts through `reverse_entry/4`, which
+already takes inactive accounts.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a
 mistaken or returned payment once, on a date not before it and for a stated
@@ -223,7 +234,8 @@ sales ledger is held to. What this slice covers:
   module, and the aged receivables reconcile to the trial balance. Because
   every document posts, and is settled, against the receivable account it
   recorded, they still reconcile, per account, after the setup's account
-  changes.
+  changes, and an invoice stays payable and creditable if that account is
+  deactivated later.
 - **Sequential numbering.** Invoices, credit notes, and payments are
   numbered per series 1, 2, 3, ... in issue order; the database refuses a
   number that is not the next, a refused issue takes no number, and drafts
