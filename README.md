@@ -6,7 +6,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
-| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, and trial balance |
+| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, and trial balance |
 
 The ledger is the first module. Later Finance modules, such as receivables,
 payables, tax, and bank reconciliation, sit beside it as sibling module
@@ -14,7 +14,7 @@ folders and post through its public API; other Domains post through the same
 API. This slice exposes that API with no pages, menu entries, or agent
 operations. The ledger's "Standards addressed" section says which
 bookkeeping and audit standards it meets: double-entry integrity, an audit
-trail, and retention.
+trail, period-end cut-off, year-end close, and retention.
 
 ## Mount
 
