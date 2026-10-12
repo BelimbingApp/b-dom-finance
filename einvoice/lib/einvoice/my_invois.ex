@@ -438,23 +438,29 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   @impl true
-  def find_submission(scope, company_id, credentials, %{
-        code_number: code,
-        since: since,
-        until: until
-      }) do
+  def find_submission(
+        scope,
+        company_id,
+        credentials,
+        %{
+          code_number: code,
+          since: since,
+          until: until
+        } = lookup
+      ) do
     from = Enum.max([since, DateTime.add(until, -@search_days * 86_400, :second)], DateTime)
-    search_sent(scope, company_id, credentials, code, [from: from, to: until], 1)
+    known = Map.get(lookup, :exclude, [])
+    search_sent(scope, company_id, credentials, {code, known}, [from: from, to: until], 1)
   end
 
-  defp search_sent(scope, company_id, credentials, code, window, page) do
+  defp search_sent(scope, company_id, credentials, {code, known} = wanted, window, page) do
     case Client.recent_documents(scope, company_id, credentials, window,
            owner_id: company_id,
            page: page
          ) do
       {:ok, %{status: status, body: %{"result" => results} = body}} when is_list(results) ->
         case results
-             |> Enum.filter(&(&1["internalId"] == code))
+             |> Enum.filter(&(&1["internalId"] == code and &1["uuid"] not in known))
              |> Enum.max_by(&to_string(&1["dateTimeReceived"]), fn -> nil end) do
           %{"uuid" => uuid, "submissionUid" => uid} = entry
           when is_binary(uuid) and is_binary(uid) ->
@@ -467,7 +473,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
 
           _none ->
             if more_pages?(body, page),
-              do: search_sent(scope, company_id, credentials, code, window, page + 1),
+              do: search_sent(scope, company_id, credentials, wanted, window, page + 1),
               else: {:not_found, answer(status, body)}
         end
 

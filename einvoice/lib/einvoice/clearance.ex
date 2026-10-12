@@ -31,11 +31,14 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   submission UID and document UUID are recorded as `submitted` with the
   authority's own entry, and the poll job is queued. Only when nothing is
   found is the `duplicate` recorded and the job stopped for an operator,
-  or the outage retried. The search covers the time from before the
-  document was issued to a minute past the moment of asking. A retry that
-  finds an earlier attempt with no final answer (a crash, or only an
-  outage) searches first and sends again only when the search found
-  nothing; when the search cannot answer, the job retries without sending.
+  or the outage retried. The search covers the time from a minute before
+  the oldest attempt without a final answer to a minute past the moment of
+  asking, and ignores any document whose UUID this document already
+  recorded. A retry that finds such an attempt (a crash, an outage, or a
+  search that could not answer) searches first and sends again only on a
+  clean not-found; a search that is rate limited, unavailable, or refused
+  records `search_deferred`, which leaves the attempt unresolved, and the
+  job retries without sending.
 
   ## Polling
 
@@ -83,6 +86,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   @outage_hours 72
   @max_reads_per_job 10
   @lookup_margin_seconds 60
+  # The events that end an attempt: the authority answered, whatever it said.
+  @answers ~w(submitted refused duplicate rate_limited)
 
   @type job_result :: :ok | {:retry, atom()} | {:cancel, atom()}
 
@@ -171,41 +176,35 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         {:cancel, reason}
 
       {:ok, prepared} ->
-        case unresolved_attempt(scope, company_id, document) do
-          nil -> send_submission(scope, company_id, document, prepared, now)
-          attempt -> settle_attempt(scope, company_id, document, prepared, attempt, now)
+        case unresolved_attempts(scope, company_id, document) do
+          [] -> send_submission(scope, company_id, document, prepared, now)
+          attempts -> settle_attempt(scope, company_id, document, prepared, attempts, now)
         end
     end
   end
 
   # An earlier attempt that never got a final answer may have been accepted.
   # Ask the authority before sending the bytes again: an accepted document is
-  # recorded, a lookup that cannot answer retries without sending, and only
-  # a lookup that finds nothing lets the document go out again.
-  defp settle_attempt(scope, company_id, document, prepared, attempt, now) do
-    case find_submission(scope, company_id, prepared.credentials, document) do
+  # recorded, a search that cannot answer (anything but a clean not-found)
+  # defers the retry without sending, and only a clean not-found lets the
+  # document go out again.
+  defp settle_attempt(scope, company_id, document, prepared, [latest | _] = attempts, now) do
+    case find_submission(scope, company_id, prepared.credentials, document, attempts) do
       {:found, found} ->
-        record_submission_outcome(
-          scope,
-          company_id,
-          document,
-          attempt,
-          {:accepted, found},
-          now
-        )
+        record_submission_outcome(scope, company_id, document, latest, {:accepted, found}, now)
 
-      {status, answer} when status in [:rate_limited, :unavailable] ->
-        record_submission_outcome(
-          scope,
-          company_id,
-          document,
-          attempt,
-          {status, answer},
-          now
-        )
-
-      {_not_found_or_refused, _answer} ->
+      {:not_found, _answer} ->
         send_submission(scope, company_id, document, prepared, now)
+
+      {status, answer} ->
+        record_submission_outcome(
+          scope,
+          company_id,
+          document,
+          latest,
+          {:deferred, status, answer},
+          now
+        )
     end
   end
 
@@ -244,9 +243,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     end
   end
 
-  # The latest submission stored since the document last became submittable
-  # whose answer is missing or was only an outage: it may have been accepted.
-  defp unresolved_attempt(scope, company_id, document) do
+  # The submissions stored since the document last became submittable whose
+  # final answer is missing (a crash, an outage, or a search that could not
+  # answer): any of them may have been accepted. Newest first.
+  defp unresolved_attempts(scope, company_id, document) do
     last_status =
       document.events
       |> Enum.filter(&(&1.event in Documents.status_events()))
@@ -256,7 +256,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       document.events
       |> Enum.reverse()
       |> Enum.take_while(&(&1.event not in Documents.status_events()))
-      |> Enum.reject(&(&1.event == "unavailable" or is_nil(&1.submission_id)))
+      |> Enum.filter(&(&1.event in @answers and not is_nil(&1.submission_id)))
       |> MapSet.new(& &1.submission_id)
 
     from(s in Tenancy.scope_query(Submission, scope),
@@ -266,7 +266,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       order_by: [desc: s.id]
     )
     |> Repo.all()
-    |> Enum.find(&(&1.id not in settled))
+    |> Enum.reject(&(&1.id in settled))
   end
 
   # The bytes are committed before the authority sees them.
@@ -357,6 +357,19 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           action(scope, company_id, "finance.einvoice.submission.duplicate", base, answer)
           {:cancel, :duplicate_submission}
 
+        {:deferred, status, answer} ->
+          record(scope, company_id, document.id, %{
+            event: "search_deferred",
+            submission_id: submission.id,
+            reason:
+              "the search for the document could not answer: #{deferred_reason(status, answer)}",
+            http_status: answer[:http_status],
+            response: answer[:response]
+          })
+
+          notice_if_overdue(scope, company_id, document, now)
+          {:retry, if(status == :rate_limited, do: :rate_limited, else: :authority_unavailable)}
+
         {:rate_limited, answer} ->
           record(scope, company_id, document.id, %{
             event: "rate_limited",
@@ -390,34 +403,37 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   # nothing leaves the outcome as it was; one that cannot answer retries.
   defp recover_outcome(scope, company_id, credentials, document, {kind, _answer} = outcome)
        when kind in [:duplicate, :unavailable] do
-    case find_submission(scope, company_id, credentials, document) do
+    attempts = unresolved_attempts(scope, company_id, document)
+
+    case find_submission(scope, company_id, credentials, document, attempts) do
       {:found, found} -> {:accepted, found}
-      {status, answer} when status in [:rate_limited, :unavailable] -> {status, answer}
-      {_not_found_or_refused, _answer} -> outcome
+      {:not_found, _answer} -> outcome
+      {status, answer} -> unanswered_search(outcome, status, answer)
     end
   end
 
   defp recover_outcome(_scope, _company_id, _credentials, _document, outcome), do: outcome
 
-  # The window runs from before the document existed to a minute past the
-  # moment of asking, so it holds the attempt that has just ended.
-  defp find_submission(scope, company_id, credentials, document) do
-    first_stored =
-      from(s in Tenancy.scope_query(Submission, scope),
-        where: s.company_id == ^company_id and s.document_id == ^document.id,
-        select: min(s.recorded_at)
-      )
-      |> Repo.one()
+  defp unanswered_search({:unavailable, _answer} = outcome, _status, _search), do: outcome
+  defp unanswered_search({:duplicate, _answer}, status, search), do: {:deferred, status, search}
 
+  # The window runs from a minute before the oldest unresolved attempt to a
+  # minute past the moment of asking, so it holds the attempt that has just
+  # ended; a document the authority holds under an identifier this document
+  # already recorded belongs to an earlier cycle, not to these attempts.
+  defp find_submission(scope, company_id, credentials, document, attempts) do
     since =
-      [document.issued_at | List.wrap(first_stored)]
+      attempts
+      |> Enum.map(& &1.recorded_at)
       |> Enum.min(DateTime)
       |> DateTime.add(-@lookup_margin_seconds, :second)
 
     lookup = %{
       code_number: document.code_number,
       since: since,
-      until: DateTime.add(DateTime.utc_now(), @lookup_margin_seconds + 1, :second)
+      until: DateTime.add(DateTime.utc_now(), @lookup_margin_seconds + 1, :second),
+      exclude:
+        for(%{document_uuid: uuid} <- document.events, is_binary(uuid), uniq: true, do: uuid)
     }
 
     authority().find_submission(scope, company_id, credentials, lookup)
@@ -435,7 +451,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       |> Enum.take_while(&(&1.event not in Documents.status_events()))
       |> Enum.reverse()
 
-    first = Enum.find(since_status, &(&1.event == "unavailable"))
+    first = Enum.find(since_status, &(&1.event in ["unavailable", "search_deferred"]))
     noticed? = Enum.any?(since_status, &(&1.event == "overdue"))
 
     if first && not noticed? &&
@@ -998,6 +1014,9 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
     Documents.record_action!(scope, company_id, event, payload)
   end
+
+  defp deferred_reason(:rate_limited, answer), do: retry_after_reason(answer)
+  defp deferred_reason(_status, answer), do: answer[:reason] || "no answer"
 
   defp retry_after_reason(%{retry_after: seconds}) when is_integer(seconds),
     do: "rate limited; retry after #{seconds} seconds"

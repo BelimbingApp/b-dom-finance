@@ -335,7 +335,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert Repo.all(Oban.Job) == []
     end
 
-    test "retries a duplicate whose lookup the authority could not answer", %{
+    test "defers a duplicate whose lookup the authority could not answer", %{
       operator: op,
       document: document
     } do
@@ -348,7 +348,8 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert {:retry, :authority_unavailable} =
                SubmitWorker.handle_job(args(document), execution(op))
 
-      assert [{"issued", _}, {"unavailable", %{http_status: 503}}] = events(op, document)
+      assert [{"issued", _}, {"search_deferred", %{http_status: 503}}] = events(op, document)
+      assert {:ok, %{status: "issued"}} = Einvoice.get_document(op, 73, document.id)
     end
 
     test "looks for a submission an outage may have hidden before retrying", %{
@@ -461,10 +462,181 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       refute_received {:request, "POST", @submit_path, _}
 
-      assert [{"issued", _}, {"unavailable", _}, {"unavailable", %{http_status: 503}}] =
+      assert [{"issued", _}, {"unavailable", _}, {"search_deferred", %{http_status: 503}}] =
                events(op, document)
 
       assert length(Repo.all(Submission)) == 1
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &recent_response(&1, [])
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+      assert_received {:request, "POST", @submit_path, _}
+      assert length(Repo.all(Submission)) == 2
+    end
+
+    test "a retry after an outage does not send while the search is rate limited", %{
+      operator: op,
+      document: document
+    } do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &(&1 |> Plug.Conn.put_status(429) |> Req.Test.json(%{}))
+      })
+
+      for _run <- 1..2 do
+        assert {:retry, :rate_limited} = SubmitWorker.handle_job(args(document), execution(op))
+      end
+
+      refute_received {:request, "POST", @submit_path, _}
+      assert length(Repo.all(Submission)) == 1
+    end
+
+    test "a retry after an outage does not send when the search is refused", %{
+      operator: op,
+      document: document
+    } do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &(&1 |> Plug.Conn.put_status(403) |> Req.Test.json(%{}))
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      refute_received {:request, "POST", @submit_path, _}
+      assert [_, _, {"search_deferred", %{http_status: 403}}] = events(op, document)
+    end
+
+    test "a search never recovers an earlier cycle's document for a new attempt", %{
+      operator: op,
+      document: document
+    } do
+      documents = Bilimbi.Finance.Einvoice.Documents
+
+      documents.record_event!(op, 73, document.id, %{
+        event: "submitted",
+        submission_uid: "OLDSUB",
+        document_uuid: "OLDUUID1",
+        authority_status: "Submitted"
+      })
+
+      documents.record_event!(op, 73, document.id, %{
+        event: "invalid",
+        document_uuid: "OLDUUID1",
+        authority_status: "Invalid",
+        reason: "fixed since"
+      })
+
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      old = %{
+        internalId: "JSON-INV12345",
+        uuid: "OLDUUID1",
+        submissionUid: "OLDSUB",
+        dateTimeReceived: "2026-12-01T00:00:00Z"
+      }
+
+      new = %{
+        internalId: "JSON-INV12345",
+        uuid: "NEWUUID2",
+        submissionUid: "NEWSUB",
+        dateTimeReceived: "2026-10-02T00:00:00Z"
+      }
+
+      stub = fn results ->
+        TestFixtures.stub_authority!(%{
+          {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+          {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+          {"GET", @recent_path} => &recent_response(&1, results)
+        })
+      end
+
+      stub.([old])
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+      assert_received {:request, "POST", @submit_path, _}
+
+      assert {:ok, %{status: "submitted", document_uuid: "F9D425P6DS7D8IU"}} =
+               Einvoice.get_document(op, 73, document.id)
+    end
+
+    test "a search recovers the new attempt's document beside an earlier cycle's", %{
+      operator: op,
+      document: document
+    } do
+      documents = Bilimbi.Finance.Einvoice.Documents
+
+      documents.record_event!(op, 73, document.id, %{
+        event: "submitted",
+        submission_uid: "OLDSUB",
+        document_uuid: "OLDUUID1",
+        authority_status: "Submitted"
+      })
+
+      documents.record_event!(op, 73, document.id, %{
+        event: "invalid",
+        document_uuid: "OLDUUID1",
+        authority_status: "Invalid",
+        reason: "fixed since"
+      })
+
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      results = [
+        %{
+          internalId: "JSON-INV12345",
+          uuid: "OLDUUID1",
+          submissionUid: "OLDSUB",
+          dateTimeReceived: "2026-12-01T00:00:00Z"
+        },
+        %{
+          internalId: "JSON-INV12345",
+          uuid: "NEWUUID2",
+          submissionUid: "NEWSUB",
+          dateTimeReceived: "2026-10-02T00:00:00Z"
+        }
+      ]
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &recent_response(&1, results)
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+      refute_received {:request, "POST", @submit_path, _}
+
+      assert {:ok, %{status: "submitted", submission_uid: "NEWSUB", document_uuid: "NEWUUID2"}} =
+               Einvoice.get_document(op, 73, document.id)
     end
 
     test "a retry after an outage sends again when the search finds nothing", %{
@@ -512,7 +684,8 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       TestFixtures.stub_authority!(%{
         {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", @submit_path} => &(&1 |> Plug.Conn.put_status(503) |> Req.Test.json(%{}))
+        {"POST", @submit_path} => &(&1 |> Plug.Conn.put_status(503) |> Req.Test.json(%{})),
+        {"GET", @recent_path} => &recent_response(&1, [])
       })
 
       now = DateTime.utc_now()

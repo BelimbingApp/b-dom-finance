@@ -96,11 +96,13 @@ accepted request, it asks the authority for the document by its code number
 recently sent) and records the UID and UUID it finds as `submitted`, with
 the authority's own entry, and queues the poll. Only when nothing is found
 does a duplicate stop the job for an operator, and an outage retry. The
-search runs from before the document was issued to a minute past the
-moment of asking, and it also runs before any retry that finds an earlier
-attempt without a final answer (a crash, or only an outage): the bytes go
-out again only when the search found nothing, and not at all while it
-cannot answer. A rate limit or outage retries under Base Queue's
+search runs from a minute before the oldest attempt without a final answer
+to a minute past the moment of asking, ignoring any document whose UUID
+this document already recorded, and it also runs before any retry that
+finds such an attempt (a crash, an outage, or an earlier search that could
+not answer): the bytes go out again only on a clean not-found, and not at
+all while the search is rate limited, unavailable, or refused (recorded as
+`search_deferred`). A rate limit or outage retries under Base Queue's
 backoff (Base Queue has no snooze, so the authority's `Retry-After` is
 recorded on the event rather than honoured to the second); an outage that
 has lasted 72 hours records `overdue` and the audit action

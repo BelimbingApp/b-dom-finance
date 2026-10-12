@@ -124,7 +124,9 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
 
   @doc """
   Looks up a document the authority may already hold, by the company's code
-  number, among what the submitter sent between `since` and `until`:
+  number, among what the submitter sent between `since` and `until`,
+  leaving out any whose document UUID is in `exclude` (identifiers this
+  document already recorded, which belong to an earlier cycle):
   `{:found, answer}` where the answer carries `submission_uid` and
   `document_uuid` and the authority's own entry as `response`, or
   `{:not_found | :refused | :rate_limited | :unavailable, answer}`. Used
@@ -135,7 +137,12 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
               Scope.t(),
               pos_integer(),
               credentials :: map(),
-              lookup :: %{code_number: String.t(), since: DateTime.t(), until: DateTime.t()}
+              lookup :: %{
+                required(:code_number) => String.t(),
+                required(:since) => DateTime.t(),
+                required(:until) => DateTime.t(),
+                optional(:exclude) => [String.t()]
+              }
             ) ::
               {:found | :not_found | :refused | :rate_limited | :unavailable, answer()}
 
