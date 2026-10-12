@@ -218,8 +218,8 @@ columns one state of the ledger. `exclude_closing: true`, on it and on
 `list_entries/3`, leaves out every year-end closing entry and every
 reversal of one, so income and expense over a closed year show its
 activity; the set is fixed at any entry number, because a close event and
-its entry are written in one transaction. Financial statements are built on it in
-the sibling `finance/reports` module.
+its entry are written in one transaction. Financial statements are built on it
+in the sibling `finance/reports` module.
 
 ## Posting notices
 
