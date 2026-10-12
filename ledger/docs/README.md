@@ -88,11 +88,12 @@ skipped (a refused or rolled-back post takes none) or reused.
 from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
 `limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
-shape or range is `{:error, :invalid_option}`.
+shape or range, including an `after` ID beyond PostgreSQL's `bigint`, is
+`{:error, :invalid_option}`.
 
 ## Trial balance
 
-`trial_balance/3` lists every account with a posting dated on or before
+`trial_balance/4` lists every account with a posting dated on or before
 `as_of`, ordered by code, with its debit and credit totals and its balance on
 one side (`debit_balance` or `credit_balance`). Each account reports its own
 postings only; `parent_id` lets a reader group rows without counting a parent
@@ -104,7 +105,9 @@ report's debit and credit figures (each row's totals and balance, and the
 totals) reproduce exactly by passing the same `as_of` and its
 `through_entry_number`: posted entries never change and are numbered in
 posting order. Account names, parents, and active flags are read as they are
-now. Closing a period against back-dated postings is later work.
+now. A `through_entry_number` outside 0 to the `bigint` maximum is
+`{:error, :invalid_option}`. Closing a period against back-dated postings is
+later work.
 
 ## Database
 
