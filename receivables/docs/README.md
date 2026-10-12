@@ -86,9 +86,10 @@ tax code, and its total is the subtotal plus tax. A discarded draft is kept,
 unnumbered, with who discarded it and when.
 
 `issue_document/3` checks the draft as it stands (an issue date, at least
-one line, a total above zero, an active series and (for an invoice) customer, active ledger
-accounts of the right types, except that a credit note's receivable account
-is its invoice's and may be inactive: it settles that invoice) and then, in one transaction:
+one line, a total above zero, an active series and (for an invoice) customer,
+active ledger accounts of the right types, except that a credit note's
+receivable account is its invoice's and may be inactive: it settles that
+invoice) and then, in one transaction:
 
 1. numbers it next in its series and gives it the series' reference;
 2. copies the customer's party fields onto it, so the document keeps the
@@ -119,8 +120,8 @@ invoices. The allocations add up to the payment, each invoice appears once,
 each is dated on or before the payment, none is allocated more than it
 owes, and each one's recorded receivable account is an asset account
 (otherwise the allocation's error names the invoice), so an invoice can be
-settled in part and by several payments. The payment is numbered next in its payment series and posted through the
-ledger, debiting the deposit account the whole amount and crediting each
+settled in part and by several payments. The payment is numbered next in its
+payment series and posted through the ledger, debiting the deposit account the whole amount and crediting each
 allocated invoice's receivable account with the amount allocated to it.
 
 The receivable account is recorded, not looked up: an issued invoice
@@ -135,8 +136,9 @@ recorded on their own rows in the same way.
 An inactive account or customer blocks new business, never the settlement of
 an existing document: a payment, a credit note, and a payment's reversal
 against an existing invoice go through for a customer deactivated since. The
-ledger refuses to deactivate an account with a balance, and a new invoice needs the setup's receivable account, and every line's income and
-tax account, to be active. But a payment, a credit note, and a payment's
+ledger refuses to deactivate an account with a balance, and a new invoice needs
+the setup's receivable account, and every line's income and tax account, to be
+active. But a payment, a credit note, and a payment's
 reversal against an existing invoice may post to that invoice's recorded
 receivable account even when it has been deactivated since (for example
 after a reversal reopened an invoice, or a manual ledger entry moved the

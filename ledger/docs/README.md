@@ -98,8 +98,8 @@ names an active account of the company with exactly one positive amount, and
 debits equal credits (an inactive account is allowed only under the
 settlement exception below); otherwise it returns a changeset whose `lines`
 errors say why, per line where one line is at fault. Its `entry_date` must
-fall in an open period (see Period closing); otherwise the changeset's `entry_date`
-error says the period is closed or locked, or that the date is before the
+fall in an open period (see Period closing); otherwise the changeset's
+`entry_date` error says the period is closed or locked, or that the date is before the
 company's first fiscal year. A posted entry and its lines are
 immutable. `reverse_entry/4` corrects one by posting the same lines with
 debits and credits swapped, on a date not before the original's; an entry is
