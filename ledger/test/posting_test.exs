@@ -111,6 +111,37 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
       end
     end
 
+    test "posts to an inactive account only when it is a listed settlement account", context do
+      %{operator: operator, cash: cash, income: income} = context
+      {:ok, _} = Ledger.update_account(operator, 73, cash.id, %{active: false})
+      {:ok, _} = Ledger.update_account(operator, 73, income.id, %{active: false})
+      lines = [debit(cash, "5"), credit(income, "5")]
+      post = &Ledger.post_entry(operator, 73, entry(lines), &1)
+
+      assert {:error, changeset} = post.([])
+
+      assert %{lines: [%{account_id: ["is inactive"]}, %{account_id: ["is inactive"]}]} =
+               errors_on(changeset)
+
+      assert {:error, changeset} = post.(settlement_account_ids: [cash.id])
+      assert %{lines: [%{}, %{account_id: ["is inactive"]}]} = errors_on(changeset)
+
+      assert {:error, changeset} = post.(settlement_account_ids: [income.id])
+      assert %{lines: [%{account_id: ["is inactive"]}, %{}]} = errors_on(changeset)
+
+      for options <- [
+            [settlement_account_ids: income.id],
+            [settlement_account_ids: ["1"]],
+            [settlement_account_ids: [nil]],
+            [other: [income.id]],
+            [:settlement_account_ids]
+          ] do
+        assert {:error, :invalid_option} = post.(options)
+      end
+
+      assert {:ok, %{lines: [_, _]}} = post.(settlement_account_ids: [cash.id, income.id])
+    end
+
     test "refuses an inactive account and another company's account", context do
       %{first_scope: system, operator: operator, cash: cash, income: income} = context
       {:ok, _} = Ledger.update_account(operator, 73, income.id, %{active: false})
@@ -134,7 +165,7 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
       assert {:error, changeset} =
                Ledger.update_account(operator, 73, income.id, %{active: false})
 
-      assert %{active: ["has a non-zero balance"]} = errors_on(changeset)
+      assert %{active: ["account 4000 has a balance of 40.00; " <> _]} = errors_on(changeset)
 
       assert {:ok, %{name: "Renamed", active: true}} =
                Ledger.update_account(operator, 73, income.id, %{name: "Renamed"})

@@ -24,7 +24,8 @@ here; they govern this code and are not copied here.
   fails. Namespaces are `Bilimbi.Finance.<Module>` with OTP app
   `:bilimbi_finance_<folder>`.
 - Domain code uses only meta-terms: book, account, account type, entry, line,
-  debit, credit, fiscal document, party, submission, status event. A fixed
+  debit, credit, fiscal document, party, submission, status event, and receivables'
+  customer, series, tax code, invoice, credit note, payment, allocation. A fixed
   chart of accounts or a currency is a company's data, never a code
   identifier, schema constant, inclusion list, or default. The five account
   types are the one fixed classification. A tax authority's own rules,
