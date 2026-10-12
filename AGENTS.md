@@ -38,7 +38,13 @@ here; they govern this code and are not copied here.
   order and each number's written form must survive.
 - Post to the ledger through `Bilimbi.Finance.Ledger`'s facade, from Finance
   modules and other Domains alike; never write or read its tables. A posted
-  entry is corrected with `reverse_entry/4`, never edited.
+  entry is corrected with `reverse_entry/4`, never edited. Its `entry_date`
+  must fall in an open period: handle that changeset error, never reopen a
+  period to post.
+- Keep a record's changing state (open, closed, approved, ...) as append-only
+  events with actor, reason, and a database-stamped time, the latest deciding
+  the state, as the ledger's closing log does; an updatable status column
+  loses the history an auditor asks for.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's
@@ -54,13 +60,15 @@ here; they govern this code and are not copied here.
 - Module tests run against temporary tables in each module's
   `test/support/test_fixtures.ex`, not its migrations. Build them from the
   migration's own SQL, as `payables/` does with `statements(temporary: true)`,
-  rather than a hand-kept copy like `ledger/`'s, which can drift: a test that
-  makes PostgreSQL refuse proves nothing unless the constraints and triggers
-  are the migration's. The sandbox never commits and runs each test in one
-  transaction, so a deferred trigger runs only after
-  `check_deferred_constraints!/0`, a rule about a later transaction never
-  fires, and TRUNCATE with pending trigger events fails for its own reason;
-  prove those in the fresh-database contract test.
+  rather than a hand-kept copy that can drift: a test that makes PostgreSQL
+  refuse proves nothing unless the constraints and triggers are the
+  migration's. A migration's public `functions/1` (the closing migration's)
+  lets fixtures create its trigger functions in `pg_temp.` instead of copying
+  them. The sandbox never commits and runs each test in one transaction, so a
+  deferred trigger runs only after `check_deferred_constraints!/0`, a rule
+  about a later transaction never fires, and TRUNCATE with pending trigger
+  events fails for its own reason; prove those in the fresh-database contract
+  test.
 - A test that installs a contribution snapshot is `async: false`: the
   snapshot is process-global.
 - Mount a real copy (clone or `rsync`), not a symlink: `mix.exs` locates the

@@ -6,7 +6,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
-| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, and trial balance |
+| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, and trial balance |
 | [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payments allocated to bills, and aged payables |
 | [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents, signed submissions and status events, the authority's code lists, and each company's credentials and certificate |
 
