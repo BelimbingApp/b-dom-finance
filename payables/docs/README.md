@@ -88,7 +88,8 @@ A document is recorded whole: nothing is added to its lines afterwards and
 nothing it recorded changes, only its status. Posting (`post_document/3`)
 posts one ledger entry on the document date: a bill debits each line's
 account and each tax line's account and credits the payable account from
-the settings with its total; a debit note posts the opposite. The document
+the settings with its total; a debit note posts the opposite, to the payable
+account its bill posted to, whatever the settings say by then. The document
 keeps its `payable_account_id`, `entry_id`, and `entry_number`. A posted
 document is never changed or voided: a bill is corrected by a debit note,
 whose total cannot exceed what is still owed on the bill, checked when it is
