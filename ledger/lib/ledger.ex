@@ -560,9 +560,9 @@ defmodule Bilimbi.Finance.Ledger do
   @doc """
   Reopens a closed fiscal year with a `reason`, which needs the privileged
   reopen capability and the entry-posting capability, because it posts the
-  reversal (missing either is `{:error, :unauthorized}`): it reopens the year and its last period, and reverses
-  the closing entry on the year's last day. The year's other periods stay
-  closed until each is reopened. A year whose last period is locked never
+  reversal (missing either is `{:error, :unauthorized}`): it reopens the
+  year and its last period, and reverses the closing entry on the year's
+  last day. The year's other periods stay closed until each is reopened. A year whose last period is locked never
   reopens (`{:error, :period_locked}`), and a year reopens only while the
   next year's periods are all open (`{:error, :later_period_closed}`).
   """

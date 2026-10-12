@@ -188,9 +188,9 @@ the closing entry.
 
 The close is idempotent: closing a closed year returns it unchanged and posts
 nothing. Only `reopen_fiscal_year/4` undoes it, with the reopen and posting
-capabilities and a `reason`: it records the year's and its last period's `reopen` events
-and posts the closing entry's reversal on the year's last day. The year's
-other periods stay closed until each is reopened. A year whose last period is
+capabilities and a `reason`: it records the year's and its last period's
+`reopen` events and posts the closing entry's reversal on the year's last
+day. The year's other periods stay closed until each is reopened. A year whose last period is
 locked never reopens (`:period_locked`), nor one whose next year has a closed
 period (`:later_period_closed`). Closing it again posts a fresh closing entry
 over the year's entries, in which the earlier closing entry and its reversal
@@ -280,8 +280,7 @@ accounts are held to. What this slice covers:
 - **Retention.** Nothing posted is ever deleted: the database refuses DELETE
   and TRUNCATE on books, entries, lines, fiscal years, periods, and closing
   events, refuses deleting an account, and unmounting Finance keeps every
-  row. Records therefore outlive any statutory
-  retention period, such as the seven years Malaysia's Companies Act 2016
+  row. Records therefore outlive any statutory retention period, such as the seven years Malaysia's Companies Act 2016
   requires; how long a company must keep them is law, not code.
 
 Financial reporting under MFRS or IFRS (statements, tax) is later work in
@@ -292,8 +291,9 @@ sibling modules.
 Module tests run on temporary copies of the tables, constraints and triggers
 included, from `test/support/test_fixtures.ex`; change them with the
 migrations. The closing rules' functions are not copied: the closing
-migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0` there builds two tenants' companies and an Authz
-snapshot, and `sign_in!/4` signs a user in with direct grants.
+migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0`
+there builds two tenants' companies and an Authz snapshot, and `sign_in!/4`
+signs a user in with direct grants.
 
 This slice has no pages, menu entries, or agent operations; callers use the
 facade.
