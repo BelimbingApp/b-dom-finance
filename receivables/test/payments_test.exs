@@ -295,6 +295,67 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
     end
   end
 
+  describe "when an invoice's recorded receivable account is deactivated" do
+    test "the account cannot be deactivated while invoices owe on it", context do
+      %{operator: operator, accounts: accounts} = context
+
+      assert {:error, changeset} =
+               Ledger.update_account(operator, 73, accounts.receivable.id, %{active: false})
+
+      assert %{
+               active: [
+                 "account 1100 has a balance of 150.00; it can be deactivated once its balance is zero"
+               ]
+             } = errors_on(changeset)
+    end
+
+    test "a payment is refused with an error naming the invoice", context do
+      %{operator: operator, accounts: accounts, first: first, second: second} = context
+
+      {:ok, other} =
+        Ledger.create_account(operator, 73, %{
+          code: "1150",
+          name: "Second receivable",
+          account_type: "asset"
+        })
+
+      {:ok, _} =
+        Ledger.post_entry(operator, 73, %{
+          entry_date: ~D[2026-10-02],
+          description: "Move the balance",
+          lines: [
+            %{account_id: other.id, debit: "150"},
+            %{account_id: accounts.receivable.id, credit: "150"}
+          ]
+        })
+
+      {:ok, _} = Ledger.update_account(operator, 73, accounts.receivable.id, %{active: false})
+
+      assert {:error, changeset} =
+               pay(context, "150", [
+                 %{document_id: first.id, amount: "100"},
+                 %{document_id: second.id, amount: "50"}
+               ])
+
+      assert %{
+               allocations: [
+                 %{
+                   document_id: [
+                     "INV-0001 cannot be settled: its receivable account is an inactive ledger account"
+                   ]
+                 },
+                 %{
+                   document_id: [
+                     "INV-0002 cannot be settled: its receivable account is an inactive ledger account"
+                   ]
+                 }
+               ]
+             } = errors_on(changeset)
+
+      assert {:ok, []} = Receivables.list_payments(operator, 73)
+    end
+  end
+
   test "lists payments by customer and pages by ID", context do
     %{operator: operator} = context
     {:ok, first} = pay(context, "10", [%{document_id: context.first.id, amount: "10"}])

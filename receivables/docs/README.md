@@ -114,8 +114,9 @@ were not reversed.
 `record_payment/3` records money received from one customer into a deposit
 account (an asset), allocated to one or more of that customer's issued
 invoices. The allocations add up to the payment, each invoice appears once,
-each is dated on or before the payment, and none is allocated more than it
-owes, so an invoice can be settled in part and by several payments. The
+each is dated on or before the payment, none is allocated more than it
+owes, and each one's recorded receivable account is still an active asset
+account (otherwise the allocation's error names the invoice), so an invoice can be settled in part and by several payments. The
 payment is numbered next in its payment series and posted through the
 ledger, debiting the deposit account the whole amount and crediting each
 allocated invoice's receivable account with the amount allocated to it.
@@ -127,7 +128,9 @@ and its reversal post to the account of each invoice they settle. Changing
 the setup's account later therefore only affects new invoices, and each
 receivable account's ledger balance stays what its own documents owe. The
 line income accounts, tax line accounts, and a payment's deposit account are
-recorded on their own rows in the same way.
+recorded on their own rows in the same way. The ledger refuses to deactivate
+an account with a balance, so a receivable account that invoices still owe on
+stays open for their payments and credit notes.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a
 mistaken or returned payment once, on a date not before it and for a stated

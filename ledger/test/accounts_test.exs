@@ -12,6 +12,7 @@ defmodule Bilimbi.Finance.Ledger.AccountsTest do
 
   @view "finance.ledger.view"
   @manage "finance.ledger.accounts.manage"
+  @post "finance.ledger.entries.post"
 
   setup do
     context = TestFixtures.setup_ledger!()
@@ -196,6 +197,50 @@ defmodule Bilimbi.Finance.Ledger.AccountsTest do
           Repo.transaction(fn -> SQL.query!(Repo, sql, [account.id]) end)
         end
       end
+    end
+
+    test "deactivates only at a zero balance", context do
+      poster = TestFixtures.sign_in!(context.first_scope, 73, 92, [@view, @manage, @post])
+      {:ok, _book} = Ledger.open_book(poster, 73, %{currency_code: "XTS", minor_units: 2})
+      {:ok, cash} = Ledger.create_account(poster, 73, cash())
+      {:ok, income} = Ledger.create_account(poster, 73, income())
+
+      post = fn lines ->
+        Ledger.post_entry(poster, 73, %{
+          entry_date: ~D[2026-10-01],
+          description: "Entry",
+          lines: lines
+        })
+      end
+
+      {:ok, _} =
+        post.([%{account_id: cash.id, debit: "50"}, %{account_id: income.id, credit: "50"}])
+
+      assert {:error, changeset} = Ledger.update_account(poster, 73, cash.id, %{active: false})
+
+      assert %{
+               active: [
+                 "account 1000 has a balance of 50.00; it can be deactivated once its balance is zero"
+               ]
+             } = errors_on(changeset)
+
+      assert {:error, changeset} = Ledger.update_account(poster, 73, income.id, %{active: false})
+      assert %{active: ["account 4000 has a balance of 50.00; " <> _]} = errors_on(changeset)
+
+      # Other changes are unaffected while the balance stands.
+      assert {:ok, %{name: "Renamed", active: true}} =
+               Ledger.update_account(poster, 73, cash.id, %{name: "Renamed"})
+
+      {:ok, _} =
+        post.([%{account_id: cash.id, credit: "50"}, %{account_id: income.id, debit: "50"}])
+
+      assert {:ok, %{active: false}} =
+               Ledger.update_account(poster, 73, cash.id, %{active: false})
+
+      assert {:ok, %{active: false}} =
+               Ledger.update_account(poster, 73, income.id, %{active: false})
+
+      assert {:ok, %{active: true}} = Ledger.update_account(poster, 73, cash.id, %{active: true})
     end
 
     test "lists accounts by code and only the company's own", %{operator: operator} = context do

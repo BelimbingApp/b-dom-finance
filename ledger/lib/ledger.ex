@@ -165,6 +165,12 @@ defmodule Bilimbi.Finance.Ledger do
   `retained_earnings` designation. Its code and type never change. A
   deactivated account takes no new postings; its history and reversals of it
   stay.
+
+  An account is deactivated only once its balance (all its posted debits
+  less all its credits) is zero: with a balance, the changeset's `active`
+  error names the account and the balance, so what is still owed on or by
+  an account is never left where nothing can be posted against it.
+  Reactivating, and every other change, is unaffected.
   """
   @spec update_account(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :account_not_found | Changeset.t()}
@@ -179,6 +185,7 @@ defmodule Bilimbi.Finance.Ledger do
           account
           |> Account.update_changeset(attributes)
           |> validate_parent(scope, company_id)
+          |> validate_deactivation(scope, company_id)
           |> save_account(scope, company_id, &Repo.update/1)
       end
     end)
@@ -1281,6 +1288,36 @@ defmodule Bilimbi.Finance.Ledger do
 
   # One account carries the retained-earnings designation: designating
   # another releases the current one first, in the same transaction.
+  defp validate_deactivation(changeset, scope, company_id) do
+    with false <- Changeset.get_change(changeset, :active),
+         balance = account_balance(scope, company_id, changeset.data.id),
+         false <- Decimal.eq?(balance, 0) do
+      %Book{minor_units: minor_units} = book(scope, company_id)
+      shown = balance |> Decimal.abs() |> Decimal.round(minor_units) |> Decimal.to_string(:normal)
+
+      Changeset.add_error(
+        changeset,
+        :active,
+        "account #{changeset.data.code} has a balance of #{shown}; " <>
+          "it can be deactivated once its balance is zero"
+      )
+    else
+      _no_problem -> changeset
+    end
+  end
+
+  defp account_balance(scope, company_id, account_id) do
+    {debits, credits} =
+      from(l in lines_query(scope),
+        where: l.company_id == ^company_id and l.account_id == ^account_id,
+        select:
+          {type(coalesce(sum(l.debit), 0), :decimal), type(coalesce(sum(l.credit), 0), :decimal)}
+      )
+      |> Repo.one()
+
+    Decimal.sub(debits, credits)
+  end
+
   defp save_account(changeset, scope, company_id, save) do
     with :ok <- release_designation(changeset, scope, company_id) do
       changeset |> save.() |> public_result(&account_view/1)

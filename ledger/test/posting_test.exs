@@ -323,6 +323,7 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
     end
 
     test "reverses into an account deactivated since", context do
+      {:ok, _} = post(context, [debit(context.income, "40"), credit(context.cash, "40")])
       {:ok, _} = Ledger.update_account(context.operator, 73, context.income.id, %{active: false})
 
       assert {:ok, %{reverses_entry_id: id}} =

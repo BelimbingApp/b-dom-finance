@@ -79,8 +79,13 @@ An account has a code unique in the company, a name, one of five types
 optional parent of the same type in the same company for grouping, and an
 active flag. Code and type never change once created, and an account is never
 deleted: deactivate it instead. A deactivated account takes no new postings,
-but its history stays and reversals of entries that used it still post. The
-code ships no account list; a company's chart is its own data.
+but its history stays and reversals of entries that used it still post. An
+account can be deactivated only once its balance (its posted debits less its
+credits) is zero; otherwise `update_account/4` returns a changeset whose
+`active` error names the account and its balance, so an account that still
+holds a balance, such as receivables an invoice still owes, cannot be left
+where nothing can be posted against it. The code ships no account list; a
+company's chart is its own data.
 
 `retained_earnings: true` designates the one equity account the year-end
 close moves profit into. Which account that is, like its code and name, is

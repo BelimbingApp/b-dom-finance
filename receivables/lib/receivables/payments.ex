@@ -44,7 +44,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
         |> LedgerAccounts.validate(accounts, :deposit_account_id, "asset")
         |> validate_customer(scope, company_id)
         |> put_series_number(scope, company_id)
-        |> put_allocations(scope, company_id, attributes, book.minor_units)
+        |> put_allocations(scope, company_id, attributes, book.minor_units, accounts)
 
       with {:ok, changeset} <- valid(changeset),
            {:ok, entry} <-
@@ -113,9 +113,10 @@ defmodule Bilimbi.Finance.Receivables.Payments do
   end
 
   # Each allocation names a distinct issued invoice of the payment's
-  # customer, dated on or before the payment, for no more than it owes; the
-  # allocations add up to the payment's amount.
-  defp put_allocations(changeset, scope, company_id, attributes, minor_units) do
+  # customer, dated on or before the payment, for no more than it owes, whose
+  # recorded receivable account can still be posted to; the allocations add
+  # up to the payment's amount.
+  defp put_allocations(changeset, scope, company_id, attributes, minor_units, accounts) do
     allocations =
       attributes
       |> Records.fetch(:allocations)
@@ -161,7 +162,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
               "is allocated twice"
 
             %Document{customer_id: ^customer_id} = invoice ->
-              invoice_problem(invoice, allocation, owed, payment_date)
+              invoice_problem(invoice, allocation, owed, payment_date, accounts)
 
             _other ->
               "is not an issued invoice of this customer"
@@ -179,7 +180,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
     |> validate_allocated(checked)
   end
 
-  defp invoice_problem(invoice, allocation, owed, payment_date) do
+  defp invoice_problem(invoice, allocation, owed, payment_date, accounts) do
     amount = Changeset.get_field(allocation, :amount)
 
     cond do
@@ -188,6 +189,9 @@ defmodule Bilimbi.Finance.Receivables.Payments do
 
       amount && Decimal.gt?(amount, Map.fetch!(owed, invoice.id)) ->
         "owes less than the allocated amount"
+
+      problem = LedgerAccounts.problem(accounts, invoice.receivable_account_id, "asset") ->
+        "#{invoice.document_reference} cannot be settled: its receivable account #{problem}"
 
       true ->
         nil
