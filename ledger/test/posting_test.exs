@@ -158,6 +158,24 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
                errors_on(changeset)
     end
 
+    test "an account with a balance cannot be deactivated until it is settled", context do
+      %{operator: operator, cash: cash, equity: equity, income: income} = context
+      {:ok, _} = post(context, [debit(cash, "40"), credit(income, "40")])
+
+      assert {:error, changeset} =
+               Ledger.update_account(operator, 73, income.id, %{active: false})
+
+      assert %{active: ["account 4000 has a balance of 40.00; " <> _]} = errors_on(changeset)
+
+      assert {:ok, %{name: "Renamed", active: true}} =
+               Ledger.update_account(operator, 73, income.id, %{name: "Renamed"})
+
+      {:ok, _} = post(context, [debit(income, "40"), credit(equity, "40")])
+
+      assert {:ok, %{active: false}} =
+               Ledger.update_account(operator, 73, income.id, %{active: false})
+    end
+
     test "needs an open book and the posting grant", context do
       %{first_scope: system, cash: cash, income: income} = context
       clerk = TestFixtures.sign_in!(system, 74, 92, [@manage, @post])
@@ -354,8 +372,9 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
     end
 
     test "reverses into an account deactivated since", context do
-      {:ok, _} = post(context, [debit(context.income, "40"), credit(context.cash, "40")])
-      {:ok, _} = Ledger.update_account(context.operator, 73, context.income.id, %{active: false})
+      %{equity: equity, income: income} = context
+      {:ok, _} = post(context, [debit(income, "40"), credit(equity, "40")])
+      {:ok, _} = Ledger.update_account(context.operator, 73, income.id, %{active: false})
 
       assert {:ok, %{reverses_entry_id: id}} =
                reverse(context, context.original.id, ~D[2026-10-05])

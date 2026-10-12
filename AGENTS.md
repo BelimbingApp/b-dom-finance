@@ -59,14 +59,17 @@ here; they govern this code and are not copied here.
   as the head of a pipe: Bilimbi's `TenantScopeGateTest` reads a piped string
   literal as an unscoped query over that tenant-owned table.
 - Module tests run against temporary tables in each module's
-  `test/support/test_fixtures.ex`, not its migrations. Mirror a migration's
-  constraints and triggers there, or a test that makes PostgreSQL refuse
-  proves nothing; a migration's public `functions/1` (the closing migration's)
+  `test/support/test_fixtures.ex`, not its migrations. Build them from the
+  migration's own SQL, as `payables/` does with `statements(temporary: true)`,
+  rather than a hand-kept copy that can drift: a test that makes PostgreSQL
+  refuse proves nothing unless the constraints and triggers are the
+  migration's. A migration's public `functions/1` (the closing migration's)
   lets fixtures create its trigger functions in `pg_temp.` instead of copying
-  them. The sandbox never commits, so a deferred trigger runs only
-  after `check_deferred_constraints!/0`, and TRUNCATE with pending trigger
-  events fails for that reason rather than the trigger's; prove those in the
-  fresh-database contract test.
+  them. The sandbox never commits and runs each test in one transaction, so a
+  deferred trigger runs only after `check_deferred_constraints!/0`, a rule
+  about a later transaction never fires, and TRUNCATE with pending trigger
+  events fails for its own reason; prove those in the fresh-database contract
+  test.
 - A test that installs a contribution snapshot is `async: false`: the
   snapshot is process-global.
 - Mount a real copy (clone or `rsync`), not a symlink: `mix.exs` locates the
