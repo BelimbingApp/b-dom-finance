@@ -321,6 +321,15 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     |> String.slice(0, 300)
   end
 
+  defp failure_message({:transient, message}),
+    do: String.slice("a database failure, tried twice: " <> message, 0, 300)
+
+  defp failure_message(reason) when is_binary(reason), do: String.slice(reason, 0, 300)
+  defp failure_message(:unauthorized), do: "the actor may not post to the ledger"
+  defp failure_message(:book_not_open), do: "the company's book is not open"
+  defp failure_message(:company_archived), do: "the company is archived"
+  defp failure_message(reason), do: reason |> inspect() |> String.slice(0, 300)
+
   defp error_lines(errors, path) when is_map(errors) do
     errors
     |> Enum.sort()
@@ -337,13 +346,4 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
       error_lines(error, List.update_at(path, -1, &"#{&1}[#{index}]"))
     end)
   end
-
-  defp failure_message({:transient, message}),
-    do: String.slice("a database failure, tried twice: " <> message, 0, 300)
-
-  defp failure_message(reason) when is_binary(reason), do: String.slice(reason, 0, 300)
-  defp failure_message(:unauthorized), do: "the actor may not post to the ledger"
-  defp failure_message(:book_not_open), do: "the company's book is not open"
-  defp failure_message(:company_archived), do: "the company is archived"
-  defp failure_message(reason), do: reason |> inspect() |> String.slice(0, 300)
 end

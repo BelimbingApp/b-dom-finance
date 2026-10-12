@@ -176,7 +176,15 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
       assert {:error, :book_not_open} = Posting.attempt(fun)
       assert length(Agent.get(calls, & &1)) == 1
 
-      unique = %Postgrex.Error{postgres: %{code: :unique_violation, message: "duplicate"}}
+      unique = %Postgrex.Error{
+        postgres: %{
+          code: :unique_violation,
+          pg_code: "23505",
+          severity: "ERROR",
+          message: "duplicate"
+        }
+      }
+
       {fun, _calls} = counted([fn -> raise unique end, fn -> flunk("second") end])
       assert_raise Postgrex.Error, fn -> Posting.attempt(fun) end
     end

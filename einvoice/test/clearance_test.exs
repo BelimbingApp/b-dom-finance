@@ -734,7 +734,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
           })
       })
 
-      assert {:ok, %{status: "rejected", attention: [:rejection_requested]}} =
+      assert {:ok, %{status: "rejected", attention: [:rejection_requested, :unposted]}} =
                Einvoice.refresh_status(op, 73, document.id)
 
       assert [_, _, _, _, {"rejected", %{reason: "Wrong quantity"}}] = events(op, document)
