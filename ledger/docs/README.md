@@ -18,7 +18,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, or `active` |
 | `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
-| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines |
+| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, and `after` |
 | `trial_balance/3` | `finance.ledger.view` | Per-account totals and balances as of a date |
 
 ## Authorization and company scope
@@ -79,6 +79,12 @@ reversed at most once and a reversal is not itself reversed, so a correction
 is a reversal plus a new entry. `get_entry/3` shows `reversed_by_entry_id` on
 a reversed entry. There are no draft entries in this slice.
 
+`list_entries/3` orders entries by date and then ID. `limit` is a positive
+integer (default 100, at most 500). To page past it, pass `after:
+{entry_date, id}` from the last entry returned, and stop when fewer than
+`limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
+shape is `{:error, :invalid_option}`.
+
 ## Trial balance
 
 `trial_balance/3` lists every account with a posting dated on or before
@@ -100,6 +106,8 @@ checks, so no other writer can break them:
   trigger refuses a commit in which an entry has no lines or does not balance;
 - triggers refuse UPDATE, DELETE, and TRUNCATE on books, entries, and lines,
   and refuse deleting an account or changing its company, code, or type;
+- a trigger refuses a line whose entry was inserted in an earlier transaction,
+  so a posted entry's lines stay fixed;
 - a partial unique index allows one reversal per entry.
 
 `Bilimbi.Finance.Ledger.SchemaContract` describes the tables but is not

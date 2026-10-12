@@ -181,6 +181,51 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
 
       assert {:ok, [_one]} = Ledger.list_entries(operator, 73, limit: 1)
     end
+
+    test "pages past the limit with a cursor, reading every entry once", context do
+      %{operator: operator, cash: cash, income: income} = context
+      lines = [debit(cash, "1"), credit(income, "1")]
+
+      posted =
+        for date <- List.duplicate(~D[2026-10-01], 5) ++ [~D[2026-10-02], ~D[2026-10-02]] do
+          {:ok, entry} =
+            Ledger.post_entry(operator, 73, %{entry([]) | entry_date: date, lines: lines})
+
+          entry.id
+        end
+
+      page = fn cursor ->
+        {:ok, entries} = Ledger.list_entries(operator, 73, limit: 3, after: cursor)
+        entries
+      end
+
+      first = page.(nil)
+      second = page.({List.last(first).entry_date, List.last(first).id})
+      third = page.({List.last(second).entry_date, List.last(second).id})
+      fourth = page.({List.last(third).entry_date, List.last(third).id})
+
+      assert Enum.map([first, second, third], &length/1) == [3, 3, 1]
+      assert fourth == []
+      assert Enum.map(first ++ second ++ third, & &1.id) == posted
+    end
+
+    test "refuses a malformed option instead of raising", context do
+      %{operator: operator} = context
+
+      for option <- [
+            [limit: "10"],
+            [limit: 0],
+            [limit: 2.5],
+            [limit: nil],
+            [from: "2026-10-01"],
+            [to: 20_261_001],
+            [after: ~D[2026-10-01]],
+            [after: {"2026-10-01", 1}],
+            [after: {~D[2026-10-01], "1"}]
+          ] do
+        assert {:error, :invalid_option} = Ledger.list_entries(operator, 73, option)
+      end
+    end
   end
 
   describe "reversal" do

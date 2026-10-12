@@ -7,7 +7,9 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
   `(id, company_id)` foreign keys, so a line cannot name another company's
   account or entry. A book, an entry, and its lines are append-only: a
   trigger refuses UPDATE, DELETE, and TRUNCATE, so a posted entry is
-  corrected by a reversing entry. An account is never deleted and keeps its
+  corrected by a reversing entry. A line can only be inserted in the
+  transaction that inserts its entry, so a later transaction cannot add
+  lines to a posted entry. An account is never deleted and keeps its
   code and type; its name, parent, and active flag may change. A deferred
   constraint trigger refuses a commit in which an entry has no lines or its
   debits and credits differ.
@@ -232,6 +234,33 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
     """)
 
     execute("""
+    CREATE FUNCTION finance_ledger_refuse_posted_line() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM finance_ledger_entries
+        WHERE id = NEW.entry_id
+          AND pg_xact_status(
+                ((pg_current_xact_id()::text::bigint >> 32 << 32) | xmin::text::bigint)::text::xid8
+              ) <> 'in progress'
+      ) THEN
+        RAISE EXCEPTION 'journal entry % is already posted: a line cannot be added; post a reversing entry',
+          NEW.entry_id
+          USING ERRCODE = 'restrict_violation';
+      END IF;
+
+      RETURN NEW;
+    END
+    $$
+    """)
+
+    execute("""
+    CREATE TRIGGER finance_ledger_entry_lines_posted_entry
+      BEFORE INSERT ON finance_ledger_entry_lines
+      FOR EACH ROW EXECUTE FUNCTION finance_ledger_refuse_posted_line()
+    """)
+
+    execute("""
     CREATE FUNCTION finance_ledger_check_balance() RETURNS trigger
     LANGUAGE plpgsql AS $$
     DECLARE
@@ -275,6 +304,7 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
     drop table(:finance_ledger_accounts)
     drop table(:finance_ledger_books)
     execute("DROP FUNCTION finance_ledger_check_balance()")
+    execute("DROP FUNCTION finance_ledger_refuse_posted_line()")
     execute("DROP FUNCTION finance_ledger_accounts_keep_identity()")
     execute("DROP FUNCTION finance_ledger_refuse_change()")
   end

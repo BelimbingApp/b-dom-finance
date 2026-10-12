@@ -47,7 +47,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   # where the deferred balance check runs at commit. A refused commit
   # disconnects, which Postgrex logs; the log is expected.
   @tag :capture_log
-  test "the migration's triggers keep entries balanced and append-only", %{repo: repo} do
+  test "the migration's triggers keep entries balanced, append-only, and closed", %{repo: repo} do
     Repo.put_dynamic_repo(repo)
     query! = fn sql -> SQL.query!(repo, sql, []) end
 
@@ -77,6 +77,18 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
 
     assert_raise Postgrex.Error, ~r/has no lines/, fn -> in_transaction.([entry.(3)]) end
 
+    assert_raise Postgrex.Error, ~r/already posted/, fn ->
+      in_transaction.([line.(1, 3, 1, 5, 0), line.(1, 4, 2, 0, 5)])
+    end
+
+    assert {:ok, _} =
+             in_transaction.([
+               entry.(4),
+               line.(4, 1, 1, 10, 0),
+               line.(4, 2, 2, 0, 4),
+               line.(4, 3, 2, 0, 6)
+             ])
+
     for sql <- [
           "UPDATE finance_ledger_entries SET description = 'x'",
           "DELETE FROM finance_ledger_entry_lines",
@@ -91,6 +103,6 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       query!.("UPDATE finance_ledger_accounts SET code = '9' WHERE id = 1")
     end
 
-    assert %{rows: [[2]]} = query!.("SELECT count(*) FROM finance_ledger_entry_lines")
+    assert %{rows: [[5]]} = query!.("SELECT count(*) FROM finance_ledger_entry_lines")
   end
 end

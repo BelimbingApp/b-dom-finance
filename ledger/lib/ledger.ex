@@ -24,7 +24,8 @@ defmodule Bilimbi.Finance.Ledger do
   their credits, every line names an active account of the company, and the
   book is open. A posted entry is never edited or deleted; `reverse_entry/4`
   posts its mirror image, once. The database refuses the same things on its
-  own (see the migration), so no other writer can break them either.
+  own, including adding a line to an entry posted in an earlier transaction
+  (see the migration), so no other writer can break them either.
 
   Results are plain maps; the schemas stay private to this module.
   """
@@ -243,21 +244,25 @@ defmodule Bilimbi.Finance.Ledger do
   end
 
   @doc """
-  Posted entries with their lines, oldest entry date first. Options: `from`
-  and `to` dates (inclusive) and `limit` (default #{@default_entry_limit},
-  at most #{@max_entry_limit}).
+  Posted entries with their lines, ordered by entry date and then ID.
+  Options: `from` and `to` dates (inclusive), `limit` (a positive integer,
+  default #{@default_entry_limit}, capped at #{@max_entry_limit}), and
+  `after`, the `{entry_date, id}` of the last entry already read, which
+  returns only the entries after it, so a caller pages by passing the last
+  returned entry's date and ID until fewer than `limit` entries come back.
+  A malformed option is `{:error, :invalid_option}`.
   """
-  @spec list_entries(Scope.t(), term(), keyword()) :: {:ok, [map()]} | {:error, refusal()}
+  @spec list_entries(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
   def list_entries(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
-    with :ok <- authorize(scope, company_id, @view) do
-      limit =
-        options |> Keyword.get(:limit, @default_entry_limit) |> min(@max_entry_limit) |> max(1)
-
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, limit, from, to, cursor} <- entry_options(options) do
       entries =
         scope
         |> entries_query(company_id)
-        |> date_bound(:from, Keyword.get(options, :from))
-        |> date_bound(:to, Keyword.get(options, :to))
+        |> date_bound(:from, from)
+        |> date_bound(:to, to)
+        |> after_cursor(cursor)
         |> order_by([e], asc: e.entry_date, asc: e.id)
         |> limit(^limit)
         |> preload(lines: ^ordered_lines(scope))
@@ -267,6 +272,24 @@ defmodule Bilimbi.Finance.Ledger do
       {:ok, Enum.map(entries, &entry_view(&1, reversals))}
     end
   end
+
+  defp entry_options(options) do
+    limit = Keyword.get(options, :limit, @default_entry_limit)
+    from = Keyword.get(options, :from)
+    to = Keyword.get(options, :to)
+    cursor = Keyword.get(options, :after)
+
+    if is_integer(limit) and limit > 0 and optional_date?(from) and optional_date?(to) and
+         valid_cursor?(cursor),
+       do: {:ok, min(limit, @max_entry_limit), from, to, cursor},
+       else: {:error, :invalid_option}
+  end
+
+  defp optional_date?(value), do: is_nil(value) or match?(%Date{}, value)
+
+  defp valid_cursor?(nil), do: true
+  defp valid_cursor?({%Date{}, id}), do: is_integer(id)
+  defp valid_cursor?(_cursor), do: false
 
   ## Trial balance
 
@@ -528,6 +551,11 @@ defmodule Bilimbi.Finance.Ledger do
   defp date_bound(query, _bound, nil), do: query
   defp date_bound(query, :from, %Date{} = date), do: where(query, [e], e.entry_date >= ^date)
   defp date_bound(query, :to, %Date{} = date), do: where(query, [e], e.entry_date <= ^date)
+
+  defp after_cursor(query, nil), do: query
+
+  defp after_cursor(query, {date, id}),
+    do: where(query, [e], e.entry_date > ^date or (e.entry_date == ^date and e.id > ^id))
 
   defp fetch(attributes, key), do: Map.get(attributes, key, Map.get(attributes, to_string(key)))
 

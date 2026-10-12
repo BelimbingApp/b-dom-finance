@@ -201,6 +201,26 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
       $$
       """,
       """
+      CREATE FUNCTION pg_temp.finance_ledger_refuse_posted_line() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM finance_ledger_entries
+          WHERE id = NEW.entry_id
+            AND pg_xact_status(
+                  ((pg_current_xact_id()::text::bigint >> 32 << 32) | xmin::text::bigint)::text::xid8
+                ) <> 'in progress'
+        ) THEN
+          RAISE EXCEPTION 'journal entry % is already posted: a line cannot be added; post a reversing entry',
+            NEW.entry_id
+            USING ERRCODE = 'restrict_violation';
+        END IF;
+
+        RETURN NEW;
+      END
+      $$
+      """,
+      """
       CREATE FUNCTION pg_temp.finance_ledger_check_balance() RETURNS trigger
       LANGUAGE plpgsql AS $$
       DECLARE
@@ -226,6 +246,10 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
         RETURN NULL;
       END
       $$
+      """,
+      """
+      CREATE TRIGGER finance_ledger_entry_lines_posted_entry BEFORE INSERT ON finance_ledger_entry_lines
+        FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_refuse_posted_line()
       """,
       """
       CREATE TRIGGER finance_ledger_accounts_kept BEFORE DELETE ON finance_ledger_accounts
