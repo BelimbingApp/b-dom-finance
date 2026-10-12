@@ -100,9 +100,12 @@ twice. `total_debit` equals `total_credit` because every entry balances.
 
 The result names `through_entry_number`, the last entry it counts. An entry
 posted later with an earlier date changes the figures for that date, so a
-report is reproduced exactly by passing the same `as_of` and its
+report's debit and credit figures (each row's totals and balance, and the
+totals) reproduce exactly by passing the same `as_of` and its
 `through_entry_number`: posted entries never change and are numbered in
-posting order. Closing a period against back-dated postings is later work.
+posting order. Account names, parents, and active flags are read as they are
+now. Closing a period against back-dated postings is
+later work.
 
 ## Database
 
@@ -141,12 +144,13 @@ accounts are held to. What this slice covers:
   its lines are fixed once posted. The facade and PostgreSQL both enforce
   this (see Database).
 - **Audit trail.** Every entry records who posted it (and any impersonator),
-  when the database committed it, and its gapless book sequence number. A
+  when the database recorded it, and its gapless book sequence number. A
   correction is a reversing entry that names the original, and the original
   reports the entry that reversed it, so the trail runs both ways and nothing
   is overwritten. Opening a book and every account change are Repo writes,
   which Base Audit records with their actor in the composed host (ADR 0013).
-  Any past trial balance reproduces exactly from its `through_entry_number`.
+  Any past trial balance's debit and credit figures reproduce exactly from its
+  `through_entry_number`.
 - **Retention.** Nothing posted is ever deleted: the database refuses DELETE
   and TRUNCATE on books, entries, and lines, refuses deleting an account, and
   unmounting Finance keeps every row. Records therefore outlive any statutory

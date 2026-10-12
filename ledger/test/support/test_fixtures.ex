@@ -156,7 +156,7 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
         NEW.entry_number := COALESCE(
           (SELECT max(entry_number) FROM finance_ledger_entries
            WHERE company_id = NEW.company_id), 0) + 1;
-        NEW.posted_at := now() AT TIME ZONE 'UTC';
+        NEW.posted_at := clock_timestamp() AT TIME ZONE 'UTC';
         RETURN NEW;
       END
       $$

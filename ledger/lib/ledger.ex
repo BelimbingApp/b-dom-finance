@@ -307,8 +307,9 @@ defmodule Bilimbi.Finance.Ledger do
   The result names `through_entry_number`, the last entry number it counts.
   An entry posted later with an earlier date changes the figures for that
   date, so passing the same `as_of` and `through_entry_number: n` reproduces
-  an earlier report exactly: entries are numbered in posting order and never
-  change. A malformed option is `{:error, :invalid_option}`.
+  an earlier report's debit and credit figures (row totals and balances, and
+  the totals) exactly: entries are numbered in posting order and never
+  change. Account names, parents, and active flags are read as they are now. A malformed option is `{:error, :invalid_option}`.
   """
   @spec trial_balance(Scope.t(), term(), Date.t(), keyword()) ::
           {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
