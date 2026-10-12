@@ -450,7 +450,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def close_period(%Scope{} = scope, company_id, period_id, attributes \\ %{})
       when is_map(attributes) do
-    write(scope, company_id, [@manage_periods, @post_entries], fn ->
+    write(scope, company_id, @manage_periods, fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, period} <- find_period(state, period_id),
@@ -480,7 +480,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def reopen_period(%Scope{} = scope, company_id, period_id, attributes)
       when is_map(attributes) do
-    write(scope, company_id, [@reopen_periods, @post_entries], fn ->
+    write(scope, company_id, @reopen_periods, fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, period} <- find_period(state, period_id),
