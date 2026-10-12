@@ -1,7 +1,7 @@
 defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
   @moduledoc """
-  Accounts payable: each company's payables settings and tax codes, its
-  documents from parties (bills and debit notes) with their lines and tax
+  Accounts payable: each company's payables settings and tax codes, the
+  history of changes to both, its documents from parties (bills and debit notes) with their lines and tax
   lines, and its payments with their allocations to bills.
 
   Bilimbi-only. Rows of one company reference each other through composite
@@ -16,7 +16,10 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
   posted; a trigger refuses any other change, stamps each step's time, and
   numbers each company's posted documents of a type without gaps. Payments
   and allocations are append-only and numbered the same way; a payment is
-  corrected by a reversing payment. Nothing is ever deleted or truncated.
+  corrected by a reversing payment. A change to the settings or a tax code is
+  recorded in the same transaction, with who made it, why, and the values
+  before and after; those records are append-only too. Nothing is ever
+  deleted or truncated.
 
   `statements/1` is the one source of this schema: the migration runs it, and
   module tests run it with `temporary: true` to build temporary copies.
@@ -27,6 +30,8 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
   @tables ~w(
     finance_payables_settings
     finance_payables_tax_codes
+    finance_payables_settings_changes
+    finance_payables_tax_code_changes
     finance_payables_documents
     finance_payables_document_lines
     finance_payables_document_tax_lines
@@ -37,6 +42,7 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
   @functions ~w(
     finance_payables_refuse_change
     finance_payables_keep_identity
+    finance_payables_stamp_change
     finance_payables_document_recorded
     finance_payables_document_transition
     finance_payables_refuse_closed_line
@@ -112,6 +118,57 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
       """
       CREATE INDEX finance_payables_tax_codes_tenant_id_company_id_index
         ON finance_payables_tax_codes (tenant_id, company_id)
+      """,
+      # The settings and tax codes above change in place, so each change also
+      # lands here, never altered: the actor, the reason, the values before
+      # (none when first set) and after, and the database's time.
+      """
+      CREATE #{table} finance_payables_settings_changes (
+        id bigserial PRIMARY KEY,
+        tenant_id bigint NOT NULL,
+        company_id bigint NOT NULL,
+        old_payable_account_id bigint,
+        new_payable_account_id bigint NOT NULL,
+        reason varchar(500),
+        changed_by_user_id bigint NOT NULL,
+        changed_by_impersonator_id bigint,
+        changed_at timestamp(6) NOT NULL
+      )
+      """,
+      """
+      CREATE INDEX finance_payables_settings_changes_tenant_id_company_id_index
+        ON finance_payables_settings_changes (tenant_id, company_id)
+      """,
+      """
+      CREATE #{table} finance_payables_tax_code_changes (
+        id bigserial PRIMARY KEY,
+        tenant_id bigint NOT NULL,
+        company_id bigint NOT NULL,
+        tax_code_id bigint NOT NULL,
+        old_name varchar(200),
+        new_name varchar(200) NOT NULL,
+        old_rate numeric(7, 4),
+        new_rate numeric(7, 4) NOT NULL,
+        old_account_id bigint,
+        new_account_id bigint NOT NULL,
+        old_active boolean,
+        new_active boolean NOT NULL,
+        reason varchar(500),
+        changed_by_user_id bigint NOT NULL,
+        changed_by_impersonator_id bigint,
+        changed_at timestamp(6) NOT NULL,
+        CONSTRAINT finance_payables_tax_code_changes_tax_code_fkey
+          FOREIGN KEY (tax_code_id, company_id)
+          REFERENCES finance_payables_tax_codes (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_payables_tax_code_changes_before
+          CHECK ((old_name IS NULL) = (old_rate IS NULL)
+            AND (old_name IS NULL) = (old_account_id IS NULL)
+            AND (old_name IS NULL) = (old_active IS NULL))
+      )
+      """,
+      """
+      CREATE INDEX finance_payables_tax_code_changes_tenant_id_company_id_index
+        ON finance_payables_tax_code_changes (tenant_id, company_id)
       """,
       # A draft carries no approval, posting, or void; each later status
       # carries its own step's actor and time.
@@ -396,6 +453,15 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
       $$
       """,
       """
+      CREATE FUNCTION #{prefix}finance_payables_stamp_change() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        NEW.changed_at := clock_timestamp() AT TIME ZONE 'UTC';
+        RETURN NEW;
+      END
+      $$
+      """,
+      """
       CREATE FUNCTION #{prefix}finance_payables_document_recorded() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
@@ -621,6 +687,8 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
 
     append_only =
       for table <- ~w(
+            finance_payables_settings_changes
+            finance_payables_tax_code_changes
             finance_payables_document_lines
             finance_payables_document_tax_lines
             finance_payables_payments
@@ -651,6 +719,12 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
           "FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_payables_keep_identity()"
       end
 
+    stamped_changes =
+      for table <- ~w(finance_payables_settings_changes finance_payables_tax_code_changes) do
+        "CREATE TRIGGER #{table}_stamp BEFORE INSERT ON #{table} " <>
+          "FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_payables_stamp_change()"
+      end
+
     closed_lines =
       for table <- ~w(finance_payables_document_lines finance_payables_document_tax_lines) do
         "CREATE TRIGGER #{table}_open_document BEFORE INSERT ON #{table} " <>
@@ -679,6 +753,7 @@ defmodule Bilimbi.Finance.Payables.Migrations.CreatePayables do
       kept ++
       no_truncate ++
       identity ++
+      stamped_changes ++
       closed_lines ++
       checked_documents ++
       checked_payments ++

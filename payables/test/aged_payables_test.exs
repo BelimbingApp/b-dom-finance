@@ -115,6 +115,48 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
     assert amounts([aged(context, ~D[2026-11-05]).total]) == ["175"]
   end
 
+  test "lists a bill owed less than nothing as an exception that keeps the total whole",
+       context do
+    %{operator: operator, accounts: accounts} = context
+    bill = post_bill!(context, bill("P-3", "X", [line(accounts.expense, "100")]))
+
+    {:ok, payment} =
+      Payables.post_payment(operator, 73, %{
+        payment_date: ~D[2026-10-10],
+        party_key: "P-3",
+        paid_from_account_id: accounts.bank.id,
+        allocations: [%{document_id: bill.id, amount: "100"}]
+      })
+
+    {:ok, _} = Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-11-01]})
+
+    {:ok, note} =
+      Payables.create_debit_note(operator, 73, bill.id, %{
+        document_date: ~D[2026-10-05],
+        lines: [line(accounts.expense, "100")]
+      })
+
+    {:ok, _} = Payables.approve_document(operator, 73, note.id)
+    {:ok, _} = Payables.post_document(operator, 73, note.id)
+
+    report = aged(context, ~D[2026-10-20])
+    bill_id = bill.id
+
+    assert [%{id: ^bill_id, party_key: "P-3", party_document_number: "X", outstanding: owed}] =
+             report.exceptions
+
+    assert amounts([owed, report.exceptions_total]) == ["-100", "-100"]
+    refute Enum.any?(report.parties, &(&1.party_key == "P-3"))
+
+    {:ok, trial_balance} = Ledger.trial_balance(operator, 73, ~D[2026-10-20])
+    payable_id = accounts.payable.id
+    assert %{credit_balance: held} = Enum.find(trial_balance.rows, &(&1.id == payable_id))
+    assert Decimal.equal?(Decimal.add(report.total, report.exceptions_total), held)
+
+    assert %{exceptions: [], exceptions_total: zero} = aged(context, ~D[2026-11-05])
+    assert amounts([zero]) == ["0"]
+  end
+
   test "takes the company's own bucket boundaries", context do
     report = aged(context, ~D[2026-11-01], bucket_days: [45])
 

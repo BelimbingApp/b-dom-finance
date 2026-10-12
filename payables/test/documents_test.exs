@@ -467,6 +467,38 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       assert {:error, :exceeds_outstanding} = Payables.post_document(operator, 73, second.id)
     end
 
+    test "cannot take a bill below nothing on their date, though it is owed now", context do
+      %{operator: operator, bill: bill, accounts: accounts} = context
+      note = %{document_date: ~D[2026-10-10], lines: [line(accounts.expense, "10")]}
+      {:ok, draft} = Payables.create_debit_note(operator, 73, bill.id, note)
+      {:ok, _} = Payables.approve_document(operator, 73, draft.id)
+
+      {:ok, payment} =
+        Payables.post_payment(operator, 73, %{
+          payment_date: ~D[2026-10-05],
+          party_key: "P-1",
+          paid_from_account_id: accounts.bank.id,
+          allocations: [%{document_id: bill.id, amount: "108"}]
+        })
+
+      {:ok, _} =
+        Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-10-20]})
+
+      assert {:ok, %{outstanding: owed}} = Payables.get_document(operator, 73, bill.id)
+      assert decimal?(owed, 108)
+
+      assert {:error, :exceeds_outstanding} =
+               Payables.create_debit_note(operator, 73, bill.id, note)
+
+      assert {:error, :exceeds_outstanding} = Payables.post_document(operator, 73, draft.id)
+
+      assert {:ok, _} =
+               Payables.create_debit_note(operator, 73, bill.id, %{
+                 note
+                 | document_date: ~D[2026-10-20]
+               })
+    end
+
     test "need a posted bill and a date not before it", context do
       %{operator: operator, bill: bill, accounts: accounts} = context
       lines = [line(accounts.expense, "1")]

@@ -28,7 +28,9 @@ defmodule Bilimbi.Finance.Payables do
   is never changed: a bill is corrected by a debit note against it. A payment
   is posted with its allocations to bills and corrected by its reversal.
   Nothing is deleted; the database refuses the same things on its own (see
-  the migration).
+  the migration). A change to the payable account or a tax code is recorded
+  with who made it, why, and the values before and after, and never altered
+  (`list_settings_changes/2`, `list_tax_code_changes/2`).
 
   Results are plain maps; the schemas stay private to this module.
   """
@@ -48,7 +50,9 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.DocumentLine
   alias Bilimbi.Finance.Payables.Payment
   alias Bilimbi.Finance.Payables.Settings
+  alias Bilimbi.Finance.Payables.SettingsChange
   alias Bilimbi.Finance.Payables.TaxCode
+  alias Bilimbi.Finance.Payables.TaxCodeChange
   alias Bilimbi.Finance.Payables.TaxLine
   alias Ecto.Changeset
 
@@ -119,21 +123,56 @@ defmodule Bilimbi.Finance.Payables do
   Sets `payable_account_id`, the active liability account a posted bill
   credits. A change applies to documents posted afterwards; each posted
   document keeps the account it posted to, and payments against it debit
-  that account.
+  that account. An optional `reason` is kept with the change in
+  `list_settings_changes/2`.
   """
   @spec put_settings(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | Changeset.t()}
   def put_settings(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
     write(scope, company_id, @manage_settings, fn ->
       with {:ok, accounts} <- ledger_accounts(scope, company_id) do
-        (settings(scope, company_id) ||
-           %Settings{tenant_id: Scope.tenant_id(scope), company_id: company_id})
-        |> Settings.changeset(attributes)
-        |> check_account(:payable_account_id, accounts, @payable_account_types)
+        previous = settings(scope, company_id)
+
+        changeset =
+          (previous || %Settings{tenant_id: Scope.tenant_id(scope), company_id: company_id})
+          |> Settings.changeset(attributes)
+          |> check_account(:payable_account_id, accounts, @payable_account_types)
+
+        changeset
         |> Repo.insert_or_update()
+        |> record_settings_change(scope, previous, changeset, attributes)
         |> public_result(&settings_view/1)
       end
     end)
+  end
+
+  @doc """
+  The changes made to the payable account, oldest first: `old_payable_account_id`
+  (nil the first time), `new_payable_account_id`, the optional `reason`, who
+  made it (`changed_by_user_id`, `changed_by_impersonator_id`), and
+  `changed_at`, the database's time.
+  """
+  @spec list_settings_changes(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
+  def list_settings_changes(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok,
+       from(c in Tenancy.scope_query(SettingsChange, scope),
+         where: c.company_id == ^company_id,
+         order_by: [asc: c.id]
+       )
+       |> Repo.all()
+       |> Enum.map(
+         &Map.take(&1, [
+           :id,
+           :old_payable_account_id,
+           :new_payable_account_id,
+           :reason,
+           :changed_by_user_id,
+           :changed_by_impersonator_id,
+           :changed_at
+         ])
+       )}
+    end
   end
 
   ## Tax codes
@@ -156,7 +195,8 @@ defmodule Bilimbi.Finance.Payables do
   percentage, at least zero, up to four decimal places), `account_id` (the
   active ledger account its tax is debited to), and optionally `active`.
   The code, rate, and account are a company's configuration; this module
-  ships none.
+  ships none. An optional `reason` is kept with the change in
+  `list_tax_code_changes/2`.
   """
   @spec create_tax_code(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | Changeset.t()}
@@ -167,6 +207,7 @@ defmodule Bilimbi.Finance.Payables do
         |> TaxCode.create_changeset(attributes)
         |> check_account(:account_id, accounts, :any)
         |> Repo.insert()
+        |> record_tax_code_change(scope, nil, true, attributes)
         |> public_result(&tax_code_view/1)
       end
     end)
@@ -175,7 +216,8 @@ defmodule Bilimbi.Finance.Payables do
   @doc """
   Changes a tax code's `name`, `rate`, `account_id`, or `active` flag; its
   code never changes. Documents already recorded keep the code, rate, and
-  account they copied.
+  account they copied. An optional `reason` is kept with the change in
+  `list_tax_code_changes/2`.
   """
   @spec update_tax_code(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :tax_code_not_found | Changeset.t()}
@@ -184,13 +226,54 @@ defmodule Bilimbi.Finance.Payables do
     write(scope, company_id, @manage_settings, fn ->
       with {:ok, tax_code} <- fetch_tax_code(scope, company_id, tax_code_id),
            {:ok, accounts} <- ledger_accounts(scope, company_id) do
-        tax_code
-        |> TaxCode.update_changeset(attributes)
-        |> check_account(:account_id, accounts, :any)
+        changeset =
+          tax_code
+          |> TaxCode.update_changeset(attributes)
+          |> check_account(:account_id, accounts, :any)
+
+        changeset
         |> Repo.update()
+        |> record_tax_code_change(scope, tax_code, changeset.changes != %{}, attributes)
         |> public_result(&tax_code_view/1)
       end
     end)
+  end
+
+  @doc """
+  The changes made to the company's tax codes, oldest first: the
+  `tax_code_id`, its `old_` and `new_` `name`, `rate`, `account_id`, and
+  `active` (the `old_` ones nil when the code was added), the optional
+  `reason`, who made the change (`changed_by_user_id`,
+  `changed_by_impersonator_id`), and `changed_at`, the database's time.
+  """
+  @spec list_tax_code_changes(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
+  def list_tax_code_changes(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok,
+       from(c in Tenancy.scope_query(TaxCodeChange, scope),
+         where: c.company_id == ^company_id,
+         order_by: [asc: c.id]
+       )
+       |> Repo.all()
+       |> Enum.map(
+         &Map.take(&1, [
+           :id,
+           :tax_code_id,
+           :old_name,
+           :new_name,
+           :old_rate,
+           :new_rate,
+           :old_account_id,
+           :new_account_id,
+           :old_active,
+           :new_active,
+           :reason,
+           :changed_by_user_id,
+           :changed_by_impersonator_id,
+           :changed_at
+         ])
+       )}
+    end
   end
 
   ## Documents
@@ -231,8 +314,9 @@ defmodule Bilimbi.Finance.Payables do
   credits back, taken off what the company owes on that bill. Attributes
   are `create_bill/3`'s without the party, which is copied from the bill;
   `party_document_number` is optional. Its date is not before the bill's,
-  and its total cannot exceed what is still owed on the bill
-  (`{:error, :exceeds_outstanding}`, checked again when it posts).
+  and its total cannot exceed what is still owed on the bill, now and as
+  of the debit note's date (`{:error, :exceeds_outstanding}`, checked again
+  when it posts).
   """
   @spec create_debit_note(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -422,7 +506,9 @@ defmodule Bilimbi.Finance.Payables do
   each `%{document_id, amount}` naming a posted bill of that party dated on
   or before the payment. The payment's amount is the allocations' total; an
   allocation cannot exceed what is still owed on its bill, so a bill may be
-  paid in parts. The ledger entry debits each bill's payable account and
+  paid in parts. It must also fit what was owed on the bill as of the payment's
+  date, so a later reversal of an earlier payment cannot leave the bill owed
+  less than nothing. The ledger entry debits each bill's payable account and
   credits the paid-from account.
   """
   @spec post_payment(Scope.t(), term(), map()) ::
@@ -591,6 +677,12 @@ defmodule Bilimbi.Finance.Payables do
   Every posted bill dated on or before `as_of` with something still owed
   counts, less its debit notes and the payments allocated to it that were
   dated on or before `as_of`; a payment reversed by then counts as unpaid.
+  A bill owed less than nothing on that date is never dropped: it is listed
+  in `exceptions` (with `outstanding` negative), outside the parties and
+  buckets, and `exceptions_total` is their sum. `total + exceptions_total`
+  is what the payable accounts hold for the bills as of the date. Posting
+  checks keep this empty by refusing a debit note or payment that would
+  leave a bill owed less than nothing, now or on its own date.
   Each party's rows list its bills with `days_overdue` (days past the due
   date) and `bucket`, the index of its column in `buckets`: column 0 is not
   yet due, column `i` is overdue up to `bucket_days[i - 1]` days, and the
@@ -659,6 +751,62 @@ defmodule Bilimbi.Finance.Payables do
 
   defp public_result({:ok, record}, view), do: {:ok, view.(record)}
   defp public_result(error, _view), do: error
+
+  # A settings or tax code change is kept in the transaction that makes it; a
+  # call that changes nothing keeps nothing.
+  defp record_settings_change({:ok, settings} = saved, scope, previous, changeset, attributes) do
+    if previous && changeset.changes == %{} do
+      saved
+    else
+      %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+      %SettingsChange{
+        tenant_id: settings.tenant_id,
+        company_id: settings.company_id,
+        old_payable_account_id: previous && previous.payable_account_id,
+        new_payable_account_id: settings.payable_account_id,
+        changed_by_user_id: user_id,
+        changed_by_impersonator_id: impersonator_id
+      }
+      |> SettingsChange.changeset(Map.take(attributes, [:reason, "reason"]))
+      |> Repo.insert()
+      |> kept(saved)
+    end
+  end
+
+  defp record_settings_change(error, _scope, _previous, _changeset, _attributes), do: error
+
+  defp record_tax_code_change({:ok, tax_code} = saved, scope, previous, changed?, attributes) do
+    if changed? do
+      %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+      %TaxCodeChange{
+        tenant_id: tax_code.tenant_id,
+        company_id: tax_code.company_id,
+        tax_code_id: tax_code.id,
+        old_name: previous && previous.name,
+        new_name: tax_code.name,
+        old_rate: previous && previous.rate,
+        new_rate: tax_code.rate,
+        old_account_id: previous && previous.account_id,
+        new_account_id: tax_code.account_id,
+        old_active: previous && previous.active,
+        new_active: tax_code.active,
+        changed_by_user_id: user_id,
+        changed_by_impersonator_id: impersonator_id
+      }
+      |> TaxCodeChange.changeset(Map.take(attributes, [:reason, "reason"]))
+      |> Repo.insert()
+      |> kept(saved)
+    else
+      saved
+    end
+  end
+
+  defp record_tax_code_change(error, _scope, _previous, _changed?, _attributes), do: error
+
+  defp kept({:ok, _change}, saved), do: saved
+  defp kept({:error, _changeset} = error, _saved), do: error
 
   defp valid(%Changeset{valid?: true} = changeset), do: {:ok, changeset}
   defp valid(changeset), do: {:error, changeset}
@@ -892,7 +1040,13 @@ defmodule Bilimbi.Finance.Payables do
 
   defp within_outstanding(scope, company_id, bill, changeset) do
     if changeset.valid? and
-         exceeds?(scope, company_id, bill, Changeset.get_field(changeset, :total)),
+         exceeds?(
+           scope,
+           company_id,
+           bill,
+           Changeset.get_field(changeset, :total),
+           Changeset.get_field(changeset, :document_date)
+         ),
        do: {:error, :exceeds_outstanding},
        else: :ok
   end
@@ -903,20 +1057,27 @@ defmodule Bilimbi.Finance.Payables do
   defp posting_account(scope, company_id, %Document{
          document_type: "debit_note",
          corrects_document_id: bill_id,
+         document_date: date,
          total: total
        }) do
     {:ok, bill} = fetch_document(scope, company_id, bill_id)
 
-    if exceeds?(scope, company_id, bill, total),
+    if exceeds?(scope, company_id, bill, total, date),
       do: {:error, :exceeds_outstanding},
       else: {:ok, bill.payable_account_id}
   end
 
   defp posting_account(scope, company_id, _bill), do: payable_account(scope, company_id)
 
-  defp exceeds?(scope, company_id, bill, total) do
-    owed = Map.fetch!(Balances.outstanding(scope, company_id, [bill]), bill.id)
-    Decimal.lt?(owed, total)
+  # An amount taken off a bill must fit what is owed on it both now and on the
+  # date of the debit note: a payment reversed after that date still counts
+  # there, and one later reversed must not leave the bill owed less than nothing.
+  defp exceeds?(scope, company_id, bill, total, date) do
+    [
+      Balances.outstanding(scope, company_id, [bill]),
+      Balances.outstanding(scope, company_id, [bill], date)
+    ]
+    |> Enum.any?(&Decimal.lt?(Map.fetch!(&1, bill.id), total))
   end
 
   defp document_entry(document, payable_account_id) do
@@ -998,11 +1159,17 @@ defmodule Bilimbi.Finance.Payables do
       scope |> documents_query(company_id) |> where([d], d.id in ^document_ids) |> Repo.all()
 
     owed = Balances.outstanding(scope, company_id, bills)
+
+    owed_on_date =
+      if match?(%Date{}, payment_date),
+        do: Balances.outstanding(scope, company_id, bills, payment_date),
+        else: %{}
+
     bills = Map.new(bills, &{&1.id, &1})
 
     allocations =
       allocations
-      |> Enum.map(&check_allocation(&1, bills, owed, party_key, payment_date))
+      |> Enum.map(&check_allocation(&1, bills, {owed, owed_on_date}, party_key, payment_date))
       |> mark_repeated_documents()
 
     party_name =
@@ -1048,7 +1215,7 @@ defmodule Bilimbi.Finance.Payables do
 
   defp cast_date(_value), do: nil
 
-  defp check_allocation(allocation, bills, owed, party_key, payment_date) do
+  defp check_allocation(allocation, bills, {owed, owed_on_date}, party_key, payment_date) do
     document_id = Changeset.get_field(allocation, :document_id)
     amount = Changeset.get_field(allocation, :amount)
 
@@ -1072,6 +1239,13 @@ defmodule Bilimbi.Finance.Payables do
 
           allocation.valid? and Decimal.gt?(amount, Map.fetch!(owed, bill.id)) ->
             Changeset.add_error(allocation, :amount, "exceeds what is owed on the bill")
+
+          allocation.valid? and Decimal.gt?(amount, Map.get(owed_on_date, bill.id, amount)) ->
+            Changeset.add_error(
+              allocation,
+              :amount,
+              "exceeds what is owed on the bill on the payment date"
+            )
 
           true ->
             allocation

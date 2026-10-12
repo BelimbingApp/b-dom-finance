@@ -12,16 +12,18 @@ defmodule Bilimbi.Finance.Payables.Balances do
   @end_of_time ~D[9999-12-31]
   @max_bigint 9_223_372_036_854_775_807
 
-  @doc "What is still owed now on each posted bill among `documents`, by ID."
-  def outstanding(scope, company_id, documents) do
+  @doc """
+  What is still owed on each posted bill among `documents`, by ID: now, or as
+  of `as_of`, when a bill dated after it is left out.
+  """
+  def outstanding(scope, company_id, documents, as_of \\ @end_of_time) do
     case for(%Document{document_type: "bill", status: "posted", id: id} <- documents, do: id) do
       [] ->
         %{}
 
       ids ->
         scope
-        |> owed_query(company_id, @end_of_time, @max_bigint)
-        |> where([b], b.id in ^ids)
+        |> owed_query(company_id, as_of, @max_bigint, ids)
         |> Repo.all()
         |> Map.new(&{&1.id, &1.owed})
     end
@@ -30,18 +32,24 @@ defmodule Bilimbi.Finance.Payables.Balances do
   @doc "The aged payables report; see `Bilimbi.Finance.Payables.aged_payables/4`."
   def aged_payables(scope, company_id, as_of, through, bucket_days) do
     through = through || last_entry_number(scope, company_id)
-    owed = owed_query(scope, company_id, as_of, through)
+    owed = owed_query(scope, company_id, as_of, through, nil)
     empty = List.duplicate(Decimal.new(0), length(bucket_days) + 2)
 
-    parties =
+    {owing, exceptions} =
       from(o in subquery(owed),
         join: b in ^Tenancy.scope_query(Document, scope),
         on: b.id == o.id,
-        where: o.owed > 0,
+        where: o.owed != 0,
         order_by: [asc: b.party_key, asc: b.due_date, asc: b.id],
         select: {b, o.owed}
       )
       |> Repo.all()
+      |> Enum.split_with(fn {_bill, owed} -> Decimal.gt?(owed, 0) end)
+
+    exceptions = Enum.map(exceptions, fn {bill, owed} -> exception(bill, owed) end)
+
+    parties =
+      owing
       |> Enum.chunk_by(fn {bill, _owed} -> bill.party_key end)
       |> Enum.map(fn [{first, _owed} | _rest] = bills ->
         documents = Enum.map(bills, fn {bill, owed} -> row(bill, owed, as_of, bucket_days) end)
@@ -67,15 +75,18 @@ defmodule Bilimbi.Finance.Payables.Balances do
       bucket_days: bucket_days,
       parties: parties,
       buckets: Enum.reduce(parties, empty, &add_buckets(&1.buckets, &2)),
-      total: sum(parties, :total)
+      total: sum(parties, :total),
+      exceptions: exceptions,
+      exceptions_total: sum(exceptions, :outstanding)
     }
   end
 
   # Each posted bill's total less its debit notes and the payments allocated
   # to it, counting only what is dated on or before `as_of` and posted at or
   # before ledger entry `through`. A payment reversed by then counts as
-  # unpaid.
-  defp owed_query(scope, company_id, as_of, through) do
+  # unpaid. `ids` limits the bills, and the sums over their debit notes and
+  # allocations, to those bills; nil takes every bill of the company.
+  defp owed_query(scope, company_id, as_of, through, ids) do
     debit_notes =
       from(d in Tenancy.scope_query(Document, scope),
         where: d.company_id == ^company_id and d.document_type == "debit_note",
@@ -84,6 +95,7 @@ defmodule Bilimbi.Finance.Payables.Balances do
         group_by: d.corrects_document_id,
         select: %{document_id: d.corrects_document_id, amount: sum(d.total)}
       )
+      |> only(:corrects_document_id, ids)
 
     paid =
       from(a in Tenancy.scope_query(Allocation, scope),
@@ -98,6 +110,7 @@ defmodule Bilimbi.Finance.Payables.Balances do
         group_by: a.document_id,
         select: %{document_id: a.document_id, amount: sum(a.amount)}
       )
+      |> only(:document_id, ids)
 
     from(b in Tenancy.scope_query(Document, scope),
       left_join: d in subquery(debit_notes),
@@ -109,7 +122,11 @@ defmodule Bilimbi.Finance.Payables.Balances do
       where: b.entry_number <= ^through,
       select: %{id: b.id, owed: b.total - coalesce(d.amount, 0) - coalesce(p.amount, 0)}
     )
+    |> only(:id, ids)
   end
+
+  defp only(query, _field, nil), do: query
+  defp only(query, field, ids), do: where(query, [r], field(r, ^field) in ^ids)
 
   defp row(bill, owed, as_of, bucket_days) do
     days_overdue = Date.diff(as_of, bill.due_date)
@@ -129,6 +146,24 @@ defmodule Bilimbi.Finance.Payables.Balances do
       days_overdue: max(days_overdue, 0),
       bucket: bucket(days_overdue, bucket_days)
     })
+  end
+
+  # A bill owed less than nothing is reported as it stands, outside the aged
+  # rows, so the report still adds up to the payable accounts.
+  defp exception(bill, owed) do
+    bill
+    |> Map.take([
+      :id,
+      :document_number,
+      :party_key,
+      :party_name,
+      :party_document_number,
+      :document_date,
+      :due_date,
+      :currency_code,
+      :total
+    ])
+    |> Map.put(:outstanding, owed)
   end
 
   # 0 is not yet due; i is overdue up to bucket_days[i - 1]; the last is beyond.

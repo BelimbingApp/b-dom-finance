@@ -143,6 +143,48 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
              )
   end
 
+  test "the migration's triggers stamp and keep the change history", %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    {:ok, _} =
+      Repo.transaction(fn ->
+        query!.(
+          "INSERT INTO finance_payables_settings_changes (tenant_id, company_id, new_payable_account_id, changed_by_user_id, changed_at) VALUES (1, 1, 7, 1, '2000-01-01')"
+        )
+
+        query!.(
+          "INSERT INTO finance_payables_tax_codes (id, tenant_id, company_id, code, name, rate, account_id, inserted_at, updated_at) VALUES (1, 1, 1, 'T', 'Tax', 10, 9, now(), now())"
+        )
+
+        query!.(
+          "INSERT INTO finance_payables_tax_code_changes (tenant_id, company_id, tax_code_id, new_name, new_rate, new_account_id, new_active, changed_by_user_id, changed_at) VALUES (1, 1, 1, 'Tax', 10, 9, true, 1, '2000-01-01')"
+        )
+      end)
+
+    assert %{rows: [[true], [true]]} =
+             query!.(
+               "(SELECT changed_at > '2026-01-01' FROM finance_payables_settings_changes) UNION ALL (SELECT changed_at > '2026-01-01' FROM finance_payables_tax_code_changes)"
+             )
+
+    for sql <- [
+          "UPDATE finance_payables_settings_changes SET reason = 'x'",
+          "DELETE FROM finance_payables_settings_changes",
+          "TRUNCATE finance_payables_settings_changes",
+          "UPDATE finance_payables_tax_code_changes SET reason = 'x'",
+          "DELETE FROM finance_payables_tax_code_changes",
+          "TRUNCATE finance_payables_tax_code_changes"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance payables keeps/, fn -> query!.(sql) end
+    end
+
+    assert_raise Postgrex.Error, ~r/finance_payables_tax_code_changes_before/, fn ->
+      query!.(
+        "INSERT INTO finance_payables_tax_code_changes (tenant_id, company_id, tax_code_id, old_name, new_name, new_rate, new_account_id, new_active, changed_by_user_id) VALUES (1, 1, 1, 'Tax', 'Tax', 10, 9, true, 1)"
+      )
+    end
+  end
+
   @tag :capture_log
   test "the migration's triggers keep payments allocated, numbered, and append-only",
        %{repo: repo} do

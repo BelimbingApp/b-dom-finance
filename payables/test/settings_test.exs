@@ -36,6 +36,74 @@ defmodule Bilimbi.Finance.Payables.SettingsTest do
       assert %{payable_account_id: ["can't be blank"]} = errors_on(changeset)
     end
 
+    test "keep who changed the payable account, why, and from what", context do
+      %{first_scope: system, operator: operator, accounts: accounts} = context
+
+      TestFixtures.sign_in!(system, 73, 95, [
+        "finance.payables.settings.manage",
+        "finance.ledger.view"
+      ])
+
+      impersonated =
+        Bilimbi.Base.Tenancy.Authentication.sign_in(system, 95, 73,
+          impersonator_id: 91,
+          impersonation_session_id: "borrowed-session"
+        )
+
+      payable_id = accounts.payable.id
+      other_id = accounts.other_payable.id
+
+      assert {:ok,
+              [
+                %{
+                  old_payable_account_id: nil,
+                  new_payable_account_id: ^payable_id,
+                  reason: nil,
+                  changed_by_user_id: 91,
+                  changed_by_impersonator_id: nil,
+                  changed_at: %DateTime{}
+                }
+              ]} = Payables.list_settings_changes(operator, 73)
+
+      assert {:ok, _} =
+               Payables.put_settings(impersonated, 73, %{
+                 payable_account_id: other_id,
+                 reason: " Split the supplier ledger "
+               })
+
+      assert {:ok, _} = Payables.put_settings(operator, 73, %{payable_account_id: other_id})
+
+      assert {:error, _} = Payables.put_settings(operator, 73, %{payable_account_id: nil})
+
+      assert {:error, changeset} =
+               Payables.put_settings(operator, 73, %{
+                 payable_account_id: payable_id,
+                 reason: String.duplicate("x", 501)
+               })
+
+      assert %{reason: [_]} = errors_on(changeset)
+      assert {:ok, %{payable_account_id: ^other_id}} = Payables.get_settings(operator, 73)
+
+      assert {:ok, [_, change]} = Payables.list_settings_changes(operator, 73)
+
+      assert %{
+               old_payable_account_id: ^payable_id,
+               new_payable_account_id: ^other_id,
+               reason: "Split the supplier ledger",
+               changed_by_user_id: 95,
+               changed_by_impersonator_id: 91
+             } = change
+    end
+
+    test "history needs the view grant and a visible company", context do
+      editor =
+        TestFixtures.sign_in!(context.first_scope, 73, 93, ["finance.payables.settings.manage"])
+
+      assert {:error, :unauthorized} = Payables.list_settings_changes(editor, 73)
+      assert {:error, :unauthorized} = Payables.list_tax_code_changes(editor, 73)
+      assert {:error, :company_not_found} = Payables.list_settings_changes(context.operator, 75)
+    end
+
     test "need the settings grant to change", context do
       viewer =
         TestFixtures.sign_in!(context.first_scope, 73, 93, [
@@ -100,6 +168,74 @@ defmodule Bilimbi.Finance.Payables.SettingsTest do
 
       assert decimal?(kept, 8) and decimal?(tax, 8)
       assert {:error, :tax_code_not_found} = Payables.update_tax_code(operator, 73, -1, %{})
+    end
+
+    test "keep who added or changed them, why, and from what", context do
+      %{operator: operator, accounts: accounts, tax_code: tax_code} = context
+      tax_id = tax_code.id
+      tax_account_id = accounts.tax.id
+      stock_id = accounts.stock.id
+
+      assert {:ok, [added]} = Payables.list_tax_code_changes(operator, 73)
+
+      assert %{
+               tax_code_id: ^tax_id,
+               old_name: nil,
+               old_rate: nil,
+               old_account_id: nil,
+               old_active: nil,
+               new_name: "Tax one",
+               new_account_id: ^tax_account_id,
+               new_active: true,
+               reason: nil,
+               changed_by_user_id: 91,
+               changed_at: %DateTime{}
+             } = added
+
+      assert decimal?(added.new_rate, 8)
+
+      assert {:ok, _} =
+               Payables.update_tax_code(operator, 73, tax_code.id, %{
+                 rate: "10",
+                 account_id: stock_id,
+                 active: false,
+                 reason: "Rate rise"
+               })
+
+      assert {:ok, _} = Payables.update_tax_code(operator, 73, tax_code.id, %{rate: "10"})
+      assert {:error, _} = Payables.update_tax_code(operator, 73, tax_code.id, %{rate: "-1"})
+      assert {:ok, [^added, change]} = Payables.list_tax_code_changes(operator, 73)
+
+      assert %{
+               tax_code_id: ^tax_id,
+               old_name: "Tax one",
+               new_name: "Tax one",
+               old_account_id: ^tax_account_id,
+               new_account_id: ^stock_id,
+               old_active: true,
+               new_active: false,
+               reason: "Rate rise",
+               changed_by_user_id: 91
+             } = change
+
+      assert decimal?(change.old_rate, 8) and decimal?(change.new_rate, 10)
+    end
+
+    test "the history is append-only", context do
+      for sql <- [
+            "UPDATE finance_payables_settings_changes SET reason = 'x'",
+            "DELETE FROM finance_payables_settings_changes",
+            "TRUNCATE finance_payables_settings_changes",
+            "UPDATE finance_payables_tax_code_changes SET reason = 'x'",
+            "DELETE FROM finance_payables_tax_code_changes",
+            "TRUNCATE finance_payables_tax_code_changes"
+          ] do
+        assert_raise Postgrex.Error, ~r/finance payables keeps/, fn ->
+          Repo.transaction(fn -> SQL.query!(Repo, sql, []) end)
+        end
+      end
+
+      assert {:ok, [_]} = Payables.list_settings_changes(context.operator, 73)
     end
 
     test "keep their code and are never deleted", %{tax_code: tax_code} do

@@ -14,9 +14,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | Function | Capability | Does |
 | --- | --- | --- |
 | `get_settings/2` | `finance.payables.view` | The company's payable account |
-| `put_settings/3` | `finance.payables.settings.manage` | Sets `payable_account_id`, an active liability account |
+| `put_settings/3` | `finance.payables.settings.manage` | Sets `payable_account_id`, an active liability account, with an optional `reason` |
+| `list_settings_changes/2`, `list_tax_code_changes/2` | `finance.payables.view` | The history of changes to the payable account and to tax codes: who, why, when, and the values before and after |
 | `list_tax_codes/2` | `finance.payables.view` | The company's tax codes by code |
-| `create_tax_code/3`, `update_tax_code/4` | `finance.payables.settings.manage` | A tax code: `code`, `name`, `rate` (percent), `account_id`, `active`; the code never changes |
+| `create_tax_code/3`, `update_tax_code/4` | `finance.payables.settings.manage` | A tax code: `code`, `name`, `rate` (percent), `account_id`, `active`, and an optional `reason`; the code never changes |
 | `create_bill/3` | `finance.payables.documents.create` | Records a party's bill as a draft |
 | `create_debit_note/4` | `finance.payables.documents.create` | Records a debit note against a posted bill as a draft |
 | `approve_document/3` | `finance.payables.documents.approve` | Approves a draft |
@@ -93,7 +94,8 @@ account its bill posted to, whatever the settings say by then. The document
 keeps its `payable_account_id`, `entry_id`, and `entry_number`. A posted
 document is never changed or voided: a bill is corrected by a debit note,
 whose total cannot exceed what is still owed on the bill, checked when it is
-recorded and again when it posts.
+recorded and again when it posts, both now and as of the debit note's date
+(see Aged payables).
 
 Posted documents are numbered per company and document type, 1, 2, 3, ... in
 posting order, by the database: drafts and voided documents take no number,
@@ -111,8 +113,8 @@ ledger's `list_entries/3` does.
 account), with optional `reference` and `description`, and `allocations`,
 each `%{document_id, amount}` naming a posted bill of that party dated on or
 before the payment. Its amount is the allocations' total; an allocation
-cannot exceed what is still owed on its bill, so a bill is paid in one or
-more parts. The ledger entry debits each paid bill's own payable account and
+cannot exceed what is still owed on its bill, now and as of `payment_date`,
+so a bill is paid in one or more parts. The ledger entry debits each paid bill's own payable account and
 credits the paid-from account. Payments are numbered per company like
 documents. Paying ahead of a bill, and refunds from a party, are later work.
 
@@ -142,6 +144,17 @@ the figures for that date, so a report reproduces exactly by passing the same
 entry numbers follow posting order. Party names are the latest bill's
 snapshot.
 
+A bill is never owed less than nothing: a debit note or payment is refused
+(`:exceeds_outstanding`, or an allocation error) if it would take a bill below
+nothing either now or as of its own date. The date check matters because a
+payment later reversed still counts on the dates before its reversal. Dated
+postings can still leave a bill negative on some date between those two, so
+the report never drops one silently: `exceptions` lists each bill owed less
+than nothing as of `as_of` (with a negative `outstanding`), outside the parties
+and buckets, and `exceptions_total` is their sum. `total + exceptions_total`
+is what the payable accounts hold for these bills as of the date, which is
+what the ledger's trial balance shows for them.
+
 ## Seams for later work
 
 - **Purchase-order match.** A line's `external_order_line_id` holds the
@@ -157,6 +170,7 @@ snapshot.
 
 The migration `20261012213700` is `:bilimbi_only` and creates
 `finance_payables_settings`, `finance_payables_tax_codes`,
+`finance_payables_settings_changes`, `finance_payables_tax_code_changes`,
 `finance_payables_documents`, `finance_payables_document_lines`,
 `finance_payables_document_tax_lines`, `finance_payables_payments`, and
 `finance_payables_payment_allocations`. Its `statements/1` is the schema's
@@ -184,9 +198,12 @@ other writer can break them:
   deferred constraint trigger refuses a payment whose allocations differ from
   its amount, or a reversal with allocations; a partial unique index allows
   one reversal per payment;
-- triggers refuse UPDATE and DELETE on lines, tax lines, payments, and
-  allocations, DELETE on settings, tax codes, and documents, TRUNCATE on all
-  seven tables, and a change to a tax code's code or any row's company.
+- a trigger stamps the time of each settings or tax code change, and a
+  check keeps a tax code change's earlier values all present or all absent;
+- triggers refuse UPDATE and DELETE on lines, tax lines, payments,
+  allocations, and the two change histories, DELETE on settings, tax codes,
+  and documents, TRUNCATE on all nine tables, and a change to a tax code's
+  code or any row's company.
 
 `Bilimbi.Finance.Payables.SchemaContract` describes the tables but is not
 registered in the descriptor, for the reason the ledger gives.
@@ -211,8 +228,12 @@ payables are held to:
   it and when. Corrections are new records that name what they correct (a
   debit note its bill, a reversal its payment), and the corrected record
   reports them (`debit_note_ids`, `reversed_by_payment_id`), so the trail
-  runs both ways; nothing recorded is overwritten. Settings and tax code changes are Repo writes, which Base Audit
-  records with their actor (ADR 0013).
+  runs both ways; nothing recorded is overwritten. Settings and tax codes
+  change in place, so each change is also kept in an append-only history,
+  written in the same transaction: the actor and any impersonator, an
+  optional reason, the values before and after, and the database's time
+  (`list_settings_changes/2`, `list_tax_code_changes/2`). A call that changes
+  nothing records nothing.
 - **Completeness and numbering.** Posted documents and payments carry
   gapless per-company numbers assigned by the database, and a party's
   document number is recorded once, so a bill is neither lost nor paid twice.
@@ -220,7 +241,13 @@ payables are held to:
   and kept, and the database refuses DELETE and TRUNCATE. How long records
   must be kept is law, not code.
 - **Reproducible reports.** Aged payables as of any date reproduce exactly
-  from their `through_entry_number`.
+  from their `through_entry_number`, and reconcile to the payable accounts:
+  a bill owed less than nothing is listed as an exception, never dropped.
+- **Settlement of recorded documents.** A bill and a debit note keep the
+  payable account they posted to, and payments and debit notes settle that
+  account even if it is no longer the setting. The ledger refuses to
+  deactivate an account whose debits and credits differ, so an open bill's
+  payable account stays active while it holds a balance.
 
 Tax rules, a chart of accounts, payment terms, and currencies are a company's
 configuration and data; the code ships none.

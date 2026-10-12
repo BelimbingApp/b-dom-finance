@@ -164,7 +164,8 @@ defmodule Bilimbi.Finance.Ledger do
   Changes an account's `name`, `parent_id`, `active` flag, or
   `retained_earnings` designation. Its code and type never change. A
   deactivated account takes no new postings; its history and reversals of it
-  stay.
+  stay. An account whose posted debits and credits differ cannot be
+  deactivated: settling what it holds would need postings to it.
   """
   @spec update_account(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :account_not_found | Changeset.t()}
@@ -179,6 +180,7 @@ defmodule Bilimbi.Finance.Ledger do
           account
           |> Account.update_changeset(attributes)
           |> validate_parent(scope, company_id)
+          |> validate_deactivation(scope, company_id)
           |> save_account(scope, company_id, &Repo.update/1)
       end
     end)
@@ -1299,6 +1301,23 @@ defmodule Bilimbi.Finance.Ledger do
 
   defp designated_account(scope, company_id) do
     scope |> accounts_query(company_id) |> where([a], a.retained_earnings) |> Repo.one()
+  end
+
+  # An account holding a balance stays active until its balance is settled.
+  defp validate_deactivation(changeset, scope, company_id) do
+    Changeset.validate_change(changeset, :active, fn :active, active ->
+      if active == false and not Decimal.equal?(balance(scope, company_id, changeset.data.id), 0),
+        do: [active: "has a non-zero balance"],
+        else: []
+    end)
+  end
+
+  defp balance(scope, company_id, account_id) do
+    from(l in lines_query(scope),
+      where: l.company_id == ^company_id and l.account_id == ^account_id,
+      select: coalesce(sum(l.debit), 0) - coalesce(sum(l.credit), 0)
+    )
+    |> Repo.one()
   end
 
   defp ok({:ok, _result}), do: :ok

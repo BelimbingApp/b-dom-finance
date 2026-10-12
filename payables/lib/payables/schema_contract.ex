@@ -58,6 +58,63 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
         checks: %{"finance_payables_tax_codes_rate" => check("rate >= (0)::numeric")}
       },
       %{
+        name: "finance_payables_settings_changes",
+        columns:
+          owned_columns("finance_payables_settings_changes")
+          |> Map.merge(%{
+            "old_payable_account_id" => column(:bigint, true),
+            "new_payable_account_id" => column(:bigint, false),
+            "reason" => column({:varchar, 500}, true),
+            "changed_by_user_id" => column(:bigint, false),
+            "changed_by_impersonator_id" => column(:bigint, true),
+            "changed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_payables_settings_changes_pkey" => index(["id"], true),
+          "finance_payables_settings_changes_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{},
+        checks: %{}
+      },
+      %{
+        name: "finance_payables_tax_code_changes",
+        columns:
+          owned_columns("finance_payables_tax_code_changes")
+          |> Map.merge(%{
+            "tax_code_id" => column(:bigint, false),
+            "old_name" => column({:varchar, 200}, true),
+            "new_name" => column({:varchar, 200}, false),
+            "old_rate" => column({:numeric, 7, 4}, true),
+            "new_rate" => column({:numeric, 7, 4}, false),
+            "old_account_id" => column(:bigint, true),
+            "new_account_id" => column(:bigint, false),
+            "old_active" => column(:boolean, true),
+            "new_active" => column(:boolean, false),
+            "reason" => column({:varchar, 500}, true),
+            "changed_by_user_id" => column(:bigint, false),
+            "changed_by_impersonator_id" => column(:bigint, true),
+            "changed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_payables_tax_code_changes_pkey" => index(["id"], true),
+          "finance_payables_tax_code_changes_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_tax_code_changes_tax_code_fkey" =>
+            company_reference("tax_code_id", "finance_payables_tax_codes")
+        },
+        checks: %{
+          "finance_payables_tax_code_changes_before" =>
+            check(
+              "((old_name IS NULL) = (old_rate IS NULL)) AND " <>
+                "((old_name IS NULL) = (old_account_id IS NULL)) AND " <>
+                "((old_name IS NULL) = (old_active IS NULL))"
+            )
+        }
+      },
+      %{
         name: "finance_payables_documents",
         columns:
           owned_columns("finance_payables_documents")

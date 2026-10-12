@@ -229,6 +229,39 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
                Payables.reverse_payment(operator, 73, -1, %{payment_date: ~D[2026-10-06]})
     end
 
+    test "cannot take a bill below nothing on their date, though it is owed now", context do
+      %{operator: operator, first: first, payment: payment} = context
+
+      {:ok, _} =
+        Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-10-20]})
+
+      assert decimal?(owed(context, first), 100)
+
+      assert {:error, changeset} =
+               Payables.post_payment(
+                 operator,
+                 73,
+                 payment(context, [%{document_id: first.id, amount: "50"}], %{
+                   payment_date: ~D[2026-10-10]
+                 })
+               )
+
+      assert %{
+               allocations: [
+                 %{amount: ["exceeds what is owed on the bill on the payment date"]}
+               ]
+             } = errors_on(changeset)
+
+      assert {:ok, _} =
+               Payables.post_payment(
+                 operator,
+                 73,
+                 payment(context, [%{document_id: first.id, amount: "100"}], %{
+                   payment_date: ~D[2026-10-20]
+                 })
+               )
+    end
+
     test "refuses a date before the payment's", context do
       assert {:error, changeset} =
                Payables.reverse_payment(context.operator, 73, context.payment.id, %{
