@@ -217,10 +217,10 @@ identifiers.
 `Bilimbi.Finance.Einvoice.Posting` posts one balanced entry through
 `Bilimbi.Finance.Ledger.post_entry/3` when a document is validated, dated
 the issue date (a consolidated document's, the last day of the month it
-reports, so that month's revenue stays in it), with the code number and authority UUID in the entry's
-`reference`, and records the entry's ID on a `posted` status event; a
-cancellation reverses it with `Ledger.reverse_entry/4` and records
-`posting_reversed`. The accounts are the company's
+reports, so that month's revenue stays in it), with the code number and
+authority UUID in the entry's `reference`, and records the entry's ID on a
+`posted` status event; a cancellation reverses it with
+`Ledger.reverse_entry/4` and records `posting_reversed`. The accounts are the company's
 `finance.einvoice.posting.*` settings, by account code in its own chart,
 and the authority's `posting_rule/1` names which each type uses.
 An invoice or debit note debits the receivable account and credits
@@ -232,8 +232,9 @@ mirror image, and a self-billed refund note debits the settlement account
 and credits expense and purchase tax. A tax of zero posts no tax line.
 A consolidated document posts as one invoice; its sources never post. If
 its month is closed in the ledger the posting is refused and the document
-goes to the reconciliation list; a period is never reopened to post. A posting that cannot happen (accounts unset or
-unknown, book not open or in another currency, missing grant) records
+goes to the reconciliation list; a period is never reopened to post. A
+posting that cannot happen (accounts unset or unknown, book not open or in
+another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who
 submits needs `finance.ledger.entries.post` for the posting to happen. A
