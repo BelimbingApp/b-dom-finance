@@ -242,7 +242,7 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
         WHERE id = NEW.entry_id
           AND pg_xact_status(
                 ((pg_current_xact_id()::text::bigint >> 32 << 32) | xmin::text::bigint)::text::xid8
-              ) <> 'in progress'
+              ) IS DISTINCT FROM 'in progress'
       ) THEN
         RAISE EXCEPTION 'journal entry % is already posted: a line cannot be added; post a reversing entry',
           NEW.entry_id
