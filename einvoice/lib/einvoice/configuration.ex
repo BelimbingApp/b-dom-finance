@@ -121,39 +121,7 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
         )
     }
 
-    per_environment =
-      for environment <- @environments do
-        title = String.capitalize(environment)
-
-        [
-          {"finance.einvoice.#{environment}.client_id",
-           editable(
-             :string,
-             nil,
-             "#{title} client ID",
-             "The client ID the authority issued for #{environment} ERP access.", nullable: true)},
-          {"finance.einvoice.#{environment}.client_secret",
-           editable(
-             :string,
-             nil,
-             "#{title} client secret",
-             "The client secret issued with the #{environment} client ID.",
-             nullable: true,
-             encrypted: true
-           )},
-          {"finance.einvoice.#{environment}.secret_expires_on",
-           editable(
-             :string,
-             nil,
-             "#{title} secret expiry date",
-             "The date the #{environment} client secret expires, as YYYY-MM-DD.",
-             nullable: true,
-             validator: {__MODULE__, :valid_date?, "must be a date as YYYY-MM-DD"}
-           )}
-        ]
-      end
-      |> Enum.flat_map(& &1)
-      |> Map.new()
+    per_environment = @environments |> Enum.flat_map(&environment_definitions/1) |> Map.new()
 
     supplier =
       Map.new(@supplier_fields, fn {field, {label, help, max, validator}} ->
@@ -162,6 +130,31 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
       end)
 
     connection |> Map.merge(per_environment) |> Map.merge(supplier)
+  end
+
+  defp environment_definitions(environment) do
+    title = String.capitalize(environment)
+    prefix = "finance.einvoice.#{environment}"
+
+    client_id_help = "The client ID the authority issued for #{environment} ERP access."
+    secret_help = "The client secret issued with the #{environment} client ID."
+    expiry_help = "The date the #{environment} client secret expires, as YYYY-MM-DD."
+    date = {__MODULE__, :valid_date?, "must be a date as YYYY-MM-DD"}
+
+    [
+      {"#{prefix}.client_id",
+       editable(:string, nil, "#{title} client ID", client_id_help, nullable: true)},
+      {"#{prefix}.client_secret",
+       editable(:string, nil, "#{title} client secret", secret_help,
+         nullable: true,
+         encrypted: true
+       )},
+      {"#{prefix}.secret_expires_on",
+       editable(:string, nil, "#{title} secret expiry date", expiry_help,
+         nullable: true,
+         validator: date
+       )}
+    ]
   end
 
   defp supplier_validator(nil, max),

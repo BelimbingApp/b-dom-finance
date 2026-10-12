@@ -37,7 +37,6 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
              "unit" => 2162
            }
 
-
     assert {:ok, %{"E" => "Tax exemption (where applicable)"} = tax_types} =
              Einvoice.list_codes(op, 73, "tax_type")
 

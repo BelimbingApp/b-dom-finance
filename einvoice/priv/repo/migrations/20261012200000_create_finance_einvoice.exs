@@ -140,7 +140,9 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
 
     create constraint(
              :finance_einvoice_document_lines,
-             :finance_einvoice_document_lines_line_number, check: "line_number > 0")
+             :finance_einvoice_document_lines_line_number,
+             check: "line_number > 0"
+           )
 
     create constraint(:finance_einvoice_document_lines, :finance_einvoice_document_lines_amounts,
              check: """
