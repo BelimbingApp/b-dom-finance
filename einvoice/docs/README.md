@@ -24,12 +24,14 @@ The module covers:
 8. a document page with the validation link and its QR code, a share link,
    a PDF through Base Artifacts, and a filtered, paged list;
 9. the ledger bridge: a validated document posts a balanced entry, a
-   cancelled one reverses it, and a reconciliation page lists what differs.
+   cancelled one reverses it, and a reconciliation page lists what differs;
+10. the monthly consolidated document for sales no buyer asked an
+    individual document for, and self-billed documents the company issues
+    as the buyer.
 
 The signed proof with a real certificate (format version 1.1 against the
 sandbox) waits for the certificate; sandbox testing submits unsigned
-version 1.0 documents. Consolidated and self-billed documents, and the
-production cutover, come later.
+version 1.0 documents. The production cutover comes later.
 
 ## Public API
 
@@ -38,7 +40,9 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 
 | Function | Capability | Does |
 | --- | --- | --- |
-| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document (or a note naming its `original_document_id`) from plain attributes, with an `issued` status event |
+| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document (or a note naming its `original_document_id`, or a self-billed document naming its `supplier`) from plain attributes, with an `issued` status event |
+| `consolidation_candidates/3` | `finance.einvoice.view` | A month's documents a consolidated document would cover, those the authority's limits keep out, their totals, and the window for issuing it |
+| `issue_consolidated_document/3` | `finance.einvoice.documents.issue` | Records the month's consolidated document, the documents each line covers, and a `consolidated` event on each |
 | `get_document/3` | `finance.einvoice.view` | One document with its lines, status events, current `status`, the authority's identifiers, validation link, ledger entries, and `attention` flags |
 | `list_documents/3` | `finance.einvoice.view` | Documents newest first; `limit` and `before` page them |
 | `page_documents/3` | `finance.einvoice.view` | One page for a list, filtered by `search`, `status`, `document_type`, and `environment` |
@@ -62,13 +66,18 @@ capabilities.
 `issue_document/3` takes plain attributes, so a form, an import, an agent
 operation, and later receivables all issue through it: `document_type`,
 `code_number`, optional `issued_at`, `currency_code`, `buyer` (name, TIN,
-registration type and number, contact, address), optional payment means,
+registration type and number, contact, address) or, for a self-billed
+document, `supplier` (the same plus industry code and business activity),
+optional payment means,
 terms, and billing period, for a note the `original_document_id`, and
 `lines` (description, classification code, quantity, unit price, tax type
 and rate, optional unit, discount, charge, exemption reason, tariff code,
 origin country). A line states its tax rate
-explicitly, never defaulting it; a blank discount or charge is none. The supplier comes from the
-company's settings and the environment from its current setting.
+explicitly, never defaulting it; a blank discount or charge is none. The
+company's own party (the supplier, or the buyer of a self-billed
+document) comes from its settings and the environment from its current
+setting. The list and the document views name the `counterparty_name`
+(the buyer, or the supplier of a self-billed document).
 
 Amounts are derived, never taken: a line's subtotal is quantity times unit
 price, its amount is the subtotal less its discount plus its charge, and its
@@ -78,6 +87,66 @@ not rounded. The draft (`Draft`) checks the shape every authority shares;
 the authority (`Authority.validate/3`) then checks codes against the
 company's code lists and its own rules, and names any supplier-profile field
 still missing. A code number is unique per company and environment.
+
+## Consolidated documents
+
+`Bilimbi.Finance.Einvoice.Consolidation` reports, in one document, a
+month's sales that no buyer asked an individual document for (receipts
+recorded with `issue_document/3` and never submitted). Its sources are the
+company's documents issued in the month, in the authority's calendar, in
+the current environment, whose status is `issued` or `released`, that
+were never submitted on their own, have no submit job waiting, and pass
+the authority's limits (`Authority.consolidation_refusal/1`: MyInvois
+takes only ringgit invoices of at most RM10,000). `consolidation_candidates/3`
+lists them, the ones kept out with the reason, and their totals.
+
+`issue_consolidated_document/3` takes the `month`, a `code_number`,
+optionally the `document_ids` to cover (default all), and a `grouping`:
+`"document"` (a line per source and tax, described by the source's code
+number) or `"summary"` (a line per tax over every source, described by
+their count and first and last code numbers). It is issued at the moment
+of asking, which must fall inside the window the authority sets
+(`Authority.consolidation_window/1`; MyInvois: from the end of the month
+in Malaysian time to seven days later, else `:period_not_ended` or
+`:consolidation_window_closed`). The authority shapes the document
+(`Authority.consolidated_document/1`; MyInvois: an invoice to the general
+public buyer `EI00000000010` with its contact and address "NA",
+classification `004`, unit `C62`, and the month as a "Monthly" billing
+period). Each line's amount and tax are the exact sums of its sources'
+lines, so the consolidated totals equal the sources' totals; this is the
+one place `Draft` takes a line's tax rather than deriving it from the
+rate. An individual document never carries the consolidated
+classification.
+
+Recording it writes a `finance_einvoice_consolidated_sources` row per
+source and line it covers, and a `consolidated` status event on each
+source, which can then not be submitted on its own. The consolidated
+document is submitted, polled, posted, and cancelled like any invoice.
+When the authority refuses it, finds it invalid, or it is cancelled,
+`Documents.record_event!/4` releases its sources in the same transaction
+(`released`, after which they may be consolidated again or submitted on
+their own), and the consolidated document, whose bytes and issue date
+never change, is never sent again. MyInvois refuses a document issued
+more than 72 hours before it is submitted (CF321), so a consolidated
+document is submitted as soon as it is issued. Its view lists the documents
+it covers (`sources`, with the lines carrying each), and a covered
+document's view names its holder (`consolidated_by`). Issuing one is the
+audit action `finance.einvoice.document.consolidated`.
+
+## Self-billed documents
+
+A self-billed document (MyInvois types `11` to `14`) is issued by the
+company as the buyer, for the purchases the authority lists (foreign
+suppliers, agents and distributors, individuals not in business, and
+others): `issue_document/3` takes the counterparty as `supplier`, with its
+industry code and business activity (MyInvois: `00000` and "NOT
+APPLICABLE" for a supplier abroad), and refuses a `buyer`; the company's
+own profile is recorded as the buyer. A supplier outside Malaysia without
+a Malaysian TIN takes the general TIN `EI00000000030`, which MyInvois
+refuses for a supplier in Malaysia. A self-billed credit, debit, or refund
+note references a validated self-billed invoice, and an ordinary note an
+ordinary invoice. Submission, polling, cancellation, the PDF, and the
+ledger bridge are the same paths.
 
 ## Clearance
 
@@ -151,11 +220,16 @@ the issue date, with the code number and authority UUID in the entry's
 `reference`, and records the entry's ID on a `posted` status event; a
 cancellation reverses it with `Ledger.reverse_entry/4` and records
 `posting_reversed`. The accounts are the company's
-`finance.einvoice.posting.*` settings, by account code in its own chart.
+`finance.einvoice.posting.*` settings, by account code in its own chart,
+and the authority's `posting_rule/1` names which each type uses.
 An invoice or debit note debits the receivable account and credits
 revenue and tax; a credit note posts the mirror image; a refund note
-debits revenue and tax and credits the settlement account; a tax of zero
-posts no tax line. A posting that cannot happen (accounts unset or
+debits revenue and tax and credits the settlement account. A self-billed
+invoice or debit note is a purchase: it credits the payable account and
+debits expense and purchase tax; a self-billed credit note posts the
+mirror image, and a self-billed refund note debits the settlement account
+and credits expense and purchase tax. A tax of zero posts no tax line.
+A consolidated document posts as one invoice; its sources never post. A posting that cannot happen (accounts unset or
 unknown, book not open or in another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who
@@ -186,6 +260,13 @@ note corrects it.
   refresh, cancel with a reason, generate and download the PDF.
 - `/finance/einvoice/documents/:id/pdf/:artifact_id`: the PDF download,
   read through Base Artifacts on every request.
+- `/finance/einvoice/consolidation` (Finance › E-invoice Consolidation):
+  a month's candidates (`?month=YYYY-MM`, by default the latest month that
+  has ended), the documents that need an individual e-invoice and why,
+  their totals, the issuing window, and a form that issues the
+  consolidated document while the window is open. A consolidated
+  document's page lists what it covers, and a covered document's page
+  names the consolidated document and offers no submit.
 - `/finance/einvoice/reconciliation` (Finance › E-invoice Reconciliation).
 - `/finance/einvoice/setup` (Finance › E-invoice Setup): see Settings.
 
@@ -220,8 +301,12 @@ and one authority's rules. Everything MyInvois defines sits in
   `Authority` callbacks, not named by the facade. So are the posting side
   of each document type (`posting_rule/1`), its human name
   (`document_type_name/1`), the cancellation window
-  (`cancellation_window_hours/0`, 72 for MyInvois), and the outage
-  allowance before the operator notice (`outage_notice_hours/0`, 72);
+  (`cancellation_window_hours/0`, 72 for MyInvois), the outage
+  allowance before the operator notice (`outage_notice_hours/0`, 72),
+  the self-billed types (`self_billed_document_types/0`), and the
+  consolidated document's window, limits, and shape
+  (`consolidation_window/1`, `consolidation_refusal/1`,
+  `consolidated_document/1`);
   `Posting`, `Documents`, `Clearance`, the pages, and the PDF name no
   document type code and no window.
 - `MyInvois.Builder` writes UBL 2.1 JSON in the element order of the SDK's
@@ -269,7 +354,8 @@ screen with the company chosen:
   before the certificate arrives);
 - `finance.einvoice.posting.*`: the account codes a validated document
   posts to (`receivable_account`, `revenue_account`, `tax_account`,
-  `settlement_account`), none set by default;
+  `settlement_account`, and for self-billed purchases `payable_account`,
+  `expense_account`, `purchase_tax_account`), none set by default;
 - per environment, `client_id`, `client_secret` (encrypted), and
   `secret_expires_on`;
 - `certificate_pem` and `private_key_pem` (both encrypted), validated as one
@@ -311,9 +397,9 @@ later file drops still names what recorded documents carry.
 
 ## Database
 
-The migrations `20261012200000`, `20261013090000`, and `20261013143000`
-(one `posted` and one `posting_reversed` event per document) are
-`:bilimbi_only`:
+The migrations `20261012200000`, `20261013090000`, `20261013143000`
+(one `posted` and one `posting_reversed` event per document), and
+`20261013221500` (consolidation) are `:bilimbi_only`:
 
 - `finance_einvoice_documents`: authority, environment, type, code number,
   issue instant (UTC), currency and rate, supplier and buyer snapshots as
@@ -327,6 +413,8 @@ The migrations `20261012200000`, `20261013090000`, and `20261013143000`
   authority's status, submission UID, document UUID, long ID, reason, HTTP
   status, response body, and the ledger entry a `posted` or
   `posting_reversed` event names;
+- `finance_einvoice_consolidated_sources`: which documents each line of a
+  consolidated document covers;
 - `finance_einvoice_code_overrides`: a company's renamed, retired, or added
   codes.
 
@@ -345,7 +433,17 @@ PostgreSQL enforces what the facade checks:
 - triggers stamp `recorded_at` with the database clock and number a
   document's events 1, 2, 3, ...; a unique index refuses a reused number;
 - composite `(id, company_id)` foreign keys keep lines, submissions, events,
-  and an original document in one company.
+  an original document, and a consolidated document's sources in one
+  company;
+- a source is covered by one consolidated document at a time (a second is
+  refused unless the first was refused, invalid, or cancelled), never one
+  that was submitted on its own, and never another consolidated document;
+  a submission of a source a consolidated document holds, or of a
+  consolidated document that released its sources, is refused; and a
+  deferred trigger refuses a commit in which a consolidated document's
+  totals differ from its sources'. The consolidation migration's
+  `statements(temporary: true)` builds the module tests' copy of its
+  table and triggers.
 
 `Bilimbi.Finance.Einvoice.SchemaContract` is not registered in the
 descriptor, for the ledger's reason; `test/schema_contract_test.exs` verifies
@@ -358,6 +456,10 @@ it against a fresh database and proves the triggers outside the sandbox.
   Each records who acted (user and impersonator, or a named system
   principal) and the database's own timestamp; a document's events carry a
   gapless sequence.
+- **Reported once.** A sale reaches the authority either on its own or in
+  one consolidated document, never both and never twice: the database
+  refuses the overlap, a consolidated document's totals equal what it
+  covers, and every move in or out of one is a status event on the source.
 - **Exactly what was sent.** A submission stores the signed payload bytes and
   their SHA-256, and PostgreSQL checks one against the other, so what the
   authority validated can be shown byte for byte.
@@ -396,5 +498,5 @@ would have, for tests that start from a valid document. Party data is the SDK's 
 generated (`test_certificate!/1`). Authority calls answer from `Req.Test`
 stubs set in `test_helper.exs`; no test reaches the authority. The SDK's
 signed samples are in `test/fixtures/sdk/`, signed with the SDK's dummy test
-certificate. `web_test/` covers the setup, document list and page, PDF download, and
-reconciliation pages against the real host.
+certificate. `web_test/` covers the setup, document list and page, PDF download,
+consolidation, and reconciliation pages against the real host.

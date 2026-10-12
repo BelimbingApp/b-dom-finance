@@ -29,21 +29,23 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
   # document's sources' tax, instead of deriving it from the rate.
   def changeset(line, attributes, source_tax? \\ false) do
     line
-    |> cast(attributes, if(source_tax?, do: [:tax_amount], else: []))
-    |> cast(attributes, [
-      :description,
-      :classification_code,
-      :tariff_code,
-      :origin_country_code,
-      :quantity,
-      :unit_code,
-      :unit_price,
-      :discount_amount,
-      :charge_amount,
-      :tax_type,
-      :tax_rate,
-      :tax_exemption_reason
-    ])
+    |> cast(
+      attributes,
+      [
+        :description,
+        :classification_code,
+        :tariff_code,
+        :origin_country_code,
+        :quantity,
+        :unit_code,
+        :unit_price,
+        :discount_amount,
+        :charge_amount,
+        :tax_type,
+        :tax_rate,
+        :tax_exemption_reason
+      ] ++ if(source_tax?, do: [:tax_amount], else: [])
+    )
     |> blank_is_zero(:discount_amount)
     |> blank_is_zero(:charge_amount)
     |> validate_required([

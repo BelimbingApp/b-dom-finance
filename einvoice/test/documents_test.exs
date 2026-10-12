@@ -175,7 +175,8 @@ defmodule Bilimbi.Finance.Einvoice.DocumentsTest do
             {"13", :credit, :payable_account, purchase},
             {"14", :debit, :settlement_account, purchase}
           ] do
-        assert authority.posting_rule(type) == Map.merge(accounts, %{side: side, counter: counter})
+        assert authority.posting_rule(type) ==
+                 Map.merge(accounts, %{side: side, counter: counter})
       end
 
       assert authority.posting_rule("99") == nil

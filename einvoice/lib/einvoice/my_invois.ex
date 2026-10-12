@@ -101,7 +101,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   def id, do: "myinvois"
 
   @impl true
-  def issuable_document_types, do: [@invoice | @notes] ++ [@self_billed_invoice | @self_billed_notes]
+  def issuable_document_types,
+    do: [@invoice | @notes] ++ [@self_billed_invoice | @self_billed_notes]
 
   @impl true
   def note_document_types, do: @notes ++ @self_billed_notes
@@ -192,7 +193,12 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   @impl true
-  def consolidated_document(%{code_number: code, issued_at: issued_at, month: month, lines: lines}) do
+  def consolidated_document(%{
+        code_number: code,
+        issued_at: issued_at,
+        month: month,
+        lines: lines
+      }) do
     %{
       document_type: @invoice,
       code_number: code,
@@ -481,7 +487,10 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     |> validate_change(:classification_code, fn :classification_code, code ->
       cond do
         consolidated? and code != @consolidated_classification ->
-          [classification_code: "must be #{@consolidated_classification} on a consolidated document"]
+          [
+            classification_code:
+              "must be #{@consolidated_classification} on a consolidated document"
+          ]
 
         not consolidated? and code == @consolidated_classification ->
           [classification_code: "is for a consolidated document; consolidate the month instead"]

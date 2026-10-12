@@ -118,9 +118,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       not submittable?(document.status) ->
         {:error, :not_submittable}
 
-      # An invalid consolidated document released its sources, which a new
-      # one may cover; it is never sent again.
-      document.status == "invalid" and Consolidation.consolidated?(document) ->
+      # A refused or invalid consolidated document released its sources,
+      # which a new one may cover; it is never sent again.
+      document.status in Consolidation.releasing_events() and
+          Consolidation.consolidated?(document) ->
         {:error, :not_submittable}
 
       is_nil(credentials.client_id) or is_nil(credentials.client_secret) ->

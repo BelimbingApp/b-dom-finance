@@ -25,13 +25,17 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
   end
 
   defp issued!(op, overrides \\ %{}) do
-    {:ok, document} = Einvoice.issue_document(op, 73, TestFixtures.self_billed_attributes(overrides))
+    {:ok, document} =
+      Einvoice.issue_document(op, 73, TestFixtures.self_billed_attributes(overrides))
+
     document
   end
 
   defp money(value), do: value |> Decimal.round(2) |> Decimal.to_string(:normal)
 
-  test "the company issues it as the buyer, with the supplier as the counterparty", %{operator: op} do
+  test "the company issues it as the buyer, with the supplier as the counterparty", %{
+    operator: op
+  } do
     document = issued!(op)
 
     assert %{
@@ -71,10 +75,15 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
              Einvoice.issue_document(
                op,
                73,
-               TestFixtures.self_billed_attributes() |> Map.delete(:supplier) |> Map.put(:buyer, buyer)
+               TestFixtures.self_billed_attributes()
+               |> Map.delete(:supplier)
+               |> Map.put(:buyer, buyer)
              )
 
-    assert %{supplier: ["can't be blank"], buyer: ["is the company on a self-billed document" <> _]} =
+    assert %{
+             supplier: ["can't be blank"],
+             buyer: ["is the company on a self-billed document" <> _]
+           } =
              errors_on(changeset)
 
     assert {:error, changeset} =
@@ -85,7 +94,9 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
                |> update_in([:supplier], &Map.drop(&1, [:industry_code, :business_activity]))
              )
 
-    assert %{supplier: %{industry_code: ["can't be blank"], business_activity: ["can't be blank"]}} =
+    assert %{
+             supplier: %{industry_code: ["can't be blank"], business_activity: ["can't be blank"]}
+           } =
              errors_on(changeset)
 
     # The foreign-supplier TIN is for a supplier outside Malaysia.
@@ -105,7 +116,9 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
              Einvoice.issue_document(
                op,
                73,
-               TestFixtures.invoice_attributes(%{supplier: TestFixtures.self_billed_attributes().supplier})
+               TestFixtures.invoice_attributes(%{
+                 supplier: TestFixtures.self_billed_attributes().supplier
+               })
              )
 
     assert %{supplier: ["is the company; give the buyer"]} = errors_on(changeset)
@@ -115,7 +128,9 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
     # Company 74 has no e-invoicing profile at all.
     op = TestFixtures.sign_in!(context.first_scope, 74, 93, TestFixtures.capabilities())
 
-    assert {:error, changeset} = Einvoice.issue_document(op, 74, TestFixtures.self_billed_attributes())
+    assert {:error, changeset} =
+             Einvoice.issue_document(op, 74, TestFixtures.self_billed_attributes())
+
     assert %{buyer: ["is incomplete: set supplier TIN, " <> _]} = errors_on(changeset)
   end
 
@@ -123,7 +138,9 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
     invoice = issued!(op)
     :ok = TestFixtures.validate!(op, 73, invoice.id)
 
-    {:ok, sale} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes(%{code_number: "INV-1"}))
+    {:ok, sale} =
+      Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes(%{code_number: "INV-1"}))
+
     :ok = TestFixtures.validate!(op, 73, sale.id, uuid: "SALEUUID")
 
     assert {:ok, note} =
@@ -151,7 +168,8 @@ defmodule Bilimbi.Finance.Einvoice.SelfBilledTest do
                })
              )
 
-    assert %{original_document_id: ["must be the self-billed invoice it corrects"]} = errors_on(changeset)
+    assert %{original_document_id: ["must be the self-billed invoice it corrects"]} =
+             errors_on(changeset)
 
     assert {:error, changeset} =
              Einvoice.issue_document(

@@ -110,7 +110,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
   defp issue_message(:consolidation_window_closed),
     do: "The time the authority allows for this month's consolidated document has passed."
 
-  defp issue_message(:nothing_to_consolidate), do: "No document of this month can be consolidated."
+  defp issue_message(:nothing_to_consolidate),
+    do: "No document of this month can be consolidated."
+
   defp issue_message(:code_number_taken), do: "That number is already used in this environment."
   defp issue_message(:unauthorized), do: "You do not have permission to issue documents."
   defp issue_message(:company_archived), do: "The company is archived."
@@ -127,7 +129,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
     "The consolidated document was refused: " <> Enum.join(errors, "; ") <> "."
   end
 
-  defp issue_message(reason), do: "The consolidated document could not be issued (#{inspect(reason)})."
+  defp issue_message(reason),
+    do: "The consolidated document could not be issued (#{inspect(reason)})."
 
   defp flatten_errors(errors, path) when is_map(errors) do
     Enum.flat_map(errors, fn {key, value} -> flatten_errors(value, path ++ [to_string(key)]) end)
@@ -188,8 +191,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
             <.section_heading id="einvoice-consolidation-summary-heading" title="Window and totals" />
             <.list id="einvoice-consolidation-facts">
               <:item title="Covers documents issued">
-                <.datetime id="einvoice-consolidation-from" value={@candidates.from} />
-                to
+                <.datetime id="einvoice-consolidation-from" value={@candidates.from} /> to
                 <.datetime id="einvoice-consolidation-until" value={@candidates.until} />
               </:item>
               <:item title="May be issued until">

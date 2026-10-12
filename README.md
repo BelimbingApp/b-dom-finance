@@ -8,7 +8,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | --- | --- | --- |
 | [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, trial balance, and posting notices |
 | [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payments allocated to bills, and aged payables |
-| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
+| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
 | [`reports/`](reports/docs/README.md) | `finance/reports` | profit and loss, balance sheet, cash position, and headline figures read live from the ledger, with the entries behind each figure |
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
 

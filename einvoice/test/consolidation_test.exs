@@ -95,6 +95,9 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
       large = source!(op, "R-004", ~U[2026-09-16 04:00:00Z], [line("10000.00")])
       validated = source!(op, "R-005", ~U[2026-09-17 04:00:00Z])
       :ok = TestFixtures.validate!(op, 73, validated.id)
+      # One waiting in a submit job is on its way to an individual e-invoice.
+      queued = source!(op, "R-006", ~U[2026-09-18 04:00:00Z])
+      {:ok, _job} = Einvoice.submit_document(op, 73, queued.id)
 
       assert {:ok, candidates} = Einvoice.consolidation_candidates(op, 73, "2026-09")
 
@@ -112,7 +115,9 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
       assert large_id == large.id
       assert reason =~ "RM10000"
 
-      assert {:ok, %{documents: [_, _]}} = Einvoice.consolidation_candidates(op, 73, ~D[2026-09-20])
+      assert {:ok, %{documents: [_, _]}} =
+               Einvoice.consolidation_candidates(op, 73, ~D[2026-09-20])
+
       assert {:error, :invalid_month} = Einvoice.consolidation_candidates(op, 73, "2026-13")
       assert {:error, :invalid_month} = Einvoice.consolidation_candidates(op, 73, "September")
     end
@@ -275,7 +280,9 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
 
       assert {:ok, %{documents: [_]}} = Einvoice.consolidation_candidates(viewer, 73, "2026-09")
       assert {:error, :unauthorized} = consolidate(viewer, %{})
-      assert {:error, :unauthorized} = Einvoice.consolidation_candidates(context.first_scope, 73, "2026-09")
+
+      assert {:error, :unauthorized} =
+               Einvoice.consolidation_candidates(context.first_scope, 73, "2026-09")
     end
 
     test "an individual document never carries the consolidated classification",
@@ -294,7 +301,13 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
       assert {:ok, document} = consolidate(op, %{})
 
       ubl = MyInvois.ubl(document, "1.0")
-      assert ubl.invoice_period == %{start_date: "2026-09-01", end_date: "2026-09-30", description: "Monthly"}
+
+      assert ubl.invoice_period == %{
+               start_date: "2026-09-01",
+               end_date: "2026-09-30",
+               description: "Monthly"
+             }
+
       assert {"TIN", "EI00000000010"} in ubl.buyer.identifications
       assert ubl.buyer.phone == "NA"
       assert [%{classifications: [{"CLASS", "004"}], description: "R-001"}] = ubl.lines
@@ -362,17 +375,42 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
       assert {:ok, %{sources: [%{id: ^id}]}} = Einvoice.get_document(op, 73, document.id)
     end
 
-    test "are released when it is found invalid, which is never sent again", %{operator: op} do
-      source = source!(op, "R-001", ~U[2026-09-02 04:00:00Z])
-      assert {:ok, document} = consolidate(op, %{})
+    for event <- ["refused", "invalid"] do
+      test "are released when the authority answers #{event}, and it is never sent again",
+           %{operator: op} do
+        source = source!(op, "R-001", ~U[2026-09-02 04:00:00Z])
+        assert {:ok, document} = consolidate(op, %{})
 
-      Documents.write!(op, 73, fn ->
-        Documents.record_event!(op, 73, document.id, %{event: "invalid", reason: "rejected"})
-      end)
+        Documents.write!(op, 73, fn ->
+          Documents.record_event!(op, 73, document.id, %{event: unquote(event), reason: "CF321"})
+        end)
 
-      assert status(op, source) == "released"
-      assert {:error, :not_submittable} = Einvoice.submit_document(op, 73, document.id)
-      assert {:ok, _} = Einvoice.submit_document(op, 73, source.id)
+        assert status(op, source) == "released"
+        assert {:error, :not_submittable} = Einvoice.submit_document(op, 73, document.id)
+
+        # The database refuses sending it again, whoever writes.
+        error =
+          assert_raise Postgrex.Error, fn ->
+            Repo.insert!(%Submission{
+              tenant_id: 41,
+              company_id: 73,
+              document_id: document.id,
+              environment: "sandbox",
+              format: "JSON",
+              document_version: "1.0",
+              payload: "{}",
+              payload_sha256: :sha256 |> :crypto.hash("{}") |> Base.encode16(case: :lower),
+              actor_type: "user",
+              actor_user_id: 91
+            })
+          end
+
+        assert error.postgres.message =~ "released its sources"
+
+        # A new consolidated document covers the released source.
+        assert {:ok, %{sources: [%{id: id}]}} = consolidate(op, %{code_number: "CON-2026-09-B"})
+        assert id == source.id
+      end
     end
   end
 

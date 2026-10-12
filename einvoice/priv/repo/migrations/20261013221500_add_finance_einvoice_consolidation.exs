@@ -13,11 +13,12 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddConsolidation do
   PostgreSQL enforces what the facade checks:
 
   - a source is covered by one consolidated document at a time: a second
-    is refused unless every earlier one is cancelled or invalid at the
-    authority, which releases its sources;
+    is refused unless every earlier one was refused, found invalid, or
+    cancelled at the authority, which releases its sources;
   - a source that was ever submitted on its own is never covered, and a
     covered source is never submitted on its own while its consolidated
-    document holds it;
+    document holds it; a consolidated document that released its sources
+    is never submitted again;
   - a consolidated document is never itself a source, and its sources
     belong to its company and environment;
   - at commit, a consolidated document's totals equal its sources' totals.
@@ -95,10 +96,10 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddConsolidation do
     ]
   end
 
-  # A consolidated document releases its sources once the authority holds it
-  # as cancelled or invalid; both are final for it (an invalid consolidated
-  # document is never submitted again).
-  @releasing "('cancelled', 'invalid')"
+  # A consolidated document releases its sources once the authority refused
+  # it, found it invalid, or cancelled it; each is final for it, since its
+  # bytes and issue date never change (it is never submitted again).
+  @releasing "('refused', 'invalid', 'cancelled')"
 
   @doc """
   The trigger functions, created under `prefix` (`""`, or `"pg_temp."` for
@@ -164,6 +165,18 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddConsolidation do
             )
         ) THEN
           RAISE EXCEPTION 'document % is consolidated and cannot be submitted on its own',
+            NEW.document_id
+            USING ERRCODE = 'restrict_violation';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM finance_einvoice_consolidated_sources
+          WHERE document_id = NEW.document_id
+        ) AND EXISTS (
+          SELECT 1 FROM finance_einvoice_status_events
+          WHERE document_id = NEW.document_id AND event IN #{@releasing}
+        ) THEN
+          RAISE EXCEPTION 'consolidated document % released its sources and is not submitted again',
             NEW.document_id
             USING ERRCODE = 'restrict_violation';
         END IF;

@@ -32,6 +32,7 @@ here; they govern this code and are not copied here.
   formats, and code lists live only behind `Bilimbi.Finance.Einvoice.Authority`
   in that authority's namespace (`einvoice/lib/einvoice/my_invois/`).
 - Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
+  (a month's consolidated document through `issue_consolidated_document/3`)
   with plain attributes, never by writing its tables: it derives every amount
   and records the `issued` event the status reads from.
 - Write UBL JSON through `MyInvois.Json` (`einvoice/lib/einvoice/my_invois/json.ex`),

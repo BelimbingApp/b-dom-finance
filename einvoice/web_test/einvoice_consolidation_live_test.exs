@@ -78,7 +78,12 @@ defmodule BilimbiWeb.EinvoiceConsolidationLiveTest do
 
     assert %{"month" => "2026-08"} = patched_params(view)
     refute has_element?(view, "#einvoice-candidate-#{small.id}")
-    assert has_element?(view, "#einvoice-consolidation-candidates-table-empty", "No document of this month")
+
+    assert has_element?(
+             view,
+             "#einvoice-consolidation-candidates-table-empty",
+             "No document of this month"
+           )
   end
 
   test "a consolidated document lists what it covers, and a covered one names it",

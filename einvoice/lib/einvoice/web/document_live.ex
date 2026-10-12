@@ -22,6 +22,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   alias Bilimbi.Finance.Einvoice
   alias Bilimbi.Finance.Einvoice.Clearance
   alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Consolidation
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Einvoice.QrCode
   alias Bilimbi.Finance.Einvoice.Web.DocumentsLive
@@ -176,7 +177,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
 
   defp submit_message(:not_submittable),
     do:
-      "Only a recorded, released, refused, or invalid document can be submitted; a consolidated document reports the documents it covers, and an invalid one is never sent again."
+      "Only a recorded, released, refused, or invalid document can be submitted; a consolidated document reports the documents it covers, and one the authority refused or found invalid is never sent again: consolidate the month again."
 
   defp submit_message(:missing_credentials),
     do: "Set the client ID and secret for this environment in the e-invoice settings first."
@@ -269,7 +270,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   # Whether the submit control shows: what `Clearance.prepare/3` accepts.
   defp submittable?(document) do
     Clearance.submittable?(document.status) and
-      not (document.consolidated? and document.status == "invalid")
+      not (document.consolidated? and document.status in Consolidation.releasing_events())
   end
 
   defp money(%Decimal{} = value), do: Decimal.to_string(value, :normal)

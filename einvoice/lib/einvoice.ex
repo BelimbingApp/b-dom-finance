@@ -276,8 +276,9 @@ defmodule Bilimbi.Finance.Einvoice do
   billing period); each line's amount and tax are its documents' exact
   sums, so its totals equal theirs. It records which documents each line
   covers and a `consolidated` event on each, so none is consolidated twice
-  or submitted on its own while it holds them; once it is cancelled or
-  found invalid at the authority, it releases them (`released`). It is
+  or submitted on its own while it holds them; once the authority refuses
+  it, finds it invalid, or it is cancelled, it releases them (`released`)
+  and is never submitted again. It is
   submitted, polled, posted, and cancelled like any document, and is the
   audit action `finance.einvoice.document.consolidated`.
 
@@ -364,8 +365,8 @@ defmodule Bilimbi.Finance.Einvoice do
     with {:ok, month} <- month(get.(:month)),
          true <- grouping in Consolidation.groupings() || {:error, :invalid_option},
          true <-
-           is_nil(ids) or
-             (is_list(ids) and ids != [] and Enum.all?(ids, &(is_integer(&1) and &1 > 0))) ||
+           (is_nil(ids) or
+              (is_list(ids) and ids != [] and Enum.all?(ids, &(is_integer(&1) and &1 > 0)))) ||
              {:error, :invalid_option} do
       {:ok,
        %{

@@ -39,15 +39,38 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
 
   ## Queries
 
+  @submit_worker inspect(Module.concat(SubmitWorker, ObanAdapter))
+  @waiting_states ~w(available scheduled executing retryable)
+
   @doc "Whether a submit job for the document is waiting or running."
   def submission_queued?(company_id, document_id) do
-    worker = inspect(Module.concat(SubmitWorker, ObanAdapter))
     args = %{"company_id" => company_id, "document_id" => document_id}
-    states = ~w(available scheduled executing retryable)
 
     Repo.exists?(
-      from(j in Oban.Job, where: j.worker == ^worker and j.state in ^states and j.args == ^args)
+      from(j in Oban.Job,
+        where: j.worker == @submit_worker and j.state in @waiting_states and j.args == ^args
+      )
     )
+  end
+
+  @doc "Which of these documents have a submit job waiting or running."
+  def submissions_queued(_company_id, []), do: MapSet.new()
+
+  def submissions_queued(company_id, document_ids) do
+    from(j in Oban.Job,
+      where:
+        j.worker == @submit_worker and j.state in @waiting_states and
+          fragment("?->>'company_id'", j.args) == ^to_string(company_id),
+      select: fragment("?->>'document_id'", j.args)
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn id ->
+      case Integer.parse(to_string(id)) do
+        {id, ""} -> if id in document_ids, do: [id], else: []
+        _other -> []
+      end
+    end)
+    |> MapSet.new()
   end
 
   def documents_query(%Scope{} = scope, company_id) do
@@ -295,14 +318,18 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
         struct!(
           StatusEvent,
           Map.merge(
-            %{tenant_id: Scope.tenant_id(scope), company_id: company_id, document_id: document_id},
+            %{
+              tenant_id: Scope.tenant_id(scope),
+              company_id: company_id,
+              document_id: document_id
+            },
             Map.merge(actor, Map.new(attributes))
           )
         )
       )
 
-    # A consolidated document the authority cancelled or found invalid
-    # releases the documents it covered, in the same transaction.
+    # A consolidated document the authority refused, found invalid, or
+    # cancelled releases the documents it covered, in the same transaction.
     Consolidation.release_sources!(scope, company_id, document_id, event.event)
     event
   end
@@ -448,7 +475,9 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   # The counterparty is the buyer, or the supplier on a self-billed document,
   # where the company's own profile is the buyer.
   defp parties(document) do
-    self_billed? = document.document_type in Configuration.authority().self_billed_document_types()
+    self_billed? =
+      document.document_type in Configuration.authority().self_billed_document_types()
+
     counterparty = if self_billed?, do: document.supplier, else: document.buyer
 
     %{

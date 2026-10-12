@@ -18,8 +18,10 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   Recording one writes a row per source and line it covers and a
   `consolidated` status event on each source, which then cannot be
   submitted on its own (the database refuses that as well). When the
-  consolidated document is cancelled or found invalid, its sources are
-  released (`released`) and may be consolidated again.
+  authority refuses the consolidated document, finds it invalid, or it is
+  cancelled, its sources are released (`released`) and may be
+  consolidated again; the document itself, whose bytes and issue date
+  never change, is never submitted again.
 
   The facade (`Bilimbi.Finance.Einvoice.issue_consolidated_document/3`)
   authorizes, takes the company lock, and records; this module selects and
@@ -37,7 +39,9 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   # A source's status before it is consolidated: recorded, or released by a
   # consolidated document that was cancelled or found invalid.
   @open_statuses ["issued", "released"]
-  @releasing ["cancelled", "invalid"]
+  # The events after which a consolidated document no longer holds its
+  # sources (see the consolidation migration).
+  @releasing ["refused", "invalid", "cancelled"]
 
   @doc "How sources may be grouped into lines."
   def groupings, do: @groupings
@@ -45,8 +49,13 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   @doc "The details key that marks a consolidated document and names its month."
   def month_key, do: "consolidation_month"
 
+  @doc "The events after which a consolidated document releases its sources."
+  def releasing_events, do: @releasing
+
   @doc "Whether a document view is a consolidated document."
-  def consolidated?(%{details: details}) when is_map(details), do: Map.has_key?(details, month_key())
+  def consolidated?(%{details: details}) when is_map(details),
+    do: Map.has_key?(details, month_key())
+
   def consolidated?(_document), do: false
 
   @doc """
@@ -99,12 +108,12 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
     ids = Enum.map(documents, & &1.id)
     statuses = Documents.statuses(scope, company_id, ids)
     submitted = submitted_ids(scope, company_id, ids)
+    queued = Documents.submissions_queued(company_id, ids)
 
     documents
     |> Enum.filter(fn document ->
       statuses[document.id] in @open_statuses and document.id not in submitted and
-        not Map.has_key?(document.details, month_key()) and
-        not Documents.submission_queued?(company_id, document.id)
+        document.id not in queued and not Map.has_key?(document.details, month_key())
     end)
     |> Enum.map(&{&1, Configuration.authority().consolidation_refusal(&1)})
     |> Enum.split_with(fn {_document, refusal} -> is_nil(refusal) end)
@@ -155,7 +164,8 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
     |> Enum.sort_by(fn {{type, rate, reason}, _} -> {type, Decimal.to_float(rate), reason} end)
   end
 
-  defp tax_key(line), do: {line.tax_type, Decimal.normalize(line.tax_rate), line.tax_exemption_reason}
+  defp tax_key(line),
+    do: {line.tax_type, Decimal.normalize(line.tax_rate), line.tax_exemption_reason}
 
   defp line({tax_type, tax_rate, reason}, pairs, description) do
     %{
@@ -175,7 +185,10 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
     do: "#{length(codes)} documents, #{List.first(codes)} to #{List.last(codes)}"
 
   defp sum(pairs, field),
-    do: Enum.reduce(pairs, Decimal.new("0.00"), fn {_, line}, total -> Decimal.add(total, Map.fetch!(line, field)) end)
+    do:
+      Enum.reduce(pairs, Decimal.new("0.00"), fn {_, line}, total ->
+        Decimal.add(total, Map.fetch!(line, field))
+      end)
 
   @doc """
   Records which sources each line of the consolidated document carries,
@@ -244,12 +257,7 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
         |> Documents.summary_view(statuses[id])
         |> Map.put(:line_numbers, line_numbers)
       end)
-      |> Enum.sort_by(&{&1.issued_at, &1.id}, fn {a, x}, {b, y} ->
-        case DateTime.compare(a, b) do
-          :eq -> x <= y
-          order -> order == :lt
-        end
-      end)
+      |> Enum.sort_by(&{DateTime.to_unix(&1.issued_at), &1.id})
 
     holder = Enum.find(holders, fn id -> statuses[id] not in @releasing end)
 
@@ -272,7 +280,7 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
 
   @doc """
   Records `released` on each source a consolidated document holds, once
-  the authority holds that document as cancelled or invalid, inside the
+  the authority refused it, found it invalid, or cancelled it, inside the
   transaction recording that event. A source already released, or never
   consolidated, is left alone.
   """

@@ -302,10 +302,13 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       query!.(submission.(1))
     end
 
-    # A cancelled consolidated document releases its sources.
+    # A cancelled consolidated document releases its sources and is never
+    # submitted again.
     assert {:ok, _} = in_transaction.([event.(10, "cancelled")])
     assert {:ok, _} = in_transaction.(consolidated.(14, 10, [1]))
     assert %{num_rows: 1} = query!.(submission.(2))
+
+    assert_raise Postgrex.Error, ~r/released its sources/, fn -> query!.(submission.(10)) end
 
     assert_raise Postgrex.Error, ~r/submitted on its own and cannot be consolidated/, fn ->
       in_transaction.(consolidated.(15, 5, [2]))
