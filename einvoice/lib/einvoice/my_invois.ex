@@ -73,6 +73,26 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   def note_document_types, do: @notes
 
   @impl true
+  def posting_rule("01"), do: {:debit, :receivable_account}
+  def posting_rule("02"), do: {:credit, :receivable_account}
+  def posting_rule("03"), do: {:debit, :receivable_account}
+  def posting_rule("04"), do: {:credit, :settlement_account}
+  def posting_rule(_type), do: nil
+
+  @impl true
+  def document_type_name("01"), do: "Invoice"
+  def document_type_name("02"), do: "Credit note"
+  def document_type_name("03"), do: "Debit note"
+  def document_type_name("04"), do: "Refund note"
+  def document_type_name(type), do: "Document type #{type}"
+
+  @impl true
+  def cancellation_window_hours, do: 72
+
+  @impl true
+  def outage_notice_hours, do: 72
+
+  @impl true
   def document_versions, do: @versions
 
   @doc "The UBL format version documents are built in when a company chose none."

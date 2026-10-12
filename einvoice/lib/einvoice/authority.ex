@@ -53,6 +53,24 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
   @doc "The document types that reference an original document (credit, debit, and refund notes)."
   @callback note_document_types() :: [String.t()]
 
+  @doc """
+  How a validated document of this type posts to the ledger: the side
+  (`:debit` or `:credit`) the document's counter-account takes, and which
+  account that is, the `:receivable_account` or the `:settlement_account`.
+  Revenue and tax take the opposite side. `nil` for a type with no rule.
+  """
+  @callback posting_rule(document_type :: String.t()) ::
+              {:debit | :credit, :receivable_account | :settlement_account} | nil
+
+  @doc "The human name of a document type, as the pages and the PDF show it."
+  @callback document_type_name(document_type :: String.t()) :: String.t()
+
+  @doc "Hours after validation in which the supplier may still cancel a document."
+  @callback cancellation_window_hours() :: pos_integer()
+
+  @doc "Hours of unbroken outage after which an operator is told a submission is overdue."
+  @callback outage_notice_hours() :: pos_integer()
+
   @doc "The document format versions a company may choose, and whether each needs a signature."
   @callback document_versions() :: [%{version: String.t(), signed: boolean()}]
 

@@ -439,14 +439,40 @@ defmodule Bilimbi.Finance.Einvoice do
   `pdf_generated` event: `{:ok, %{artifact_id, byte_size, sha256}}`. The
   artifact is read back with `read_pdf/3`. Base Artifacts must have a
   storage root and retention period configured (`{:error, reason}` from
-  it otherwise).
+  it otherwise). The event keeps the sequence of the last other event the
+  PDF was rendered from; while the document has gained none since, asking
+  again returns that artifact and records nothing.
   """
   @spec generate_pdf(Scope.t(), term(), term()) ::
           {:ok, map()} | {:error, write_refusal() | :document_not_found | term()}
   def generate_pdf(%Scope{} = scope, company_id, document_id) do
     with {:ok, _company} <- authorize_company(scope, company_id, @view),
-         {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
-         {:ok, stored} <-
+         {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)) do
+      case current_pdf(document) do
+        {:ok, stored} -> {:ok, stored}
+        nil -> render_pdf(scope, company_id, document)
+      end
+    end
+  end
+
+  defp current_pdf(%{events: events}) do
+    as_of = rendered_sequence(events)
+
+    with %{response: %{"as_of_sequence" => ^as_of} = response} <-
+           events |> Enum.filter(&(&1.event == "pdf_generated")) |> List.last(),
+         %{"artifact_id" => id, "byte_size" => size, "sha256" => sha256} <- response do
+      {:ok, %{artifact_id: id, byte_size: size, sha256: sha256}}
+    else
+      _other -> nil
+    end
+  end
+
+  defp rendered_sequence(events) do
+    events |> Enum.reject(&(&1.event == "pdf_generated")) |> Enum.map(& &1.sequence) |> Enum.max()
+  end
+
+  defp render_pdf(scope, company_id, document) do
+    with {:ok, stored} <-
            Artifacts.generate_pdf(
              scope,
              company_id,
@@ -457,7 +483,12 @@ defmodule Bilimbi.Finance.Einvoice do
       write(scope, company_id, @view, fn _company ->
         Documents.record_event!(scope, company_id, document.id, %{
           event: "pdf_generated",
-          response: %{"artifact_id" => stored.id, "sha256" => stored.sha256}
+          response: %{
+            "artifact_id" => stored.id,
+            "byte_size" => stored.byte_size,
+            "sha256" => stored.sha256,
+            "as_of_sequence" => rendered_sequence(document.events)
+          }
         })
 
         record_action(scope, company_id, "finance.einvoice.pdf.generated", %{

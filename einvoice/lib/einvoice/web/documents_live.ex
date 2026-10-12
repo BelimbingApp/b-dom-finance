@@ -13,9 +13,10 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
   alias Bilimbi.Base.UI.ListState
   alias Bilimbi.Base.UI.Params
   alias Bilimbi.Finance.Einvoice
+  alias Bilimbi.Finance.Einvoice.Configuration
 
   @statuses ~w(issued submitted refused valid invalid cancelled rejected)
-  @types ~w(01 02 03 04)
+  @types Configuration.authority().issuable_document_types()
 
   @list ListState.spec!(
           page_sizes: Einvoice.page_sizes(),
@@ -115,11 +116,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
   end
 
   @doc false
-  def type_label("01"), do: "Invoice"
-  def type_label("02"), do: "Credit note"
-  def type_label("03"), do: "Debit note"
-  def type_label("04"), do: "Refund note"
-  def type_label(type), do: "Type #{type}"
+  def type_label(type), do: Configuration.authority().document_type_name(type)
 
   @doc false
   def status_kind("valid"), do: :success

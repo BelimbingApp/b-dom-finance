@@ -43,9 +43,6 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Ledger
 
-  @debit_side ["01", "03"]
-  @credit_side ["02"]
-  @refund ["04"]
   @transient_codes [
     :lock_not_available,
     :serialization_failure,
@@ -219,11 +216,9 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     settings = Configuration.posting_accounts(scope, company_id)
 
     needed =
-      cond do
-        document_type in @debit_side -> [:receivable_account, :revenue_account, :tax_account]
-        document_type in @credit_side -> [:receivable_account, :revenue_account, :tax_account]
-        document_type in @refund -> [:settlement_account, :revenue_account, :tax_account]
-        true -> []
+      case Configuration.authority().posting_rule(document_type) do
+        {_side, account} -> [account, :revenue_account, :tax_account]
+        nil -> []
       end
 
     missing = Enum.filter(needed, &is_nil(settings[&1]))
@@ -275,12 +270,9 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     tax = document.tax_amount
     gross = document.payable_amount
 
-    {other_account, other_side, revenue_side} =
-      cond do
-        type in @debit_side -> {accounts.receivable_account, :debit, :credit}
-        type in @credit_side -> {accounts.receivable_account, :credit, :debit}
-        type in @refund -> {accounts.settlement_account, :credit, :debit}
-      end
+    {other_side, other_field} = Configuration.authority().posting_rule(type)
+    other_account = Map.fetch!(accounts, other_field)
+    revenue_side = if other_side == :debit, do: :credit, else: :debit
 
     lines =
       [
@@ -303,11 +295,8 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   # Code number (at most 50 characters) and UUID (26) fit the reference's 100.
   defp reference(document), do: "#{document.code_number} #{document.document_uuid}"
 
-  defp type_name("01"), do: "invoice"
-  defp type_name("02"), do: "credit note"
-  defp type_name("03"), do: "debit note"
-  defp type_name("04"), do: "refund note"
-  defp type_name(type), do: "type #{type}"
+  defp type_name(type),
+    do: type |> Configuration.authority().document_type_name() |> String.downcase()
 
   defp failure_message(%Ecto.Changeset{} = changeset) do
     changeset

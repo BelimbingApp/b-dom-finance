@@ -20,7 +20,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   submitted inside the authority's window, so an earlier attempt reached
   it), `rate_limited` (the job retries after the queue's backoff), or
   `unavailable` (an outage or transport failure: the job retries, and
-  when the outage has lasted #{72} hours an `overdue` event and the audit
+  when the outage has outlasted the authority's allowance an `overdue` event and the audit
   action `finance.einvoice.submission.overdue` give the operator notice).
   A document whose status is already `submitted`, `valid`, or `cancelled`
   is never submitted again, whatever the job says.
@@ -57,7 +57,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   buyer's rejection request becomes `rejected`, a cancellation made on
   the portal becomes `cancelled`, and an unchanged status is kept as
   `status_checked`. A cancellation is guarded before the authority is
-  asked: only a valid (or rejected) document, inside its 72-hour window,
+  asked: only a valid (or rejected) document, inside the authority's cancellation window,
   with no active note referencing it; the authority's own refusal is
   recorded as `cancellation_refused`.
 
@@ -83,7 +83,6 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   @cancellable ["valid", "rejected"]
   # Notes in these statuses still reference their original at the authority.
   @active_note_statuses ["submitted", "valid", "rejected"]
-  @outage_hours 72
   @max_reads_per_job 10
   @lookup_margin_seconds 60
   # The events that end an attempt: the authority answered, whatever it said.
@@ -439,7 +438,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     authority().find_submission(scope, company_id, credentials, lookup)
   end
 
-  # Once the authority has been unreachable for 72 hours since this
+  # Once the authority has been unreachable for its outage allowance since this
   # document's first failed attempt, the operator is told once, through an
   # event the page shows and an audit action; the job keeps retrying.
   defp notice_if_overdue(scope, company_id, document, now) do
@@ -455,11 +454,11 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     noticed? = Enum.any?(since_status, &(&1.event == "overdue"))
 
     if first && not noticed? &&
-         DateTime.diff(now, first.recorded_at, :second) >= @outage_hours * 3600 do
+         DateTime.diff(now, first.recorded_at, :second) >= outage_hours() * 3600 do
       record(scope, company_id, document.id, %{
         event: "overdue",
         reason:
-          "not submitted within #{@outage_hours} hours of the authority becoming unavailable"
+          "not submitted within #{outage_hours()} hours of the authority becoming unavailable"
       })
 
       Documents.record_action!(scope, company_id, "finance.einvoice.submission.overdue", %{
@@ -999,6 +998,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   # Tests set it to 0; the SDK asks for 3 to 5 seconds between reads.
   defp poll_interval_ms,
     do: Application.get_env(:bilimbi_finance_einvoice, :poll_interval_ms, 4_000)
+
+  defp outage_hours, do: authority().outage_notice_hours()
 
   defp record(scope, company_id, document_id, attributes),
     do: Documents.record_event!(scope, company_id, document_id, attributes)

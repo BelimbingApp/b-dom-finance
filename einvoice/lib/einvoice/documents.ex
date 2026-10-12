@@ -16,14 +16,11 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Finance.Einvoice.{Document, Line, StatusEvent}
 
   @max_bigint 9_223_372_036_854_775_807
+  @reason_length 300
 
   # Events that move a document's status; any other event records an
   # answer, a posting, or a notice without changing it.
   @status_events ~w(issued submitted refused valid invalid cancelled rejected)
-
-  # Hours after validation in which the authority lets the supplier cancel
-  # a document (Guideline §2.4.5); afterwards only a note corrects it.
-  @cancellation_window_hours 72
 
   # Statuses in which the authority still holds the document as valid: a
   # buyer's rejection request leaves it so until it is cancelled.
@@ -35,8 +32,8 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   @doc "The statuses in which the authority still holds the document as valid."
   def valid_statuses, do: @valid_statuses
 
-  @doc "The window after validation in which a document can be cancelled."
-  def cancellation_window_hours, do: @cancellation_window_hours
+  @doc "The window after validation in which a document can be cancelled, as the authority sets it."
+  def cancellation_window_hours, do: Configuration.authority().cancellation_window_hours()
 
   ## Queries
 
@@ -261,6 +258,11 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   the event name and whatever the answer gave.
   """
   def record_event!(%Scope{} = scope, company_id, document_id, attributes) do
+    attributes =
+      attributes
+      |> Map.new()
+      |> Map.update(:reason, nil, &(&1 && String.slice(&1, 0, @reason_length)))
+
     actor =
       case Scope.actor(scope) do
         %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} ->
@@ -448,7 +450,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
       validated_at: validated_at,
       validation_url: validation_url(document.environment, document_uuid, long_id),
       cancellable_until:
-        validated_at && DateTime.add(validated_at, @cancellation_window_hours * 3600, :second),
+        validated_at && DateTime.add(validated_at, cancellation_window_hours() * 3600, :second),
       ledger_entry_id: posted && posted.ledger_entry_id,
       reversal_entry_id: reversed && reversed.ledger_entry_id,
       pdf_artifact_id: pdf && pdf.response["artifact_id"],
@@ -467,8 +469,8 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
 
   defp validation_url(_environment, _uuid, _long_id), do: nil
 
-  # What an operator should look at: a submission still unsent 72 hours
-  # into an outage, a buyer's rejection request, a validated document
+  # What an operator should look at: a submission still unsent past the
+  # authority's outage allowance, a buyer's rejection request, a validated document
   # without its ledger entry, a posting that failed, or a cancelled
   # document whose entry was not reversed.
   defp attention(events, status, posted, reversed) do

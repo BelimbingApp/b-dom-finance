@@ -21,6 +21,7 @@ defmodule Bilimbi.Finance.Einvoice.ArtifactOwner do
   alias Bilimbi.Base.Artifacts.PDF.Renderer
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Einvoice.Configuration
 
   @view "finance.einvoice.view"
   @kind "document-pdf"
@@ -151,11 +152,7 @@ defmodule Bilimbi.Finance.Einvoice.ArtifactOwner do
 
   defp latin1(other), do: to_string(other)
 
-  defp type_name("01"), do: "Invoice"
-  defp type_name("02"), do: "Credit note"
-  defp type_name("03"), do: "Debit note"
-  defp type_name("04"), do: "Refund note"
-  defp type_name(type), do: "Document type #{type}"
+  defp type_name(type), do: Configuration.authority().document_type_name(type)
 
   defp status_name(nil), do: "recorded"
   defp status_name(status), do: status

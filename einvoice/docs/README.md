@@ -188,7 +188,10 @@ The PDF is rendered by `Bilimbi.Finance.Einvoice.ArtifactOwner` with Base
 Artifacts' pure PDF serializer, so it needs no browser; it carries the
 validation link in text, and the QR code is on the page. Base Artifacts
 needs a storage root and retention period configured (Operator Settings)
-before a PDF can be stored.
+before a PDF can be stored. The `pdf_generated` event keeps the sequence of
+the last other event the PDF was rendered from; asking again while the
+document has gained none returns the stored artifact and records no new
+artifact, event, or audit action.
 
 ## Authority
 
@@ -209,7 +212,13 @@ and one authority's rules. Everything MyInvois defines sits in
   types `01` to `05` need a rate above zero, and `06` and `E` need zero (`E`
   also needs its exemption reason). Its login, the missing supplier fields,
   and the identity a certificate's subject carries are reached through
-  `Authority` callbacks, not named by the facade.
+  `Authority` callbacks, not named by the facade. So are the posting side
+  of each document type (`posting_rule/1`), its human name
+  (`document_type_name/1`), the cancellation window
+  (`cancellation_window_hours/0`, 72 for MyInvois), and the outage
+  allowance before the operator notice (`outage_notice_hours/0`, 72);
+  `Posting`, `Documents`, `Clearance`, the pages, and the PDF name no
+  document type code and no window.
 - `MyInvois.Builder` writes UBL 2.1 JSON in the element order of the SDK's
   samples, and `test/builder_golden_test.exs` rebuilds all four SDK version
   1.1 samples byte for byte. It maps and never computes, which is why it can

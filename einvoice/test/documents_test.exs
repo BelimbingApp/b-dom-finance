@@ -113,10 +113,74 @@ defmodule Bilimbi.Finance.Einvoice.DocumentsTest do
       assert {:error, :not_found} = Einvoice.read_pdf(op, 73, nil)
     end
 
+    test "asking again for an unchanged document returns the stored PDF and records nothing",
+         %{operator: op} do
+      TestFixtures.put_artifacts_root!()
+      {:ok, document} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
+      :ok = TestFixtures.validate!(op, 73, document.id)
+
+      assert {:ok, %{artifact_id: artifact_id} = first} =
+               Einvoice.generate_pdf(op, 73, document.id)
+
+      assert {:ok, ^first} = Einvoice.generate_pdf(op, 73, document.id)
+
+      assert {:ok, %{events: events}} = Einvoice.get_document(op, 73, document.id)
+      assert [%{response: %{"artifact_id" => ^artifact_id}}] = pdf_events(events)
+
+      assert [[%{"artifact_id" => ^artifact_id}]] =
+               Bilimbi.Base.Audit.TestFixtures.action_payloads("finance.einvoice.pdf.generated")
+    end
+
+    test "a document that gained an event gets a new PDF", %{operator: op} do
+      TestFixtures.put_artifacts_root!()
+      {:ok, document} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
+      :ok = TestFixtures.validate!(op, 73, document.id)
+
+      assert {:ok, %{artifact_id: first_id}} = Einvoice.generate_pdf(op, 73, document.id)
+      Documents.record_event!(op, 73, document.id, %{event: "status_checked"})
+      assert {:ok, %{artifact_id: second_id}} = Einvoice.generate_pdf(op, 73, document.id)
+      refute second_id == first_id
+
+      assert {:ok, %{events: events, pdf_artifact_id: ^second_id}} =
+               Einvoice.get_document(op, 73, document.id)
+
+      assert [_, _] = pdf_events(events)
+      assert {:ok, %{artifact_id: ^second_id}} = Einvoice.generate_pdf(op, 73, document.id)
+
+      assert [_, _] =
+               Bilimbi.Base.Audit.TestFixtures.action_payloads("finance.einvoice.pdf.generated")
+    end
+
     test "refuses without storage configured", %{operator: op} do
       {:ok, document} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
       assert {:error, _reason} = Einvoice.generate_pdf(op, 73, document.id)
       assert {:ok, %{pdf_artifact_id: nil}} = Einvoice.get_document(op, 73, document.id)
+    end
+  end
+
+  describe "authority rules" do
+    test "the pages, the PDF, and the cancellation window read the authority's rules" do
+      authority = Bilimbi.Finance.Einvoice.Configuration.authority()
+
+      assert authority.posting_rule("01") == {:debit, :receivable_account}
+      assert authority.posting_rule("02") == {:credit, :receivable_account}
+      assert authority.posting_rule("03") == {:debit, :receivable_account}
+      assert authority.posting_rule("04") == {:credit, :settlement_account}
+      assert authority.posting_rule("99") == nil
+      assert authority.document_type_name("02") == "Credit note"
+      assert Documents.cancellation_window_hours() == authority.cancellation_window_hours()
+    end
+
+    test "an event's reason is kept to the column's length", %{operator: op} do
+      {:ok, document} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
+
+      event =
+        Documents.record_event!(op, 73, document.id, %{
+          event: "search_deferred",
+          reason: String.duplicate("x", 400)
+        })
+
+      assert String.length(event.reason) == 300
     end
   end
 
@@ -164,4 +228,6 @@ defmodule Bilimbi.Finance.Einvoice.DocumentsTest do
       assert Enum.map(events, & &1.event) == ["issued", "submitted", "valid", "posted"]
     end
   end
+
+  defp pdf_events(events), do: Enum.filter(events, &(&1.event == "pdf_generated"))
 end

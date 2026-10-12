@@ -9,7 +9,7 @@ defmodule Bilimbi.Finance.Einvoice.SubmitWorker do
   `Bilimbi.Finance.Einvoice.Clearance`: an accepted or refused submission
   completes the job, a rate limit or outage retries it under the queue's
   backoff (twenty attempts span several days, which covers the authority's
-  72-hour outage allowance), and a duplicate stops it for an operator.
+  outage allowance), and a duplicate stops it for an operator.
   """
 
   use Bilimbi.Base.Queue.Worker, id: "finance/einvoice-submit", max_attempts: 20

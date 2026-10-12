@@ -3,8 +3,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   One fiscal document: its parties, lines, totals, the authority's
   identifiers, its validation link with the QR code a buyer scans, every
   status event, and the ledger entries it posted. Actions: submit to the
-  authority, refresh the status, cancel with a reason inside the 72-hour
-  window, generate and download the PDF, and copy the share link.
+  authority, refresh the status, cancel with a reason inside the authority's
+  cancellation window, generate and download the PDF, and copy the share link.
 
   The record is read-first; nothing on it is edited. Every action is a
   facade call that re-asks its capability, and the `can_*` assigns only
@@ -18,6 +18,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   alias Bilimbi.Base.UI.Params
   alias Bilimbi.Base.UI.Workspace
   alias Bilimbi.Finance.Einvoice
+  alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Einvoice.QrCode
   alias Bilimbi.Finance.Einvoice.Web.DocumentsLive
 
@@ -203,7 +205,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   defp cancel_message(:company_archived), do: "The company is archived."
 
   defp cancel_message(:cancellation_period_over),
-    do: "The 72-hour cancellation window has closed; issue a credit note instead."
+    do:
+      "The #{Documents.cancellation_window_hours()}-hour cancellation window has closed; issue a credit note instead."
 
   defp cancel_message(:active_referencing_documents),
     do: "A note the authority holds references this document; cancel the note first."
@@ -240,10 +243,11 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
 
   defp attention_text(:overdue),
     do:
-      "Not submitted within 72 hours of the authority becoming unavailable; the submission keeps retrying."
+      "Not submitted within #{Configuration.authority().outage_notice_hours()} hours of the authority becoming unavailable; the submission keeps retrying."
 
   defp attention_text(:rejection_requested),
-    do: "The buyer requested rejection. Cancel within the 72-hour window, or issue a credit note."
+    do:
+      "The buyer requested rejection. Cancel within the #{Documents.cancellation_window_hours()}-hour window, or issue a credit note."
 
   defp attention_text(:unposted), do: "Validated but not yet posted to the ledger."
 

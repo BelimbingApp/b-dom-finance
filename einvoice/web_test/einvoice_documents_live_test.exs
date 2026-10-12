@@ -60,6 +60,7 @@ defmodule BilimbiWeb.EinvoiceDocumentsLiveTest do
       {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/einvoice/documents")
 
       assert has_element?(view, "#einvoice-document-#{first.id}", "INV-1")
+      assert has_element?(view, "#einvoice-document-#{first.id}", "Invoice")
       assert has_element?(view, "#einvoice-document-#{second.id}", "valid")
       assert has_element?(view, "#einvoice-documents-pagination-summary")
 
