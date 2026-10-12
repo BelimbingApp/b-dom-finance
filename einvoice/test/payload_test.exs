@@ -28,14 +28,44 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.PayloadTest do
     generated = TestFixtures.test_certificate!()
     {:ok, certificate} = Certificate.parse(generated.certificate_pem)
 
-    assert %{format: "JSON", version: "1.1", bytes: bytes} =
+    signing_key = %{certificate: certificate, key: generated.key}
+
+    assert {:ok, %{format: "JSON", version: "1.1", bytes: bytes}} =
              MyInvois.payload(
                document,
-               %{certificate: certificate, key: generated.key},
+               %{version: "1.1", signing_key: signing_key},
                ~U[2026-10-01 00:31:00Z]
              )
 
     assert :ok = Signer.verify(bytes)
+
+    # The signed version needs the key; the unsigned 1.0 payload carries
+    # no signature and the 1.0 list version, as sandbox testing before the
+    # certificate arrives submits it.
+    assert {:error, :signing_key_required} =
+             MyInvois.payload(
+               document,
+               %{version: "1.1", signing_key: nil},
+               ~U[2026-10-01 00:31:00Z]
+             )
+
+    assert {:ok, %{version: "1.0", bytes: unsigned}} =
+             MyInvois.payload(
+               document,
+               %{version: "1.0", signing_key: nil},
+               ~U[2026-10-01 00:31:00Z]
+             )
+
+    refute unsigned =~ "UBLExtensions"
+    refute unsigned =~ "Signature"
+    assert unsigned =~ ~s("InvoiceTypeCode":[{"_":"01","listVersionID":"1.0"}])
+
+    assert {:error, :unsupported_version} =
+             MyInvois.payload(
+               document,
+               %{version: "9.9", signing_key: nil},
+               ~U[2026-10-01 00:31:00Z]
+             )
 
     for fragment <- [
           ~s("ID":[{"_":"JSON-INV12345"}]),

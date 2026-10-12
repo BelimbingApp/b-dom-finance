@@ -45,6 +45,18 @@ here; they govern this code and are not copied here.
   events with actor, reason, and a database-stamped time, the latest deciding
   the state, as the ledger's closing log does; an updatable status column
   loses the history an auditor asks for.
+- Record an e-invoice status event through
+  `Bilimbi.Finance.Einvoice.Documents.record_event!/4` and an outcome's
+  audit action through `Documents.record_action!/4`, never by inserting the
+  schemas: they take the actor from the scope. Talk to the authority only
+  through the `Bilimbi.Finance.Einvoice.Authority` callbacks (`submit`,
+  `document_status`, `cancel`, ...), which return meta-term outcomes;
+  `Bilimbi.Finance.Einvoice.Clearance` is the one caller that records them.
+- A job that acts for a user is queued with `Queue.enqueue_for/3` and its
+  arguments are identifiers only (`SubmitWorker.validate_args/1` is the
+  allowlist shape). Base Queue has no snooze: a worker returns `{:retry,
+  code}` and the queue's backoff spaces attempts; it never sleeps for a
+  `Retry-After`.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's

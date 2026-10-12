@@ -17,39 +17,50 @@ defmodule Bilimbi.Finance.Einvoice do
   operation, and later receivables all issue through it. It derives every
   amount from the lines, checks the document against the authority's rules
   and the company's code lists, and records it with its lines, its supplier
-  and buyer as they stood, and an `issued` status event. A recorded
+  and buyer as they stood, and an `issued` status event. A credit, debit,
+  or refund note names the validated original it corrects. A recorded
   document is never edited or deleted: the database refuses it (see the
   migration), and a cancellation, a rejection, or any other answer from the
   authority is a new status event.
+
+  `submit_document/3` queues the submission as the signed-in user;
+  `Bilimbi.Finance.Einvoice.Clearance` owns what the submit and poll jobs
+  record, `refresh_status/3` and `cancel_document/4` the user-driven
+  reads and the guarded cancellation, and
+  `Bilimbi.Finance.Einvoice.Posting` the ledger entry a validated document
+  posts and a cancelled one reverses. `generate_pdf/3` renders the
+  printable document through Base Artifacts.
 
   Results are plain maps; the schemas stay private to this module.
   """
 
   import Ecto.Query
 
-  alias Bilimbi.Base.Audit
+  alias Bilimbi.Base.Artifacts
+  alias Bilimbi.Base.Queue
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Einvoice.ArtifactOwner
   alias Bilimbi.Finance.Einvoice.Certificate
+  alias Bilimbi.Finance.Einvoice.Clearance
   alias Bilimbi.Finance.Einvoice.CodeLists
   alias Bilimbi.Finance.Einvoice.Configuration
-  alias Bilimbi.Finance.Einvoice.{Document, Draft, Line, StatusEvent}
+  alias Bilimbi.Finance.Einvoice.Documents
+  alias Bilimbi.Finance.Einvoice.{Document, Draft, Line, StatusEvent, SubmitWorker}
   alias Ecto.Changeset
 
   @view "finance.einvoice.view"
   @issue "finance.einvoice.documents.issue"
+  @submit "finance.einvoice.documents.submit"
+  @cancel "finance.einvoice.documents.cancel"
   @settings "finance.einvoice.settings.manage"
 
   @default_limit 50
   @max_limit 200
   @max_bigint 9_223_372_036_854_775_807
-
-  # Events that move a document's status; any other event records an
-  # answer without changing it.
-  @status_events ~w(issued submitted refused valid invalid cancelled rejected)
+  @page_sizes [25, 50, 100, 300]
 
   @type refusal :: :unauthorized | :company_not_found
   @type write_refusal :: refusal() | :company_archived
@@ -60,8 +71,17 @@ defmodule Bilimbi.Finance.Einvoice do
   @doc "The capability that issues documents."
   def issue_capability, do: @issue
 
+  @doc "The capability that submits documents to the authority and refreshes their status."
+  def submit_capability, do: @submit
+
+  @doc "The capability that cancels a validated document."
+  def cancel_capability, do: @cancel
+
   @doc "The capability that manages the company's e-invoicing settings and code overrides."
   def settings_capability, do: @settings
+
+  @doc "The events that move a document's status."
+  def status_events, do: Documents.status_events()
 
   ## Documents
 
@@ -80,6 +100,9 @@ defmodule Bilimbi.Finance.Einvoice do
     * optionally `payment_means_code`, `payment_terms`, and a billing period
       (`billing_period_start`, `billing_period_end`,
       `billing_period_description`);
+    * for a credit, debit, or refund note (the authority's `02` to `04`),
+      `original_document_id`: a validated document of this company, whose
+      code number and UUID the note carries;
     * `lines`, each with `description`, `classification_code`, `quantity`,
       `unit_price`, `tax_type`, and `tax_rate` (always stated, `0` where the
       authority takes no tax), and optionally `unit_code`, `discount_amount`,
@@ -102,11 +125,15 @@ defmodule Bilimbi.Finance.Einvoice do
 
       supplier = Configuration.supplier(scope, company_id, company.display_name)
       codes = code_lookup(scope, company_id)
+      draft_changeset = Draft.changeset(attributes, DateTime.utc_now())
+      original = original_document(scope, company_id, draft_changeset)
 
       changeset =
-        attributes
-        |> Draft.changeset(DateTime.utc_now())
-        |> validate_with_authority(supplier, codes)
+        validate_with_authority(draft_changeset, %{
+          supplier: supplier,
+          codes: codes,
+          original: original
+        })
 
       with {:ok, draft} <- Changeset.apply_action(changeset, :insert),
            :ok <- unused_code_number(scope, company_id, environment(scope, company_id), draft) do
@@ -123,7 +150,8 @@ defmodule Bilimbi.Finance.Einvoice do
             exchange_rate: draft.exchange_rate,
             supplier: supplier_snapshot(supplier),
             buyer: party_snapshot(draft.buyer),
-            details: details(draft),
+            details: details(draft, original),
+            original_document_id: original && original.id,
             line_extension_amount: draft.line_extension_amount,
             tax_exclusive_amount: draft.line_extension_amount,
             tax_amount: draft.tax_amount,
@@ -145,13 +173,14 @@ defmodule Bilimbi.Finance.Einvoice do
           actor_impersonator_id: impersonator_id
         })
 
-        view = document_view(fetch_document(scope, company_id, document.id))
+        view = Documents.document_view(Documents.fetch(scope, company_id, document.id))
 
         record_action(scope, company_id, "finance.einvoice.document.issued", %{
           "document_id" => view.id,
           "document_type" => view.document_type,
           "code_number" => view.code_number,
-          "environment" => view.environment
+          "environment" => view.environment,
+          "original_document_id" => view.original_document_id
         })
 
         {:ok, view}
@@ -159,18 +188,39 @@ defmodule Bilimbi.Finance.Einvoice do
     end)
   end
 
+  # A note's original, read before the authority judges it: the same
+  # company's document, or `nil`.
+  defp original_document(scope, company_id, changeset) do
+    case Changeset.get_field(changeset, :original_document_id) do
+      id when is_integer(id) and id > 0 ->
+        case Documents.fetch(scope, company_id, id) do
+          nil -> nil
+          fetched -> Documents.document_view(fetched)
+        end
+
+      _none ->
+        nil
+    end
+  end
+
   @doc """
   One document with its lines, its status events in order, and its current
   `status`: the latest status-moving event (`issued`, `submitted`,
-  `refused`, `valid`, `invalid`, `cancelled`, or `rejected`).
+  `refused`, `valid`, `invalid`, `cancelled`, or `rejected`). The view also
+  carries what the events say: `submission_uid`, `document_uuid`,
+  `long_id`, `validated_at`, `validation_url`, `cancellable_until`,
+  `ledger_entry_id`, `reversal_entry_id`, `pdf_artifact_id`, and
+  `attention`, the flags an operator should look at (`:overdue`,
+  `:rejection_requested`, `:unposted`, `:posting_failed`, `:unreversed`,
+  `:reversal_failed`).
   """
   @spec get_document(Scope.t(), term(), term()) ::
           {:ok, map()} | {:error, refusal() | :document_not_found}
   def get_document(%Scope{} = scope, company_id, document_id) do
     with :ok <- authorize(scope, company_id, @view) do
-      case fetch_document(scope, company_id, document_id) do
+      case Documents.fetch(scope, company_id, document_id) do
         nil -> {:error, :document_not_found}
-        document -> {:ok, document_view(document)}
+        document -> {:ok, Documents.document_view(document)}
       end
     end
   end
@@ -194,16 +244,208 @@ defmodule Bilimbi.Finance.Einvoice do
              {:error, :invalid_option} do
       documents =
         scope
-        |> documents_query(company_id)
+        |> Documents.documents_query(company_id)
         |> then(fn query -> if before, do: where(query, [d], d.id < ^before), else: query end)
         |> order_by([d], desc: d.id)
         |> limit(^limit)
         |> Repo.all()
 
-      statuses = statuses(scope, company_id, Enum.map(documents, & &1.id))
-      {:ok, Enum.map(documents, &summary_view(&1, Map.get(statuses, &1.id)))}
+      statuses = Documents.statuses(scope, company_id, Enum.map(documents, & &1.id))
+      {:ok, Enum.map(documents, &Documents.summary_view(&1, Map.get(statuses, &1.id)))}
     end
   end
+
+  @doc """
+  One page of the company's documents, newest first, for a list page:
+  `%{entries, page, page_size, total_entries, total_pages, has_prev?,
+  has_next?}`. Options: `page` (default 1), `page_size` (one of
+  #{inspect(@page_sizes)}, default 25), `search` (code number or buyer
+  name), `status`, `document_type`, and `environment`. A malformed option
+  is `{:error, :invalid_option}`.
+  """
+  @spec page_documents(Scope.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :invalid_option}
+  def page_documents(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    page = Keyword.get(options, :page, 1)
+    page_size = Keyword.get(options, :page_size, 25)
+
+    filters =
+      Enum.map([:search, :status, :document_type, :environment], &{&1, Keyword.get(options, &1)})
+
+    with :ok <- authorize(scope, company_id, @view),
+         true <-
+           (is_integer(page) and page > 0 and page_size in @page_sizes and
+              Enum.all?(filters, fn {_key, value} -> is_nil(value) or is_binary(value) end)) ||
+             {:error, :invalid_option} do
+      {:ok, Documents.page(scope, company_id, [page: page, page_size: page_size] ++ filters)}
+    end
+  end
+
+  @doc "The page sizes `page_documents/3` accepts."
+  def page_sizes, do: @page_sizes
+
+  ## Clearance
+
+  @doc """
+  Queues the document's submission to the authority as the signed-in
+  user: `{:ok, %{job_id: id}}`. Refused before queuing when the document's
+  status is not `issued`, `refused`, or `invalid` (`:not_submittable`),
+  the company lacks credentials for the document's environment
+  (`:missing_credentials`), or the chosen format version needs a signature
+  and the certificate and key are missing or mismatched
+  (`:signing_key_required`).
+  """
+  @spec submit_document(Scope.t(), term(), term()) ::
+          {:ok, %{job_id: pos_integer()}}
+          | {:error,
+             write_refusal()
+             | :document_not_found
+             | :not_submittable
+             | :missing_credentials
+             | :signing_key_required
+             | atom()}
+  def submit_document(%Scope{} = scope, company_id, document_id) do
+    write(scope, company_id, @submit, fn _company ->
+      with {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
+           {:ok, _prepared} <- Clearance.prepare(scope, company_id, document),
+           {:ok, job} <-
+             Queue.enqueue_for(scope, SubmitWorker, %{
+               "company_id" => company_id,
+               "document_id" => document.id
+             }) do
+        record_action(scope, company_id, "finance.einvoice.submission.queued", %{
+          "document_id" => document.id,
+          "code_number" => document.code_number,
+          "environment" => document.environment,
+          "job_id" => job.id
+        })
+
+        {:ok, %{job_id: job.id}}
+      end
+    end)
+  end
+
+  @doc """
+  Reads the document's status at the authority and records what changed
+  (see `Bilimbi.Finance.Einvoice.Clearance`): the document's view
+  afterwards. `{:error, :not_submitted}` before the authority has given
+  it a UUID; `{:error, {:authority, reason}}` when the authority could not
+  answer.
+  """
+  @spec refresh_status(Scope.t(), term(), term()) ::
+          {:ok, map()}
+          | {:error, refusal() | :document_not_found | :not_submitted | {:authority, term()}}
+  def refresh_status(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @submit),
+         {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)) do
+      Clearance.refresh(scope, company_id, document.id, DateTime.utc_now())
+    end
+  end
+
+  @doc """
+  Cancels a validated document at the authority with `reason` (1 to 300
+  characters), inside the #{Documents.cancellation_window_hours()}-hour
+  window after validation and only while no note the authority holds
+  references it; then records `cancelled` and reverses the document's
+  ledger entry. Refusals: `:not_cancellable`,
+  `:cancellation_period_over`, `:active_referencing_documents`,
+  `:invalid_reason`, `{:refused, code, reason}` from the authority,
+  `:rate_limited`, and `:authority_unavailable`.
+  """
+  @spec cancel_document(Scope.t(), term(), term(), String.t()) ::
+          {:ok, map()} | {:error, refusal() | :document_not_found | term()}
+  def cancel_document(%Scope{} = scope, company_id, document_id, reason) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @cancel),
+         {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)) do
+      Clearance.cancel(scope, company_id, document.id, reason, DateTime.utc_now())
+    end
+  end
+
+  @doc false
+  # The submit job's body: one attempt, as the job's user.
+  def run_submission(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @submit) do
+      Clearance.submit(scope, company_id, document_id, DateTime.utc_now())
+    end
+  end
+
+  @doc false
+  # The poll job's body.
+  def run_poll(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @submit) do
+      Clearance.poll(scope, company_id, document_id, DateTime.utc_now())
+    end
+  end
+
+  ## Reconciliation
+
+  @doc """
+  The documents whose ledger side does not match their status: `unposted`,
+  valid documents without a ledger entry (with the reason the last
+  posting failed, if one did), and `unreversed`, documents that are no
+  longer valid at the authority but whose entry stands. Each row is a
+  document summary with `ledger_entry_id`, `reversal_entry_id`, and
+  `reason`.
+  """
+  @spec reconciliation(Scope.t(), term()) ::
+          {:ok, %{unposted: [map()], unreversed: [map()]}} | {:error, refusal()}
+  def reconciliation(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok, Documents.reconciliation(scope, company_id)}
+    end
+  end
+
+  ## Printable document
+
+  @doc """
+  Renders the document as a PDF through Base Artifacts and records it on a
+  `pdf_generated` event: `{:ok, %{artifact_id, byte_size, sha256}}`. The
+  artifact is read back with `read_pdf/3`. Base Artifacts must have a
+  storage root and retention period configured (`{:error, reason}` from
+  it otherwise).
+  """
+  @spec generate_pdf(Scope.t(), term(), term()) ::
+          {:ok, map()} | {:error, write_refusal() | :document_not_found | term()}
+  def generate_pdf(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @view),
+         {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
+         {:ok, stored} <-
+           Artifacts.generate_pdf(
+             scope,
+             company_id,
+             ArtifactOwner,
+             ArtifactOwner.reference(document),
+             %{document: document}
+           ) do
+      write(scope, company_id, @view, fn _company ->
+        Documents.record_event!(scope, company_id, document.id, %{
+          event: "pdf_generated",
+          response: %{"artifact_id" => stored.id, "sha256" => stored.sha256}
+        })
+
+        record_action(scope, company_id, "finance.einvoice.pdf.generated", %{
+          "document_id" => document.id,
+          "code_number" => document.code_number,
+          "artifact_id" => stored.id
+        })
+
+        {:ok, %{artifact_id: stored.id, byte_size: stored.byte_size, sha256: stored.sha256}}
+      end)
+    end
+  end
+
+  @doc "The bytes of a PDF `generate_pdf/3` stored, for the download route."
+  @spec read_pdf(Scope.t(), term(), String.t()) ::
+          {:ok, %{bytes: binary(), filename: String.t()}} | {:error, term()}
+  def read_pdf(%Scope{} = scope, company_id, artifact_id) when is_binary(artifact_id) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, %{bytes: bytes, metadata: metadata}} <-
+           Artifacts.read(scope, company_id, ArtifactOwner, artifact_id) do
+      {:ok, %{bytes: bytes, filename: ArtifactOwner.filename(metadata)}}
+    end
+  end
+
+  def read_pdf(%Scope{}, _company_id, _artifact_id), do: {:error, :not_found}
 
   ## Code lists
 
@@ -276,6 +518,8 @@ defmodule Bilimbi.Finance.Einvoice do
       {:ok,
        %{
          environment: credentials.environment,
+         document_version: Configuration.document_version(scope, company_id),
+         posting_accounts: Configuration.posting_accounts(scope, company_id),
          client_id?: not is_nil(credentials.client_id),
          client_secret?: not is_nil(credentials.client_secret),
          client_secret_expires_on: credentials.secret_expires_on,
@@ -355,23 +599,11 @@ defmodule Bilimbi.Finance.Einvoice do
     end
   end
 
-  defp record_action(scope, company_id, event, payload) do
-    actor = Scope.actor(scope)
+  defp record_action(scope, company_id, event, payload),
+    do: Documents.record_action!(scope, company_id, event, payload)
 
-    {:ok, _action} =
-      Audit.record_action(scope, %{
-        event: event,
-        occurred_at: NaiveDateTime.utc_now(),
-        actor_type: "user",
-        actor_id: actor.user_id,
-        impersonator_id: actor.impersonator_id,
-        system_principal: nil,
-        company_id: company_id,
-        payload: payload
-      })
-
-    :ok
-  end
+  defp found(nil), do: {:error, :document_not_found}
+  defp found(fetched), do: {:ok, Documents.document_view(fetched)}
 
   ## Issuing
 
@@ -385,15 +617,13 @@ defmodule Bilimbi.Finance.Einvoice do
     &Map.fetch!(codes, &1)
   end
 
-  defp validate_with_authority(%{valid?: false} = changeset, _supplier, _codes), do: changeset
-
-  defp validate_with_authority(changeset, supplier, codes),
-    do: authority().validate(changeset, supplier, codes)
+  defp validate_with_authority(%{valid?: false} = changeset, _context), do: changeset
+  defp validate_with_authority(changeset, context), do: authority().validate(changeset, context)
 
   defp unused_code_number(scope, company_id, environment, draft) do
     taken? =
       scope
-      |> documents_query(company_id)
+      |> Documents.documents_query(company_id)
       |> where([d], d.environment == ^environment and d.code_number == ^draft.code_number)
       |> Repo.exists?()
 
@@ -432,6 +662,7 @@ defmodule Bilimbi.Finance.Einvoice do
     %{
       "name" => supplier.name,
       "tax_id" => supplier.tax_id,
+      "registration_type" => supplier.registration_type,
       "registration_number" => supplier.registration_number,
       "sales_tax_registration" => supplier.sales_tax_registration,
       "tourism_tax_registration" => supplier.tourism_tax_registration,
@@ -472,7 +703,9 @@ defmodule Bilimbi.Finance.Einvoice do
     }
   end
 
-  defp details(draft) do
+  # A note snapshots the original's code number and UUID: what the payload
+  # references, as it stood when the note was issued.
+  defp details(draft, original) do
     %{
       "payment_means_code" => draft.payment_means_code,
       "payment_terms" => draft.payment_terms,
@@ -480,7 +713,9 @@ defmodule Bilimbi.Finance.Einvoice do
         draft.billing_period_start && Date.to_iso8601(draft.billing_period_start),
       "billing_period_end" =>
         draft.billing_period_end && Date.to_iso8601(draft.billing_period_end),
-      "billing_period_description" => draft.billing_period_description
+      "billing_period_description" => draft.billing_period_description,
+      "original_code_number" => original && original.code_number,
+      "original_document_uuid" => original && original.document_uuid
     }
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
@@ -515,137 +750,5 @@ defmodule Bilimbi.Finance.Einvoice do
       {:error, :invalid_certificate} ->
         %{invalid?: true}
     end
-  end
-
-  ## Queries
-
-  defp documents_query(scope, company_id) do
-    from(d in Tenancy.scope_query(Document, scope), where: d.company_id == ^company_id)
-  end
-
-  defp fetch_document(scope, company_id, document_id) when is_integer(document_id) do
-    lines = order_by(Tenancy.scope_query(Line, scope), [l], asc: l.line_number)
-
-    scope
-    |> documents_query(company_id)
-    |> where([d], d.id == ^document_id)
-    |> preload(lines: ^lines)
-    |> Repo.one()
-    |> case do
-      nil -> nil
-      document -> {document, events(scope, company_id, document.id)}
-    end
-  end
-
-  defp fetch_document(_scope, _company_id, _document_id), do: nil
-
-  defp events(scope, company_id, document_id) do
-    from(e in Tenancy.scope_query(StatusEvent, scope),
-      where: e.company_id == ^company_id and e.document_id == ^document_id,
-      order_by: [asc: e.sequence]
-    )
-    |> Repo.all()
-  end
-
-  defp statuses(_scope, _company_id, []), do: %{}
-
-  defp statuses(scope, company_id, document_ids) do
-    from(e in Tenancy.scope_query(StatusEvent, scope),
-      where:
-        e.company_id == ^company_id and e.document_id in ^document_ids and
-          e.event in ^@status_events,
-      distinct: e.document_id,
-      order_by: [asc: e.document_id, desc: e.sequence],
-      select: {e.document_id, e.event}
-    )
-    |> Repo.all()
-    |> Map.new()
-  end
-
-  ## Views
-
-  @summary_fields [
-    :id,
-    :authority,
-    :environment,
-    :document_type,
-    :code_number,
-    :issued_at,
-    :currency_code,
-    :exchange_rate,
-    :line_extension_amount,
-    :tax_exclusive_amount,
-    :tax_amount,
-    :tax_inclusive_amount,
-    :payable_amount,
-    :original_document_id,
-    :issued_by_user_id,
-    :issued_by_impersonator_id,
-    :recorded_at
-  ]
-
-  defp summary_view(document, status) do
-    document
-    |> Map.take(@summary_fields)
-    |> Map.put(:buyer_name, document.buyer["name"])
-    |> Map.put(:status, status)
-  end
-
-  defp document_view({document, events}) do
-    status =
-      events
-      |> Enum.filter(&(&1.event in @status_events))
-      |> List.last()
-
-    document
-    |> Map.take(@summary_fields ++ [:supplier, :buyer, :details])
-    |> Map.put(:status, status && status.event)
-    |> Map.put(
-      :lines,
-      Enum.map(
-        document.lines,
-        &Map.take(&1, [
-          :line_number,
-          :description,
-          :classification_code,
-          :tariff_code,
-          :origin_country_code,
-          :quantity,
-          :unit_code,
-          :unit_price,
-          :subtotal,
-          :discount_amount,
-          :charge_amount,
-          :line_extension_amount,
-          :tax_type,
-          :tax_rate,
-          :tax_amount,
-          :tax_exemption_reason
-        ])
-      )
-    )
-    |> Map.put(
-      :events,
-      Enum.map(
-        events,
-        &Map.take(&1, [
-          :sequence,
-          :event,
-          :submission_id,
-          :authority_status,
-          :submission_uid,
-          :document_uuid,
-          :long_id,
-          :reason,
-          :http_status,
-          :response,
-          :actor_type,
-          :actor_user_id,
-          :actor_impersonator_id,
-          :system_principal,
-          :recorded_at
-        ])
-      )
-    )
   end
 end

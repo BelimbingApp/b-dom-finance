@@ -7,14 +7,15 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
 | [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, and trial balance |
-| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents, signed submissions and status events, the authority's code lists, and each company's credentials and certificate |
+| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
 
 The ledger is the first module. Later Finance modules, such as receivables,
 payables, tax, and bank reconciliation, sit beside it as sibling module
 folders and post through its public API; other Domains post through the same
 API. The ledger exposes that API with no pages, menu entries, or agent
-operations. E-invoicing issues documents through its own facade and has one
-page, its setup. Each module's "Standards addressed" section says which
+operations. E-invoicing issues documents through its own facade, posts
+validated ones through the ledger's, and has pages for its documents, its
+reconciliation, and its setup. Each module's "Standards addressed" section says which
 bookkeeping and audit standards it meets.
 
 ## Mount

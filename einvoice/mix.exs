@@ -25,6 +25,7 @@ defmodule Bilimbi.Finance.Einvoice.MixProject do
     [
       {:ecto_sql, "~> 3.14"},
       {:decimal, "~> 3.1"},
+      {:eqrcode, "~> 0.2.1"},
       {:jason, "~> 1.4"},
       {:phoenix_live_view, "~> 1.2.0"},
       {:postgrex, "~> 0.22"},

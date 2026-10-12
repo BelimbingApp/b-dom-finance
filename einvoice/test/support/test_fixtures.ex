@@ -24,18 +24,33 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
   alias Bilimbi.Finance.Einvoice.Contributions
+  alias Bilimbi.Finance.Einvoice.Documents
+  alias Bilimbi.Finance.Einvoice.MyInvois.Client
+  alias Bilimbi.Finance.Ledger
   alias Ecto.Adapters.SQL
 
   @view "finance.einvoice.view"
   @issue "finance.einvoice.documents.issue"
+  @submit "finance.einvoice.documents.submit"
+  @cancel "finance.einvoice.documents.cancel"
   @settings "finance.einvoice.settings.manage"
 
+  @ledger_capabilities [
+    "finance.ledger.view",
+    "finance.ledger.accounts.manage",
+    "finance.ledger.entries.post"
+  ]
+
   @doc "Every capability the module declares."
-  def capabilities, do: [@view, @issue, @settings]
+  def capabilities, do: [@view, @issue, @submit, @cancel, @settings]
+
+  @doc "The ledger capabilities a user needs for the posting bridge."
+  def ledger_capabilities, do: @ledger_capabilities
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
-  e-invoicing, settings, audit, exchange and Authz tables, and a contribution snapshot with the module's capabilities and
+  e-invoicing, ledger, artifacts, settings, audit, exchange and Authz
+  tables, and a contribution snapshot with the module's capabilities and
   settings. Returns the two tenants' system scopes.
   """
   def setup_einvoice! do
@@ -44,6 +59,8 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
     Bilimbi.Base.Settings.TestFixtures.create_settings_table!()
     Bilimbi.Base.Audit.TestFixtures.create_audit_tables!()
     Bilimbi.Base.Integration.TestFixtures.create_exchanges_table!()
+    Bilimbi.Base.Artifacts.TestFixtures.create_artifacts_table!()
+    Ledger.TestFixtures.create_ledger_tables!()
     create_einvoice_tables!()
     install_contributions!()
 
@@ -65,11 +82,13 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
     %{first_scope: first, second_scope: second}
   end
 
-  @doc "A contribution snapshot with the platform's and this module's Authz and Settings."
+  @doc "A contribution snapshot with the platform's, the ledger's, and this module's Authz and Settings."
   def install_contributions! do
     providers = [
       {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
+      {"base/artifacts", :bilimbi_base_artifacts, Bilimbi.Base.Artifacts.Contributions},
       {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
+      {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
       {"finance/einvoice", :bilimbi_finance_einvoice, Contributions}
     ]
 
@@ -140,6 +159,168 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
       "sandbox.client_id" => "test-client-id",
       "sandbox.client_secret" => "test-client-secret"
     })
+  end
+
+  @doc """
+  Opens the company's ringgit book as `operator`, adds the four accounts
+  the posting bridge names, and stores their codes as the posting
+  settings. Returns the accounts by role.
+  """
+  def open_posting_book!(%Scope{} = operator, company_id) do
+    {:ok, _book} = Ledger.open_book(operator, company_id, %{currency_code: "MYR", minor_units: 2})
+
+    accounts =
+      Map.new(
+        [
+          receivable_account: {"1100", "Trade receivables", "asset"},
+          settlement_account: {"1000", "Bank", "asset"},
+          tax_account: {"2200", "Tax payable", "liability"},
+          revenue_account: {"4000", "Sales", "income"}
+        ],
+        fn {role, {code, name, type}} ->
+          {:ok, account} =
+            Ledger.create_account(operator, company_id, %{
+              code: code,
+              name: name,
+              account_type: type
+            })
+
+          {role, account}
+        end
+      )
+
+    :ok =
+      put_settings!(
+        operator,
+        company_id,
+        Map.new(accounts, fn {role, account} -> {"posting.#{role}", account.code} end)
+      )
+
+    accounts
+  end
+
+  @doc """
+  Points Base Artifacts at a fresh private directory for this test, with a
+  retention period, so a PDF can be stored.
+  """
+  def put_artifacts_root! do
+    root = Path.join(System.tmp_dir!(), "einvoice-pdf-" <> Ecto.UUID.generate())
+    File.mkdir_p!(root)
+    File.chmod!(root, 0o700)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(root) end)
+    {:ok, _} = Settings.put("artifacts.storage_root", root)
+    {:ok, _} = Settings.put("artifacts.retention_days", 30)
+    root
+  end
+
+  @doc """
+  Records the events a submission and validation would have, without the
+  authority: `submitted` with the UIDs, then `valid` with the long ID and
+  a validation instant, as the given scope's actor.
+  """
+  def validate!(%Scope{} = scope, company_id, document_id, options \\ []) do
+    uuid = Keyword.get(options, :uuid, "F9D425P6DS7D8IU")
+    long_id = Keyword.get(options, :long_id, "LIJAF97HJJKH")
+    validated_at = Keyword.get(options, :validated_at, DateTime.utc_now())
+
+    Documents.record_event!(scope, company_id, document_id, %{
+      event: "submitted",
+      authority_status: "Submitted",
+      submission_uid: Keyword.get(options, :submission_uid, "HJSD135P2S7D8IU"),
+      document_uuid: uuid,
+      http_status: 202,
+      response: %{"submissionUid" => "HJSD135P2S7D8IU"}
+    })
+
+    Documents.record_event!(scope, company_id, document_id, %{
+      event: "valid",
+      authority_status: "Valid",
+      document_uuid: uuid,
+      long_id: long_id,
+      http_status: 200,
+      response: %{
+        "uuid" => uuid,
+        "longId" => long_id,
+        "status" => "Valid",
+        "dateTimeValidated" => DateTime.to_iso8601(validated_at)
+      }
+    })
+
+    :ok
+  end
+
+  @doc """
+  Answers like the authority: `responses` maps `{method, path}` to a
+  function of the conn, and every request is sent to the test process as
+  `{:request, method, path, decoded_body}`. An unlisted path answers 404.
+  """
+  def stub_authority!(responses) do
+    test = self()
+
+    Req.Test.stub(Client, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      decoded = if body == "", do: nil, else: decode_body(body)
+      send(test, {:request, conn.method, conn.request_path, decoded})
+
+      case Map.fetch(responses, {conn.method, conn.request_path}) do
+        {:ok, respond} -> respond.(conn)
+        :error -> conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{})
+      end
+    end)
+  end
+
+  defp decode_body(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> body
+    end
+  end
+
+  @doc "The token answer every stubbed authority call starts with."
+  def token_response(conn),
+    do: Req.Test.json(conn, %{access_token: "stub-token", expires_in: 3600, token_type: "Bearer"})
+
+  @doc "A 202 that accepts the document with these identifiers."
+  def accepted_response(
+        conn,
+        code_number,
+        uuid \\ "F9D425P6DS7D8IU",
+        submission_uid \\ "HJSD135P2S7D8IU"
+      ) do
+    conn
+    |> Plug.Conn.put_status(202)
+    |> Req.Test.json(%{
+      submissionUid: submission_uid,
+      acceptedDocuments: [%{uuid: uuid, invoiceCodeNumber: code_number}],
+      rejectedDocuments: []
+    })
+  end
+
+  @doc "A submission status answer with this overall status."
+  def progress_response(conn, overall, document_status \\ "Valid") do
+    Req.Test.json(conn, %{
+      submissionUid: "HJSD135P2S7D8IU",
+      overallStatus: overall,
+      documentCount: 1,
+      documentSummary: [%{uuid: "F9D425P6DS7D8IU", status: document_status}]
+    })
+  end
+
+  @doc "A document details answer with this status and the extra fields."
+  def details_response(conn, status, extra \\ %{}) do
+    Req.Test.json(
+      conn,
+      Map.merge(
+        %{
+          uuid: "F9D425P6DS7D8IU",
+          submissionUid: "HJSD135P2S7D8IU",
+          longId: "LIJAF97HJJKH",
+          status: status,
+          dateTimeValidated: "2026-10-01T01:00:00Z"
+        },
+        extra
+      )
+    )
   end
 
   @doc """
@@ -386,7 +567,7 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
         document_id bigint NOT NULL, sequence integer NOT NULL, submission_id bigint,
         event varchar(32) NOT NULL, authority_status varchar(32), submission_uid varchar(64),
         document_uuid varchar(64), long_id varchar(128), reason varchar(300),
-        http_status integer, response jsonb, #{@actor_columns},
+        http_status integer, response jsonb, ledger_entry_id bigint, #{@actor_columns},
         recorded_at timestamp(6) NOT NULL,
         CONSTRAINT finance_einvoice_status_events_document_fkey FOREIGN KEY (document_id, company_id)
           REFERENCES finance_einvoice_documents (id, company_id) ON DELETE RESTRICT,
@@ -396,6 +577,8 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
         CONSTRAINT finance_einvoice_status_events_event CHECK (event ~ '^[a-z][a-z_]*$'),
         CONSTRAINT finance_einvoice_status_events_http_status
           CHECK (http_status IS NULL OR (http_status >= 100 AND http_status <= 599)),
+        CONSTRAINT finance_einvoice_status_events_ledger_entry_id
+          CHECK (ledger_entry_id IS NULL OR ledger_entry_id > 0),
         CONSTRAINT finance_einvoice_status_events_actor CHECK #{@actor_check}
       ) ON COMMIT PRESERVE ROWS
       """,

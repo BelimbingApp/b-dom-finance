@@ -1,11 +1,16 @@
 Code.require_file("../priv/repo/migrations/20261012200000_create_finance_einvoice.exs", __DIR__)
 
+Code.require_file(
+  "../priv/repo/migrations/20261013090000_add_finance_einvoice_ledger_entry.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddLedgerEntry, CreateEinvoice}
   alias Bilimbi.Finance.Einvoice.SchemaContract
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -29,11 +34,11 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), CreateEinvoice,
-               log: false,
-               dynamic_repo: repo
-             )
+    [first, second] = SchemaContract.migration_versions()
+
+    for {version, migration} <- [{first, CreateEinvoice}, {second, AddLedgerEntry}] do
+      assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
+    end
 
     %{repo: repo}
   end
@@ -85,8 +90,15 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     assert_raise Postgrex.Error, ~r/already recorded/, fn -> in_transaction.([line.(1, 3, 1)]) end
 
-    # A cancellation is a new event, numbered after the last.
+    # A cancellation is a new event, numbered after the last, and a posting
+    # names a positive ledger entry.
     assert {:ok, _} = in_transaction.([event.(1, "cancelled")])
+
+    assert_raise Postgrex.Error, ~r/ledger_entry_id/, fn ->
+      query!.(
+        "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, ledger_entry_id, recorded_at) VALUES (1, 1, 1, 99, 'posted', 'user', 1, 0, '2000-01-01')"
+      )
+    end
 
     payload = "convert_to('{\"Invoice\":[]}', 'UTF8')"
 
