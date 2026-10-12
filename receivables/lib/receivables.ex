@@ -223,8 +223,9 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc """
   Changes anything about a customer but its code. Issued documents keep the
-  party as it was when they were issued. A customer is never deleted;
-  an inactive one takes no new documents or payments.
+  party as it was when they were issued. A customer is never deleted; an
+  inactive one takes no new invoices, but its existing invoices can still be
+  paid, credited, and have their payments reversed.
   """
   @spec update_customer(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :customer_not_found | Changeset.t()}
@@ -291,7 +292,7 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc """
   Issues a draft. It needs an `issue_date`, at least one line, a total above
-  zero, an active customer and series, and active ledger accounts of the
+  zero, an active series and (for an invoice) customer, and active ledger accounts of the
   right types (a credit note's receivable account is its invoice's and may
   be inactive, as it settles that invoice); an invoice without a `due_date` falls due after the
   customer's payment terms; a credit note is dated no earlier than its

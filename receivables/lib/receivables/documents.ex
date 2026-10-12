@@ -74,8 +74,9 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     end
   end
 
-  # The series must number this kind of document; the customer and series
-  # must be active; a credit note credits an issued invoice of the customer.
+  # The series must number this kind of document and be active; an invoice's
+  # customer must be active, a credit note's need not be, as it corrects an
+  # existing invoice; a credit note credits an issued invoice of the customer.
   defp validate_references(changeset, scope, company_id) do
     kind = Changeset.get_field(changeset, :kind)
     customer_id = Changeset.get_field(changeset, :customer_id)
@@ -92,8 +93,8 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     |> validate_record(:customer_id, fn id ->
       case Records.get(Customer, scope, company_id, id) do
         nil -> "is not a customer of this company"
-        %Customer{active: true} -> nil
-        %Customer{} -> "is an inactive customer"
+        %Customer{active: false} when kind == "invoice" -> "is an inactive customer"
+        %Customer{} -> nil
       end
     end)
     |> validate_record(:credited_document_id, fn id ->
@@ -299,7 +300,9 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   defp validate_issuable(changeset, customer, series) do
     changeset
     |> then(fn cs ->
-      if customer.active, do: cs, else: Changeset.add_error(cs, :customer_id, "is inactive")
+      if customer.active or changeset.data.kind == "credit_note",
+        do: cs,
+        else: Changeset.add_error(cs, :customer_id, "is inactive")
     end)
     |> then(fn cs ->
       if series.active, do: cs, else: Changeset.add_error(cs, :series_id, "is inactive")

@@ -72,9 +72,6 @@ defmodule Bilimbi.Finance.Receivables.Payments do
           nil ->
             Changeset.add_error(changeset, :customer_id, "is not a customer of this company")
 
-          %Customer{active: false} ->
-            Changeset.add_error(changeset, :customer_id, "is an inactive customer")
-
           %Customer{} ->
             changeset
         end

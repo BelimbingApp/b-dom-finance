@@ -380,6 +380,50 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
     end
   end
 
+  describe "when a customer who owes is deactivated" do
+    test "payments, credit notes, and reversals still settle, but no new invoice is drafted",
+         context do
+      %{operator: operator, first: first, second: second, customer: customer} = context
+
+      {:ok, earlier} = pay(context, "40", [%{document_id: second.id, amount: "40"}])
+      {:ok, _} = Receivables.update_customer(operator, 73, customer.id, %{active: false})
+
+      assert {:ok, _payment} = pay(context, "60", [%{document_id: first.id, amount: "60"}])
+
+      {:ok, draft} =
+        Receivables.create_draft(operator, 73, %{
+          kind: "credit_note",
+          series_id: context.credit_series.id,
+          customer_id: customer.id,
+          credited_document_id: first.id,
+          issue_date: ~D[2026-10-16],
+          lines: [%{description: "Credit", quantity: "1", unit_price: "30"}]
+        })
+
+      assert {:ok, %{status: "issued"}} = Receivables.issue_document(operator, 73, draft.id)
+      assert owed(context, first) == "10.00"
+
+      assert {:ok, _} =
+               Receivables.reverse_payment(operator, 73, earlier.id, %{
+                 reversal_date: ~D[2026-10-17],
+                 reason: "Returned by the bank"
+               })
+
+      assert owed(context, second) == "50.00"
+
+      assert {:error, changeset} =
+               Receivables.create_draft(operator, 73, %{
+                 kind: "invoice",
+                 series_id: context.invoice_series.id,
+                 customer_id: customer.id,
+                 issue_date: ~D[2026-10-18],
+                 lines: [%{description: "New", quantity: "1", unit_price: "10"}]
+               })
+
+      assert %{customer_id: ["is an inactive customer"]} = errors_on(changeset)
+    end
+  end
+
   test "lists payments by customer and pages by ID", context do
     %{operator: operator} = context
     {:ok, first} = pay(context, "10", [%{document_id: context.first.id, amount: "10"}])

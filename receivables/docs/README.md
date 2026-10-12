@@ -71,7 +71,8 @@ code; each is the company's data:
   identifiers, contact fields, an address in Core Address's field names
   (`line1` to `line3`, `locality`, `postcode`, `admin1_code`,
   `country_iso`), and `payment_terms_days`. A customer is deactivated, never
-  deleted; an inactive customer takes no new document or payment.
+  deleted; an inactive customer takes no new invoice, but its existing invoices
+  can still be paid, credited, and have their payments reversed.
 
 ## Documents
 
@@ -85,7 +86,7 @@ tax code, and its total is the subtotal plus tax. A discarded draft is kept,
 unnumbered, with who discarded it and when.
 
 `issue_document/3` checks the draft as it stands (an issue date, at least
-one line, a total above zero, an active customer and series, active ledger
+one line, a total above zero, an active series and (for an invoice) customer, active ledger
 accounts of the right types, except that a credit note's receivable account
 is its invoice's and may be inactive: it settles that invoice) and then, in one transaction:
 
@@ -131,9 +132,10 @@ receivable account's ledger balance stays what its own documents owe. The
 line income accounts, tax line accounts, and a payment's deposit account are
 recorded on their own rows in the same way.
 
-An inactive account blocks new business, never the settlement of an existing
-document. The ledger refuses to deactivate an account with a balance, and a
-new invoice needs the setup's receivable account, and every line's income and
+An inactive account or customer blocks new business, never the settlement of
+an existing document: a payment, a credit note, and a payment's reversal
+against an existing invoice go through for a customer deactivated since. The
+ledger refuses to deactivate an account with a balance, and a new invoice needs the setup's receivable account, and every line's income and
 tax account, to be active. But a payment, a credit note, and a payment's
 reversal against an existing invoice may post to that invoice's recorded
 receivable account even when it has been deactivated since (for example
