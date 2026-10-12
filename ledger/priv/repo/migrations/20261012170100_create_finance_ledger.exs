@@ -233,6 +233,9 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
       FOR EACH ROW EXECUTE FUNCTION finance_ledger_accounts_keep_identity()
     """)
 
+    # An entry is "posted" once its inserting transaction is no longer in
+    # progress. pg_xact_status is NULL for a transaction older than the
+    # retained commit log, so IS DISTINCT FROM keeps old entries refused.
     execute("""
     CREATE FUNCTION finance_ledger_refuse_posted_line() RETURNS trigger
     LANGUAGE plpgsql AS $$
