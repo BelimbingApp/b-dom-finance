@@ -82,8 +82,8 @@ deleted: deactivate it instead. A deactivated account takes no new postings,
 but its history stays and reversals of entries that used it still post. An
 account whose posted debits and credits differ cannot be deactivated
 (`active` error `has a non-zero balance`), so what it holds can always be
-settled by postings to it. The
-code ships no account list; a company's chart is its own data.
+settled by postings to it. The code ships no account list; a company's chart
+is its own data.
 
 `retained_earnings: true` designates the one equity account the year-end
 close moves profit into. Which account that is, like its code and name, is
