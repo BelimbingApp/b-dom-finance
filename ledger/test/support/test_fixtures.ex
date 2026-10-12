@@ -2,11 +2,12 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   @moduledoc """
   Ledger tables, authorization, and two tenants' companies for module tests.
 
-  The tables are temporary copies of the migration's, constraints and
+  The tables are temporary copies of the migrations', constraints and
   triggers included, so a test that makes PostgreSQL refuse proves the
   migration's rule. Keep them in step with
   `priv/repo/migrations/`; `test/schema_contract_test.exs` checks the real
-  migration itself.
+  migrations themselves. The closing rules' functions are the closing
+  migration's own, created in `pg_temp`.
   """
 
   alias Bilimbi.Base.Authz
@@ -20,6 +21,11 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
   alias Bilimbi.Finance.Ledger
   alias Ecto.Adapters.SQL
+
+  @closing_migration Path.expand(
+                       "../../priv/repo/migrations/20261013101700_create_finance_ledger_closing.exs",
+                       __DIR__
+                     )
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
@@ -86,7 +92,16 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   end
 
   def create_ledger_tables! do
-    Enum.each(ledger_statements(), &SQL.query!(Repo, &1, []))
+    Enum.each(ledger_statements() ++ closing_statements(), &SQL.query!(Repo, &1, []))
+  end
+
+  # The migration is a script, not compiled module code; load it once.
+  defp closing_functions do
+    migration = Bilimbi.Finance.Ledger.Migrations.CreateClosing
+
+    unless Code.ensure_loaded?(migration), do: Code.require_file(@closing_migration)
+
+    apply(migration, :functions, ["pg_temp."])
   end
 
   defp ledger_statements do
@@ -112,11 +127,18 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
         account_type varchar(16) NOT NULL, parent_id bigint,
         active boolean NOT NULL DEFAULT true,
         inserted_at timestamp(0) NOT NULL, updated_at timestamp(0) NOT NULL,
+        retained_earnings boolean NOT NULL DEFAULT false,
         CONSTRAINT finance_ledger_accounts_account_type
           CHECK (account_type IN ('asset', 'liability', 'equity', 'income', 'expense')),
         CONSTRAINT finance_ledger_accounts_not_own_parent
-          CHECK (parent_id IS NULL OR parent_id <> id)
+          CHECK (parent_id IS NULL OR parent_id <> id),
+        CONSTRAINT finance_ledger_accounts_retained_earnings_equity
+          CHECK (NOT retained_earnings OR account_type = 'equity')
       ) ON COMMIT PRESERVE ROWS
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_accounts_one_retained_earnings
+        ON finance_ledger_accounts (company_id) WHERE retained_earnings
       """,
       """
       CREATE UNIQUE INDEX finance_ledger_accounts_id_company_unique
@@ -320,5 +342,142 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
           "DEFERRABLE INITIALLY DEFERRED " <>
           "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_check_balance()"
       end
+  end
+
+  defp closing_statements do
+    [
+      """
+      CREATE TEMPORARY TABLE finance_ledger_fiscal_years (
+        id bigserial PRIMARY KEY, tenant_id bigint NOT NULL,
+        company_id bigint NOT NULL
+          CONSTRAINT finance_ledger_fiscal_years_book_fkey
+          REFERENCES finance_ledger_books (company_id) ON DELETE RESTRICT,
+        start_date date NOT NULL, end_date date NOT NULL,
+        opened_by_user_id bigint NOT NULL, opened_by_impersonator_id bigint,
+        opened_at timestamp(6) NOT NULL,
+        CONSTRAINT finance_ledger_fiscal_years_months
+          CHECK (extract(day FROM start_date) = 1 AND extract(day FROM end_date + 1) = 1
+            AND end_date > start_date AND end_date < start_date + interval '2 years')
+      ) ON COMMIT PRESERVE ROWS
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_fiscal_years_id_company_unique
+        ON finance_ledger_fiscal_years (id, company_id)
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_fiscal_years_company_start_unique
+        ON finance_ledger_fiscal_years (company_id, start_date)
+      """,
+      """
+      CREATE TEMPORARY TABLE finance_ledger_periods (
+        id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
+        fiscal_year_id bigint NOT NULL, period_number smallint NOT NULL,
+        start_date date NOT NULL, end_date date NOT NULL,
+        CONSTRAINT finance_ledger_periods_fiscal_year_fkey FOREIGN KEY (fiscal_year_id, company_id)
+          REFERENCES finance_ledger_fiscal_years (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_ledger_periods_period_number CHECK (period_number > 0),
+        CONSTRAINT finance_ledger_periods_one_month
+          CHECK (extract(day FROM start_date) = 1
+            AND end_date = (start_date + interval '1 month' - interval '1 day')::date)
+      ) ON COMMIT PRESERVE ROWS
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_periods_id_company_unique
+        ON finance_ledger_periods (id, company_id)
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_periods_id_fiscal_year_unique
+        ON finance_ledger_periods (id, fiscal_year_id)
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_periods_fiscal_year_number_unique
+        ON finance_ledger_periods (fiscal_year_id, period_number)
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_periods_company_start_unique
+        ON finance_ledger_periods (company_id, start_date)
+      """,
+      """
+      CREATE TEMPORARY TABLE finance_ledger_closing_events (
+        id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
+        event_number bigint NOT NULL, fiscal_year_id bigint NOT NULL, period_id bigint,
+        action varchar(16) NOT NULL, reason varchar(500), entry_id bigint,
+        retained_earnings_account_id bigint,
+        recorded_by_user_id bigint NOT NULL, recorded_by_impersonator_id bigint,
+        recorded_at timestamp(6) NOT NULL,
+        CONSTRAINT finance_ledger_closing_events_fiscal_year_fkey
+          FOREIGN KEY (fiscal_year_id, company_id)
+          REFERENCES finance_ledger_fiscal_years (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_ledger_closing_events_period_fkey FOREIGN KEY (period_id, fiscal_year_id)
+          REFERENCES finance_ledger_periods (id, fiscal_year_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_ledger_closing_events_entry_fkey FOREIGN KEY (entry_id, company_id)
+          REFERENCES finance_ledger_entries (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_ledger_closing_events_retained_earnings_fkey
+          FOREIGN KEY (retained_earnings_account_id, company_id)
+          REFERENCES finance_ledger_accounts (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_ledger_closing_events_action
+          CHECK (action IN ('close', 'reopen', 'lock')),
+        CONSTRAINT finance_ledger_closing_events_event_number CHECK (event_number > 0),
+        CONSTRAINT finance_ledger_closing_events_reopen_reason
+          CHECK (action <> 'reopen' OR (reason IS NOT NULL AND btrim(reason) <> '')),
+        CONSTRAINT finance_ledger_closing_events_year_fields
+          CHECK ((period_id IS NOT NULL OR action <> 'lock') AND
+            ((period_id IS NULL AND action = 'close') OR
+             (entry_id IS NULL AND retained_earnings_account_id IS NULL)))
+      ) ON COMMIT PRESERVE ROWS
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_closing_events_company_number_unique
+        ON finance_ledger_closing_events (company_id, event_number)
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_closing_events_entry_unique
+        ON finance_ledger_closing_events (entry_id) WHERE entry_id IS NOT NULL
+      """
+    ] ++
+      closing_functions() ++
+      for(
+        table <- [
+          "finance_ledger_fiscal_years",
+          "finance_ledger_periods",
+          "finance_ledger_closing_events"
+        ],
+        statement <- [
+          "CREATE TRIGGER #{table}_append_only BEFORE UPDATE OR DELETE ON #{table} " <>
+            "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_refuse_closing_change()",
+          "CREATE TRIGGER #{table}_no_truncate BEFORE TRUNCATE ON #{table} " <>
+            "FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.finance_ledger_refuse_closing_change()"
+        ],
+        do: statement
+      ) ++
+      [
+        """
+        CREATE TRIGGER finance_ledger_fiscal_years_open BEFORE INSERT ON finance_ledger_fiscal_years
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_open_fiscal_year()
+        """,
+        """
+        CREATE CONSTRAINT TRIGGER finance_ledger_fiscal_years_divided
+          AFTER INSERT ON finance_ledger_fiscal_years DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_check_fiscal_year_periods()
+        """,
+        """
+        CREATE TRIGGER finance_ledger_periods_place BEFORE INSERT ON finance_ledger_periods
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_place_period()
+        """,
+        """
+        CREATE TRIGGER finance_ledger_closing_events_record
+          BEFORE INSERT ON finance_ledger_closing_events
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_record_closing_event()
+        """,
+        """
+        CREATE CONSTRAINT TRIGGER finance_ledger_closing_events_closed_year
+          AFTER INSERT ON finance_ledger_closing_events DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_check_closed_year()
+        """,
+        """
+        CREATE TRIGGER finance_ledger_entries_open_period BEFORE INSERT ON finance_ledger_entries
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_refuse_closed_period()
+        """
+      ]
   end
 end

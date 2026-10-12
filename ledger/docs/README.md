@@ -1,8 +1,9 @@
 # Ledger
 
 Module ID: `finance/ledger`. A company's general ledger: its book, chart of
-accounts, journal entries, and trial balance. Other Finance modules and other
-Domains post through this module's facade; none of them reads its tables.
+accounts, journal entries, period closing, and trial balance. Other Finance
+modules and other Domains post through this module's facade; none of them
+reads its tables.
 
 ## Public API
 
@@ -14,14 +15,22 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `get_book/2` | `finance.ledger.view` | The company's currency code and minor units |
 | `open_book/3` | `finance.ledger.accounts.manage` | Opens the book once with `currency_code` and `minor_units` |
 | `list_accounts/2` | `finance.ledger.view` | The chart of accounts by code |
-| `create_account/3` | `finance.ledger.accounts.manage` | Adds an account: `code`, `name`, `account_type`, optional `parent_id`, `active` |
-| `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, or `active` |
+| `create_account/3` | `finance.ledger.accounts.manage` | Adds an account: `code`, `name`, `account_type`, optional `parent_id`, `active`, `retained_earnings` |
+| `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
 | `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
 | `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, and `through_entry_number` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
 | `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` |
 | `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
+| `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods |
+| `list_fiscal_years/2`, `get_fiscal_year/3` | `finance.ledger.view` | Fiscal years with their status, closing entry, and periods |
+| `list_closing_events/3` | `finance.ledger.view` | A fiscal year's closing log, oldest first |
+| `close_period/4` | `finance.ledger.periods.manage` | Closes an open period, optional `reason` |
+| `reopen_period/4` | `finance.ledger.periods.reopen` | Reopens a closed period with a `reason` |
+| `lock_period/4` | `finance.ledger.periods.lock` | Locks a closed period for good, optional `reason` |
+| `close_fiscal_year/4` | `finance.ledger.periods.manage` and `finance.ledger.entries.post` | Posts the closing entry into retained earnings and closes the year; idempotent |
+| `reopen_fiscal_year/4` | `finance.ledger.periods.reopen` and `finance.ledger.entries.post` | Reopens a closed year with a `reason`, reversing its closing entry |
 
 ## Authorization and company scope
 
@@ -34,9 +43,14 @@ cannot see is `{:error, :company_not_found}`. Writes then take
 `Bilimbi.Core.Company.lock_writable_company/2` inside their transaction, so an
 archived company is `{:error, :company_archived}` and one company's ledger
 writes run one at a time; that lock is also what keeps an account from being
-deactivated while an entry posts to it. Ledger figures are financial facts, so
-reads need `finance.ledger.view`; the Tenant Owner role holds all three
-capabilities.
+deactivated while an entry posts to it, and a period from closing while an
+entry posts into it. Ledger figures are financial facts, so reads need
+`finance.ledger.view`; the Tenant Owner role holds all six capabilities.
+Closing, reopening, and locking are separate capabilities, so a company can
+let one person close periods and keep reopening and locking with another.
+Closing and reopening a fiscal year also post an entry, so each needs the
+posting capability `finance.ledger.entries.post` as well; a caller missing
+either capability is `{:error, :unauthorized}` and nothing is posted.
 
 An entry records who posted it: `posted_by_user_id` from `Scope.actor/1`, and
 `posted_by_impersonator_id` for an impersonated session; the database stamps
@@ -70,17 +84,26 @@ deleted: deactivate it instead. A deactivated account takes no new postings,
 but its history stays and reversals of entries that used it still post. The
 code ships no account list; a company's chart is its own data.
 
+`retained_earnings: true` designates the one equity account the year-end
+close moves profit into. Which account that is, like its code and name, is
+the company's choice; designating another account moves the designation.
+
 ## Journal entries
 
 `post_entry/3` stores an entry only when it has at least two lines, each line
 names an active account of the company with exactly one positive amount, and
 debits equal credits; otherwise it returns a changeset whose `lines` errors
-say why, per line where one line is at fault. A posted entry and its lines are
+say why, per line where one line is at fault. Its `entry_date` must fall in
+an open period (see Period closing); otherwise the changeset's `entry_date`
+error says the period is closed or locked, or that the date is before the
+company's first fiscal year. A posted entry and its lines are
 immutable. `reverse_entry/4` corrects one by posting the same lines with
 debits and credits swapped, on a date not before the original's; an entry is
 reversed at most once and a reversal is not itself reversed, so a correction
-is a reversal plus a new entry. `get_entry/3` shows `reversed_by_entry_id` on
-a reversed entry. There are no draft entries in this slice.
+is a reversal plus a new entry. A reversal is dated into an open period like
+any entry, and a year-end closing entry is reversed only by reopening its
+year (`{:error, :closing_entry}`). `get_entry/3` shows `reversed_by_entry_id`
+on a reversed entry. There are no draft entries in this slice.
 
 Each entry has an `entry_number`, its book's sequence number: the database
 numbers a company's entries 1, 2, 3, ... in posting order, so a number is never
@@ -110,8 +133,77 @@ totals) reproduce exactly by passing the same `as_of` and its
 `through_entry_number`: posted entries never change and are numbered in
 posting order. Account names, parents, and active flags are read as they are
 now. A `through_entry_number` outside 0 to the `bigint` maximum is
-`{:error, :invalid_option}`. Closing a period against back-dated postings is
-later work.
+`{:error, :invalid_option}`. Once a period closes, no entry is dated into it
+or before it, so a trial balance as of a closed period's end stays the same
+without `through_entry_number`.
+
+## Period closing
+
+Closing lives in the ledger rather than a sibling module because the database
+must refuse a posting into a closed period: the rule is a trigger on the
+entries table, which only its owner may define, and the facade checks it
+inside the same company lock that posts.
+
+`open_fiscal_year/3` opens a company's next fiscal year and divides it into
+calendar-month periods. The first year starts on the first day of any month
+the company chooses; each later year starts the day after the previous one
+ends, and that is its default. `end_date`, the last day of a month, defaults
+to twelve months on; a year runs one to 24 months, so a short first year or a
+long transitional one fits. A year's periods are fixed once it is open.
+Fiscal years are optional, but once a company has one, no entry is dated
+before its first year; an entry after its last year posts, so a company opens
+the next year before closing into it.
+
+A period is `open`, `closed`, or `locked`, and a year `open` or `closed`.
+Neither status is stored: each is the latest event in the company's closing
+log, which is append-only. Every close, reopen, and lock is an event with
+its `reason`, `recorded_by_user_id` (and `recorded_by_impersonator_id`),
+a database-stamped `recorded_at`, and an `event_number` the database assigns
+1, 2, 3, ... per company. `list_closing_events/3` returns a year's log.
+
+| Call | Needs | Refused with |
+| --- | --- | --- |
+| `close_period/4` | an open period whose previous period is not open | `:period_not_open`, `:earlier_period_open`, `:closes_with_fiscal_year` for a year's last period |
+| `reopen_period/4` | a closed period whose next period is open, in an open year, and a `reason` | `:period_locked`, `:period_not_closed`, `:fiscal_year_closed`, `:later_period_closed`, a changeset |
+| `lock_period/4` | a closed period whose previous period is locked | `:period_locked`, `:period_not_closed`, `:earlier_period_unlocked` |
+
+So periods close and lock in date order and reopen in reverse: a closed
+period's figures never change under a later one, and only the privileged
+reopen capability, with a recorded reason, opens one again. A locked period
+never reopens.
+
+## Year-end close
+
+`close_fiscal_year/4` posts the year's closing entry and closes the year in
+one transaction. The entry is dated the year's last day, with an optional
+`description` and `reference`, and has one line per income and expense
+account with a balance for the year, bringing it to zero, and one line for
+the difference, the profit (a credit) or loss (a debit), on the designated
+retained-earnings account. It is an ordinary posted entry with its own entry
+number, actor, and time. The close then records the year's `close` event,
+which names the entry and the retained-earnings account, and closes every
+period of the year still open; the year's last period closes only this way,
+so it stays open for year-end adjustments until the close. A year with no
+income or expense balance closes with no entry. The previous year must be
+closed first (`:earlier_period_open`), and an active retained-earnings
+account must be designated (`:no_retained_earnings_account`). Closing needs
+the posting capability as well as the period-management one, since it posts
+the closing entry.
+
+The close is idempotent: closing a closed year returns it unchanged and posts
+nothing. Only `reopen_fiscal_year/4` undoes it, with the reopen and posting
+capabilities and a `reason`: it records the year's and its last period's
+`reopen` events and posts the closing entry's reversal on the year's last
+day. The year's other periods stay closed until each is reopened. A year whose last period is
+locked never reopens (`:period_locked`), nor one whose next year has a closed
+period (`:later_period_closed`). Closing it again posts a fresh closing entry
+over the year's entries, in which the earlier closing entry and its reversal
+cancel.
+
+The new year needs no opening entry: its opening balances follow from the
+ledger. `trial_balance/4` as of the closed year's last day shows every income
+and expense account at zero and the year's result in retained earnings,
+alongside the balance-sheet accounts the new year carries forward.
 
 ## Account totals
 
@@ -145,8 +237,11 @@ which authorizes the read again.
 
 The migration `20261012170100` is `:bilimbi_only` and creates
 `finance_ledger_books`, `finance_ledger_accounts`, `finance_ledger_entries`,
-and `finance_ledger_entry_lines`. PostgreSQL enforces the rules the facade
-checks, so no other writer can break them:
+and `finance_ledger_entry_lines`. The migration `20261013101700`, also
+`:bilimbi_only`, adds `finance_ledger_fiscal_years`, `finance_ledger_periods`,
+`finance_ledger_closing_events`, and accounts' `retained_earnings` flag.
+PostgreSQL enforces the rules the facade checks, so no other writer can break
+them:
 
 - composite `(id, company_id)` foreign keys keep a line's entry and account,
   an account's parent, and a reversal's original in one company;
@@ -159,7 +254,21 @@ checks, so no other writer can break them:
 - a partial unique index allows one reversal per entry;
 - a trigger numbers each company's entries without gaps and stamps
   `posted_at`, replacing whatever the inserting writer sent, and a unique
-  index refuses a reused number.
+  index refuses a reused number;
+- a trigger refuses an entry dated in a closed or locked period, or before
+  the company's first fiscal year, and holds a share lock on the period until
+  the posting commits, so a period cannot close under it;
+- fiscal years, periods, and closing events are append-only; a year starts
+  the day after the previous one ends, its periods are added in its own
+  transaction one month at a time, and a deferred trigger refuses a commit in
+  which they do not reach the year's end;
+- a trigger numbers each company's closing events without gaps, stamps
+  `recorded_at`, and refuses an event that breaks the rules in Period closing
+  and Year-end close; checks require a reopen's reason and keep the closing
+  entry and retained-earnings account to a year's close; a deferred trigger
+  refuses a commit that leaves a closed year with an open period;
+- a check keeps the retained-earnings designation to equity accounts and a
+  partial unique index to one per company.
 
 The migration `20261012214100`, also `:bilimbi_only`, adds the trigger that
 announces each posted entry (see Posting notices).
@@ -188,24 +297,41 @@ accounts are held to. What this slice covers:
   is overwritten. Opening a book and every account change are Repo writes,
   which Base Audit records with their actor in the composed host (ADR 0013).
   Any past trial balance's debit and credit figures reproduce exactly from its
-  `through_entry_number`.
+  `through_entry_number`. Every period and year close, reopen, and lock is an
+  append-only, gaplessly numbered closing event with its actor, time, and
+  reason, and a status is always the latest event's, so the log is the whole
+  history.
+- **Period-end cut-off.** Once a period closes, PostgreSQL refuses any entry
+  dated in it or before it, so a closed period's figures, and every report as
+  of its end, stay as they were reported. Reopening needs a separate
+  privileged capability and a recorded reason; locking is permanent, for
+  periods whose figures have been filed or audited. Closing, reopening, and
+  locking are separate capabilities, so they can be held by different people.
+- **Year-end close.** Income and expense accounts are closed into the
+  company's designated retained-earnings account by an ordinary posted entry,
+  so the transfer is itself on the audit trail; it is never repeated, and is
+  undone only by reopening the year, which reverses it. Opening balances
+  carry forward by construction rather than by a separate entry that could
+  disagree with the ledger.
 - **Retention.** Nothing posted is ever deleted: the database refuses DELETE
-  and TRUNCATE on books, entries, and lines, refuses deleting an account, and
-  unmounting Finance keeps every row. Records therefore outlive any statutory
-  retention period, such as the seven years Malaysia's Companies Act 2016
+  and TRUNCATE on books, entries, lines, fiscal years, periods, and closing
+  events, refuses deleting an account, and unmounting Finance keeps every
+  row. Records therefore outlive any statutory retention period, such as the seven years Malaysia's Companies Act 2016
   requires; how long a company must keep them is law, not code.
 
 Financial statements (profit and loss, balance sheet, cash position) are
 the sibling `finance/reports` module, read through `account_totals/3` and
-`list_entries/3`. Statement layouts specific to MFRS or IFRS, period close,
-and tax are later work in sibling modules.
+`list_entries/3`. Statement layouts specific to MFRS or IFRS, and tax, are
+later work in sibling modules.
 
 ## Tests
 
 Module tests run on temporary copies of the tables, constraints and triggers
 included, from `test/support/test_fixtures.ex`; change them with the
-migration. `setup_ledger!/0` there builds two tenants' companies and an Authz
-snapshot, and `sign_in!/4` signs a user in with direct grants.
+migrations. The closing rules' functions are not copied: the closing
+migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0`
+there builds two tenants' companies and an Authz snapshot, and `sign_in!/4`
+signs a user in with direct grants.
 
 `test/postings_test.exs` proves who hears a notice by sending one committed
 outside the sandbox, because a sandboxed post never commits.

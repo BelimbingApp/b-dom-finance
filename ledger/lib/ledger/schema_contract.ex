@@ -11,7 +11,8 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_version, do: 20_261_012_170_100
+  @doc "The migrations that build the schema, oldest first; the contract is their result."
+  def migration_versions, do: [20_261_012_170_100, 20_261_012_214_100, 20_261_013_101_700]
 
   @impl true
   def tables do
@@ -50,14 +51,20 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
             "parent_id" => column(:bigint, true),
             "active" => column(:boolean, false, {:boolean, true}),
             "inserted_at" => column({:timestamp, 0}, false),
-            "updated_at" => column({:timestamp, 0}, false)
+            "updated_at" => column({:timestamp, 0}, false),
+            "retained_earnings" => column(:boolean, false, {:boolean, false})
           }),
         indexes: %{
           "finance_ledger_accounts_pkey" => index(["id"], true),
           "finance_ledger_accounts_id_company_unique" => index(["id", "company_id"], true),
           "finance_ledger_accounts_company_code_unique" => index(["company_id", "code"], true),
           "finance_ledger_accounts_tenant_id_company_id_index" =>
-            index(["tenant_id", "company_id"])
+            index(["tenant_id", "company_id"]),
+          "finance_ledger_accounts_one_retained_earnings" => %{
+            columns: ["company_id"],
+            unique: true,
+            where: "retained_earnings"
+          }
         },
         foreign_keys: %{
           "finance_ledger_accounts_parent_fkey" =>
@@ -71,7 +78,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
                 "'income'::character varying, 'expense'::character varying])::text[])"
             ),
           "finance_ledger_accounts_not_own_parent" =>
-            check("parent_id IS NULL OR parent_id <> id")
+            check("parent_id IS NULL OR parent_id <> id"),
+          "finance_ledger_accounts_retained_earnings_equity" =>
+            check("NOT retained_earnings OR (account_type)::text = 'equity'::text")
         }
       },
       %{
@@ -148,6 +157,145 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
             check(
               "debit >= (0)::numeric AND credit >= (0)::numeric AND " <>
                 "((debit = (0)::numeric) <> (credit = (0)::numeric))"
+            )
+        }
+      }
+    ] ++ closing_tables()
+  end
+
+  defp closing_tables do
+    [
+      %{
+        name: "finance_ledger_fiscal_years",
+        columns:
+          owned_columns("finance_ledger_fiscal_years")
+          |> Map.merge(%{
+            "start_date" => column(:date, false),
+            "end_date" => column(:date, false),
+            "opened_by_user_id" => column(:bigint, false),
+            "opened_by_impersonator_id" => column(:bigint, true),
+            "opened_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_fiscal_years_pkey" => index(["id"], true),
+          "finance_ledger_fiscal_years_id_company_unique" => index(["id", "company_id"], true),
+          "finance_ledger_fiscal_years_company_start_unique" =>
+            index(["company_id", "start_date"], true),
+          "finance_ledger_fiscal_years_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_fiscal_years_book_fkey" => %{
+            columns: ["company_id"],
+            references: {"finance_ledger_books", ["company_id"]},
+            on_delete: :restrict
+          }
+        },
+        checks: %{
+          "finance_ledger_fiscal_years_months" =>
+            check(
+              "EXTRACT(day FROM start_date) = (1)::numeric AND " <>
+                "EXTRACT(day FROM (end_date + 1)) = (1)::numeric AND end_date > start_date AND " <>
+                "end_date < (start_date + '2 years'::interval)"
+            )
+        }
+      },
+      %{
+        name: "finance_ledger_periods",
+        columns:
+          owned_columns("finance_ledger_periods")
+          |> Map.merge(%{
+            "fiscal_year_id" => column(:bigint, false),
+            "period_number" => column(:smallint, false),
+            "start_date" => column(:date, false),
+            "end_date" => column(:date, false)
+          }),
+        indexes: %{
+          "finance_ledger_periods_pkey" => index(["id"], true),
+          "finance_ledger_periods_id_company_unique" => index(["id", "company_id"], true),
+          "finance_ledger_periods_id_fiscal_year_unique" => index(["id", "fiscal_year_id"], true),
+          "finance_ledger_periods_fiscal_year_number_unique" =>
+            index(["fiscal_year_id", "period_number"], true),
+          "finance_ledger_periods_company_start_unique" =>
+            index(["company_id", "start_date"], true),
+          "finance_ledger_periods_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_periods_fiscal_year_fkey" =>
+            company_reference("fiscal_year_id", "finance_ledger_fiscal_years")
+        },
+        checks: %{
+          "finance_ledger_periods_period_number" => check("period_number > 0"),
+          "finance_ledger_periods_one_month" =>
+            check(
+              "EXTRACT(day FROM start_date) = (1)::numeric AND " <>
+                "end_date = ((start_date + '1 mon'::interval) - '1 day'::interval)::date"
+            )
+        }
+      },
+      %{
+        name: "finance_ledger_closing_events",
+        columns:
+          owned_columns("finance_ledger_closing_events")
+          |> Map.merge(%{
+            "event_number" => column(:bigint, false),
+            "fiscal_year_id" => column(:bigint, false),
+            "period_id" => column(:bigint, true),
+            "action" => column({:varchar, 16}, false),
+            "reason" => column({:varchar, 500}, true),
+            "entry_id" => column(:bigint, true),
+            "retained_earnings_account_id" => column(:bigint, true),
+            "recorded_by_user_id" => column(:bigint, false),
+            "recorded_by_impersonator_id" => column(:bigint, true),
+            "recorded_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_closing_events_pkey" => index(["id"], true),
+          "finance_ledger_closing_events_company_number_unique" =>
+            index(["company_id", "event_number"], true),
+          "finance_ledger_closing_events_entry_unique" => %{
+            columns: ["entry_id"],
+            unique: true,
+            where: "(entry_id IS NOT NULL)"
+          },
+          "finance_ledger_closing_events_fiscal_year_id_event_number_index" =>
+            index(["fiscal_year_id", "event_number"]),
+          "finance_ledger_closing_events_period_id_event_number_index" =>
+            index(["period_id", "event_number"]),
+          "finance_ledger_closing_events_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_closing_events_fiscal_year_fkey" =>
+            company_reference("fiscal_year_id", "finance_ledger_fiscal_years"),
+          "finance_ledger_closing_events_period_fkey" => %{
+            columns: ["period_id", "fiscal_year_id"],
+            references: {"finance_ledger_periods", ["id", "fiscal_year_id"]},
+            on_delete: :restrict
+          },
+          "finance_ledger_closing_events_entry_fkey" =>
+            company_reference("entry_id", "finance_ledger_entries"),
+          "finance_ledger_closing_events_retained_earnings_fkey" =>
+            company_reference("retained_earnings_account_id", "finance_ledger_accounts")
+        },
+        checks: %{
+          "finance_ledger_closing_events_action" =>
+            check(
+              "(action)::text = ANY ((ARRAY['close'::character varying, " <>
+                "'reopen'::character varying, 'lock'::character varying])::text[])"
+            ),
+          "finance_ledger_closing_events_event_number" => check("event_number > 0"),
+          "finance_ledger_closing_events_reopen_reason" =>
+            check(
+              "(action)::text <> 'reopen'::text OR " <>
+                "(reason IS NOT NULL AND btrim((reason)::text) <> ''::text)"
+            ),
+          "finance_ledger_closing_events_year_fields" =>
+            check(
+              "(period_id IS NOT NULL OR (action)::text <> 'lock'::text) AND " <>
+                "((period_id IS NULL AND (action)::text = 'close'::text) OR " <>
+                "(entry_id IS NULL AND retained_earnings_account_id IS NULL))"
             )
         }
       }

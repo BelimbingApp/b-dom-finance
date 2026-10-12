@@ -25,11 +25,20 @@ defmodule Bilimbi.Finance.Ledger do
   skipped or reused.
 
   An entry is posted whole: it is stored only when its lines' debits equal
-  their credits, every line names an active account of the company, and the
-  book is open. A posted entry is never edited or deleted; `reverse_entry/4`
-  posts its mirror image, once. The database refuses the same things on its
-  own, including adding a line to an entry posted in an earlier transaction
-  (see the migration), so no other writer can break them either.
+  their credits, every line names an active account of the company, the
+  book is open, and its date falls in an open period. A posted entry is
+  never edited or deleted; `reverse_entry/4` posts its mirror image, once.
+  The database refuses the same things on its own, including adding a line
+  to an entry posted in an earlier transaction (see the migrations), so no
+  other writer can break them either.
+
+  A company divides its time into fiscal years of monthly periods. Periods
+  close in date order and reopen in reverse; a reopen needs a reason and the
+  reopen capability, and a locked period never reopens. `close_fiscal_year/4`
+  posts the entry that moves the year's income and expense balances into the
+  company's retained-earnings account and closes the year with its periods.
+  Every close, reopen, and lock is an append-only closing event recording who
+  did it, when, and why; a status is the latest event's.
 
   Results are plain maps; the schemas stay private to this module.
   """
@@ -41,12 +50,27 @@ defmodule Bilimbi.Finance.Ledger do
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
-  alias Bilimbi.Finance.Ledger.{Account, Book, Entry, Line, Postings}
+  alias Bilimbi.Finance.Ledger.{
+    Account,
+    Book,
+    ClosingEvent,
+    Entry,
+    FiscalYear,
+    Line,
+    Period,
+    Postings
+  }
   alias Ecto.Changeset
 
   @view "finance.ledger.view"
   @manage_accounts "finance.ledger.accounts.manage"
   @post_entries "finance.ledger.entries.post"
+  @manage_periods "finance.ledger.periods.manage"
+  @reopen_periods "finance.ledger.periods.reopen"
+  @lock_periods "finance.ledger.periods.lock"
+
+  # A year-end close moves these account types' balances into retained earnings.
+  @closed_by_year ["income", "expense"]
 
   @default_entry_limit 100
   @max_entry_limit 500
@@ -63,6 +87,15 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc "The capability that posts and reverses journal entries."
   def post_entries_capability, do: @post_entries
+
+  @doc "The capability that opens fiscal years and closes periods and years."
+  def manage_periods_capability, do: @manage_periods
+
+  @doc "The privileged capability that reopens a closed period or fiscal year."
+  def reopen_periods_capability, do: @reopen_periods
+
+  @doc "The capability that locks a closed period for good."
+  def lock_periods_capability, do: @lock_periods
 
   ## Book
 
@@ -119,7 +152,11 @@ defmodule Bilimbi.Finance.Ledger do
   @doc """
   Adds an account: `code` (unique in the company), `name`, `account_type`
   (one of `account_types/0`), and optionally `parent_id`, an account of the
-  same type to group it under, and `active`.
+  same type to group it under, `active`, and `retained_earnings`.
+
+  `retained_earnings: true` designates an equity account as the one the
+  year-end close moves profit into; designating another account later moves
+  the designation.
   """
   @spec create_account(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | Changeset.t()}
@@ -128,15 +165,15 @@ defmodule Bilimbi.Finance.Ledger do
       %Account{tenant_id: Scope.tenant_id(scope), company_id: company_id}
       |> Account.create_changeset(attributes)
       |> validate_parent(scope, company_id)
-      |> Repo.insert()
-      |> public_result(&account_view/1)
+      |> save_account(scope, company_id, &Repo.insert/1)
     end)
   end
 
   @doc """
-  Changes an account's `name`, `parent_id`, or `active` flag. Its code and
-  type never change. A deactivated account takes no new postings; its
-  history and reversals of it stay.
+  Changes an account's `name`, `parent_id`, `active` flag, or
+  `retained_earnings` designation. Its code and type never change. A
+  deactivated account takes no new postings; its history and reversals of it
+  stay.
   """
   @spec update_account(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :account_not_found | Changeset.t()}
@@ -151,8 +188,7 @@ defmodule Bilimbi.Finance.Ledger do
           account
           |> Account.update_changeset(attributes)
           |> validate_parent(scope, company_id)
-          |> Repo.update()
-          |> public_result(&account_view/1)
+          |> save_account(scope, company_id, &Repo.update/1)
       end
     end)
   end
@@ -169,9 +205,11 @@ defmodule Bilimbi.Finance.Ledger do
   `%{account_id, credit}` with an optional `description`.
 
   The entry is refused with a changeset error unless it has at least two
-  lines, its debits equal its credits, and every line names an active
-  account of the company with one positive amount no finer than the book's
-  minor units. `{:error, :book_not_open}` before the book is opened.
+  lines, its debits equal its credits, every line names an active account
+  of the company with one positive amount no finer than the book's minor
+  units, and `entry_date` falls in an open period, or after the company's
+  last fiscal year, but not before its first. `{:error, :book_not_open}`
+  before the book is opened.
   """
   @spec post_entry(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
@@ -182,6 +220,7 @@ defmodule Bilimbi.Finance.Ledger do
 
         scope
         |> entry_changeset(book, Map.drop(attributes, [:lines, "lines"]), lines)
+        |> validate_open_period(scope, company_id)
         |> validate_accounts(scope, company_id, :active)
         |> insert_entry(scope)
       end
@@ -194,7 +233,9 @@ defmodule Bilimbi.Finance.Ledger do
   and credits swapped. An entry is reversed at most once
   (`{:error, :already_reversed}`), and a reversal is not itself reversed
   (`{:error, :reversal_not_reversible}`); post a new entry instead. Accounts
-  deactivated since the original still take its reversal.
+  deactivated since the original still take its reversal, but its date must
+  fall in an open period, as a new entry's does. A year-end closing entry is
+  reversed only by `reopen_fiscal_year/4` (`{:error, :closing_entry}`).
   """
   @spec reverse_entry(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -203,33 +244,40 @@ defmodule Bilimbi.Finance.Ledger do
              | :entry_not_found
              | :already_reversed
              | :reversal_not_reversible
+             | :closing_entry
              | Changeset.t()}
   def reverse_entry(%Scope{} = scope, company_id, entry_id, attributes)
       when is_map(attributes) do
     write(scope, company_id, @post_entries, fn ->
       with {:ok, book} <- open_book_for_write(scope, company_id),
            {:ok, original} <- reversible_entry(scope, company_id, entry_id) do
-        lines =
-          Enum.map(original.lines, fn line ->
-            %{
-              account_id: line.account_id,
-              debit: line.credit,
-              credit: line.debit,
-              description: line.description
-            }
-          end)
-
         scope
-        |> entry_changeset(book, Map.drop(attributes, [:lines, "lines"]), lines)
-        |> Changeset.put_change(:reverses_entry_id, original.id)
-        |> Changeset.validate_change(:entry_date, fn :entry_date, date ->
-          if Date.compare(date, original.entry_date) == :lt,
-            do: [entry_date: "cannot be before the reversed entry's date"],
-            else: []
-        end)
+        |> reversal_changeset(book, original, Map.drop(attributes, [:lines, "lines"]))
+        |> validate_open_period(scope, company_id)
         |> validate_accounts(scope, company_id, :any)
         |> insert_entry(scope)
       end
+    end)
+  end
+
+  defp reversal_changeset(scope, book, original, attributes) do
+    lines =
+      Enum.map(original.lines, fn line ->
+        %{
+          account_id: line.account_id,
+          debit: line.credit,
+          credit: line.debit,
+          description: line.description
+        }
+      end)
+
+    scope
+    |> entry_changeset(book, attributes, lines)
+    |> Changeset.put_change(:reverses_entry_id, original.id)
+    |> Changeset.validate_change(:entry_date, fn :entry_date, date ->
+      if Date.compare(date, original.entry_date) == :lt,
+        do: [entry_date: "cannot be before the reversed entry's date"],
+        else: []
     end)
   end
 
@@ -310,6 +358,545 @@ defmodule Bilimbi.Finance.Ledger do
   defp valid_cursor?(nil), do: true
   defp valid_cursor?({%Date{}, id}), do: is_integer(id) and id in 1..@max_bigint
   defp valid_cursor?(_cursor), do: false
+
+  ## Fiscal years and periods
+
+  @doc """
+  Opens the company's next fiscal year and divides it into calendar-month
+  periods, all open. `start_date` is the first day of a month and `end_date`
+  the last day of a month, one to 24 months on; `end_date` defaults to
+  twelve months on. The first year may start on any month; each later year
+  starts the day after the previous one ends, which is also its default.
+  Once a company has a fiscal year, no entry is posted before the first.
+  """
+  @spec open_fiscal_year(Scope.t(), term(), map()) ::
+          {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
+  def open_fiscal_year(%Scope{} = scope, company_id, attributes \\ %{})
+      when is_map(attributes) do
+    write(scope, company_id, @manage_periods, fn ->
+      with {:ok, book} <- open_book_for_write(scope, company_id) do
+        %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} =
+          Scope.actor(scope)
+
+        previous =
+          scope
+          |> fiscal_years_query(company_id)
+          |> order_by([y], desc: y.start_date)
+          |> limit(1)
+          |> Repo.one()
+
+        changeset =
+          %FiscalYear{
+            tenant_id: book.tenant_id,
+            company_id: company_id,
+            opened_by_user_id: user_id,
+            opened_by_impersonator_id: impersonator_id
+          }
+          |> FiscalYear.changeset(attributes, previous)
+
+        with {:ok, year} <- Repo.insert(changeset) do
+          periods =
+            for {number, first, last} <- FiscalYear.months(year) do
+              %{
+                tenant_id: year.tenant_id,
+                company_id: company_id,
+                fiscal_year_id: year.id,
+                period_number: number,
+                start_date: first,
+                end_date: last
+              }
+            end
+
+          Repo.insert_all(Period, periods)
+          fiscal_year_result(scope, company_id, year.id)
+        end
+      end
+    end)
+  end
+
+  @doc """
+  The company's fiscal years in date order, each with its `status` (`open`
+  or `closed`), `closing_entry_id` while closed, and its periods with
+  theirs (`open`, `closed`, or `locked`).
+  """
+  @spec list_fiscal_years(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
+  def list_fiscal_years(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok, closing_state(scope, company_id).years}
+    end
+  end
+
+  @doc "One fiscal year, as `list_fiscal_years/2` shows it."
+  @spec get_fiscal_year(Scope.t(), term(), term()) ::
+          {:ok, map()} | {:error, refusal() | :fiscal_year_not_found}
+  def get_fiscal_year(%Scope{} = scope, company_id, fiscal_year_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      fiscal_year_result(scope, company_id, fiscal_year_id)
+    end
+  end
+
+  @doc """
+  The fiscal year's closing log, oldest first: every close, reopen, and lock
+  of the year (no `period_id`) and of its periods, with its `reason`, who
+  recorded it, and when. The company's events are numbered 1, 2, 3, ...
+  without gaps.
+  """
+  @spec list_closing_events(Scope.t(), term(), term()) ::
+          {:ok, [map()]} | {:error, refusal() | :fiscal_year_not_found}
+  def list_closing_events(%Scope{} = scope, company_id, fiscal_year_id) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, _year} <- fiscal_year_result(scope, company_id, fiscal_year_id) do
+      {:ok,
+       scope
+       |> events_query(company_id)
+       |> where([e], e.fiscal_year_id == ^fiscal_year_id)
+       |> order_by([e], asc: e.event_number)
+       |> Repo.all()
+       |> Enum.map(&event_view/1)}
+    end
+  end
+
+  @doc """
+  Closes an open period, with an optional `reason`: no entry is posted into
+  it until it reopens. Periods close in date order
+  (`{:error, :earlier_period_open}`), and a year's last period closes only
+  with the year, through `close_fiscal_year/4`
+  (`{:error, :closes_with_fiscal_year}`).
+  """
+  @spec close_period(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :period_not_found
+             | :period_not_open
+             | :earlier_period_open
+             | :closes_with_fiscal_year
+             | Changeset.t()}
+  def close_period(%Scope{} = scope, company_id, period_id, attributes \\ %{})
+      when is_map(attributes) do
+    write(scope, company_id, @manage_periods, fn ->
+      state = closing_state(scope, company_id)
+
+      with {:ok, period} <- find_period(state, period_id),
+           {previous, _next} = neighbours(state, period),
+           :ok <- closable(state, period, previous) do
+        change_period(scope, company_id, period, "close", attributes)
+      end
+    end)
+  end
+
+  @doc """
+  Reopens a closed period with a `reason`, so entries post into it again.
+  This needs the privileged reopen capability. Periods reopen in reverse
+  date order (`{:error, :later_period_closed}`); a locked period never
+  reopens (`{:error, :period_locked}`), and a closed fiscal year's periods
+  reopen only after `reopen_fiscal_year/4` (`{:error, :fiscal_year_closed}`).
+  """
+  @spec reopen_period(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :period_not_found
+             | :period_not_closed
+             | :period_locked
+             | :fiscal_year_closed
+             | :later_period_closed
+             | Changeset.t()}
+  def reopen_period(%Scope{} = scope, company_id, period_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @reopen_periods, fn ->
+      state = closing_state(scope, company_id)
+
+      with {:ok, period} <- find_period(state, period_id),
+           {_previous, next} = neighbours(state, period),
+           :ok <- reopenable(state, period, next) do
+        change_period(scope, company_id, period, "reopen", attributes)
+      end
+    end)
+  end
+
+  @doc """
+  Locks a closed period for good, with an optional `reason`: it never
+  reopens. Periods lock in date order (`{:error, :earlier_period_unlocked}`).
+  """
+  @spec lock_period(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :period_not_found
+             | :period_not_closed
+             | :period_locked
+             | :earlier_period_unlocked
+             | Changeset.t()}
+  def lock_period(%Scope{} = scope, company_id, period_id, attributes \\ %{})
+      when is_map(attributes) do
+    write(scope, company_id, @lock_periods, fn ->
+      state = closing_state(scope, company_id)
+
+      with {:ok, period} <- find_period(state, period_id),
+           {previous, _next} = neighbours(state, period),
+           :ok <- lockable(period, previous) do
+        change_period(scope, company_id, period, "lock", attributes)
+      end
+    end)
+  end
+
+  @doc """
+  Closes a fiscal year. It posts the closing entry, dated the year's last
+  day with an optional `description` and `reference`, that brings every
+  income and expense account's balance for the year to zero against the
+  company's retained-earnings account (`{:error,
+  :no_retained_earnings_account}` until an active equity account is
+  designated), then closes the year and every period of it still open. A
+  year with no income or expense balance closes with no entry. The previous
+  year must be closed first (`{:error, :earlier_period_open}`).
+
+  The close posts an entry, so the caller needs the period-management
+  capability and the entry-posting capability; missing either is
+  `{:error, :unauthorized}`.
+
+  Closing a closed year again returns it unchanged: the close is
+  idempotent. Only `reopen_fiscal_year/4` undoes it.
+  """
+  @spec close_fiscal_year(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :book_not_open
+             | :fiscal_year_not_found
+             | :earlier_period_open
+             | :no_retained_earnings_account
+             | Changeset.t()}
+  def close_fiscal_year(%Scope{} = scope, company_id, fiscal_year_id, attributes \\ %{})
+      when is_map(attributes) do
+    write(scope, company_id, [@manage_periods, @post_entries], fn ->
+      state = closing_state(scope, company_id)
+
+      with {:ok, book} <- open_book_for_write(scope, company_id),
+           {:ok, year} <- find_year(state, fiscal_year_id) do
+        if year.status == "closed",
+          do: {:ok, year},
+          else: close_year(scope, company_id, book, state, year, attributes)
+      end
+    end)
+  end
+
+  @doc """
+  Reopens a closed fiscal year with a `reason`, which needs the privileged
+  reopen capability and the entry-posting capability, because it posts the
+  reversal (missing either is `{:error, :unauthorized}`): it reopens the
+  year and its last period, and reverses the closing entry on the year's
+  last day. The year's other periods stay closed until each is reopened. A year whose last period is locked never
+  reopens (`{:error, :period_locked}`), and a year reopens only while the
+  next year's periods are all open (`{:error, :later_period_closed}`).
+  """
+  @spec reopen_fiscal_year(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :book_not_open
+             | :fiscal_year_not_found
+             | :fiscal_year_not_closed
+             | :period_locked
+             | :later_period_closed
+             | Changeset.t()}
+  def reopen_fiscal_year(%Scope{} = scope, company_id, fiscal_year_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, [@reopen_periods, @post_entries], fn ->
+      state = closing_state(scope, company_id)
+
+      with {:ok, book} <- open_book_for_write(scope, company_id),
+           {:ok, year} <- find_year(state, fiscal_year_id),
+           last = List.last(year.periods),
+           {_previous, next} = neighbours(state, last),
+           :ok <- year_reopenable(year, last, next),
+           {:ok, _event} <- record_event(scope, company_id, year, nil, "reopen", attributes),
+           {:ok, _event} <- record_event(scope, company_id, year, last, "reopen", attributes),
+           {:ok, _reversal} <- reverse_closing_entry(scope, company_id, book, year) do
+        fiscal_year_result(scope, company_id, year.id)
+      end
+    end)
+  end
+
+  ## Closing
+
+  defp close_year(scope, company_id, book, state, year, attributes) do
+    open = Enum.filter(year.periods, &(&1.status == "open"))
+    {previous, _next} = neighbours(state, hd(open))
+
+    with :ok <- earlier_closed(previous),
+         {:ok, account} <- retained_earnings_account(scope, company_id),
+         {:ok, entry_id} <- post_closing_entry(scope, company_id, book, year, account, attributes),
+         {:ok, _event} <-
+           record_event(scope, company_id, year, nil, "close", %{},
+             entry_id: entry_id,
+             retained_earnings_account_id: account.id
+           ),
+         :ok <- close_each(scope, company_id, year, open) do
+      fiscal_year_result(scope, company_id, year.id)
+    end
+  end
+
+  defp earlier_closed(%{status: "open"}), do: {:error, :earlier_period_open}
+  defp earlier_closed(_previous_or_none), do: :ok
+
+  defp close_each(scope, company_id, year, periods) do
+    Enum.reduce_while(periods, :ok, fn period, :ok ->
+      case record_event(scope, company_id, year, period, "close", %{}) do
+        {:ok, _event} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp retained_earnings_account(scope, company_id) do
+    case designated_account(scope, company_id) do
+      %Account{active: true} = account -> {:ok, account}
+      _none_or_inactive -> {:error, :no_retained_earnings_account}
+    end
+  end
+
+  # Each income and expense account's balance for the year, posted back to
+  # zero, and the difference, the year's profit or loss, against retained
+  # earnings. Earlier closing entries and their reversals cancel out.
+  defp post_closing_entry(scope, company_id, book, year, account, attributes) do
+    balances =
+      from(l in lines_query(scope),
+        join: e in ^Tenancy.scope_query(Entry, scope),
+        on: e.id == l.entry_id,
+        join: a in ^Tenancy.scope_query(Account, scope),
+        on: a.id == l.account_id,
+        where: l.company_id == ^company_id and a.account_type in ^@closed_by_year,
+        where: e.entry_date >= ^year.start_date and e.entry_date <= ^year.end_date,
+        group_by: [a.id, a.code],
+        order_by: a.code,
+        select: {a.id, sum(l.debit) - sum(l.credit)}
+      )
+      |> Repo.all()
+      |> Enum.reject(fn {_id, net} -> Decimal.equal?(net, 0) end)
+
+    if balances == [] do
+      {:ok, nil}
+    else
+      profit_or_loss = Enum.reduce(balances, Decimal.new(0), &Decimal.add(elem(&1, 1), &2))
+
+      lines =
+        Enum.map(balances, fn {id, net} -> side(id, Decimal.negate(net)) end) ++
+          if(Decimal.equal?(profit_or_loss, 0), do: [], else: [side(account.id, profit_or_loss)])
+
+      entry = %{
+        entry_date: year.end_date,
+        description:
+          fetch(attributes, :description) ||
+            "Close fiscal year #{year.start_date} to #{year.end_date}",
+        reference: fetch(attributes, :reference)
+      }
+
+      scope
+      |> entry_changeset(book, entry, lines)
+      |> validate_open_period(scope, company_id)
+      |> validate_accounts(scope, company_id, :any)
+      |> insert_entry(scope)
+      |> case do
+        {:ok, posted} -> {:ok, posted.id}
+        error -> error
+      end
+    end
+  end
+
+  # A positive amount is a debit, a negative one a credit.
+  defp side(account_id, amount) do
+    if Decimal.gt?(amount, 0),
+      do: %{account_id: account_id, debit: amount},
+      else: %{account_id: account_id, credit: Decimal.negate(amount)}
+  end
+
+  defp reverse_closing_entry(_scope, _company_id, _book, %{closing_entry_id: nil}), do: {:ok, nil}
+
+  defp reverse_closing_entry(scope, company_id, book, year) do
+    original = entry_with_lines(scope, company_id, year.closing_entry_id)
+    description = "Reopen fiscal year #{year.start_date} to #{year.end_date}"
+
+    scope
+    |> reversal_changeset(book, original, %{entry_date: year.end_date, description: description})
+    |> validate_open_period(scope, company_id)
+    |> validate_accounts(scope, company_id, :any)
+    |> insert_entry(scope)
+  end
+
+  defp closable(_state, %{status: status}, _previous) when status != "open",
+    do: {:error, :period_not_open}
+
+  defp closable(_state, _period, %{status: "open"}), do: {:error, :earlier_period_open}
+
+  defp closable(state, period, _previous) do
+    year = Enum.find(state.years, &(&1.id == period.fiscal_year_id))
+
+    if period.end_date == year.end_date and year.status != "closed",
+      do: {:error, :closes_with_fiscal_year},
+      else: :ok
+  end
+
+  defp reopenable(_state, %{status: "locked"}, _next), do: {:error, :period_locked}
+  defp reopenable(_state, %{status: "open"}, _next), do: {:error, :period_not_closed}
+
+  defp reopenable(state, period, next) do
+    cond do
+      Enum.find(state.years, &(&1.id == period.fiscal_year_id)).status == "closed" ->
+        {:error, :fiscal_year_closed}
+
+      next && next.status != "open" ->
+        {:error, :later_period_closed}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp lockable(%{status: "locked"}, _previous), do: {:error, :period_locked}
+  defp lockable(%{status: "open"}, _previous), do: {:error, :period_not_closed}
+
+  defp lockable(_period, previous) do
+    if previous && previous.status != "locked",
+      do: {:error, :earlier_period_unlocked},
+      else: :ok
+  end
+
+  defp year_reopenable(%{status: "open"}, _last, _next), do: {:error, :fiscal_year_not_closed}
+  defp year_reopenable(_year, %{status: "locked"}, _next), do: {:error, :period_locked}
+
+  defp year_reopenable(_year, _last, next) do
+    if next && next.status != "open", do: {:error, :later_period_closed}, else: :ok
+  end
+
+  defp change_period(scope, company_id, period, action, attributes) do
+    year = %{id: period.fiscal_year_id}
+
+    with {:ok, _event} <- record_event(scope, company_id, year, period, action, attributes) do
+      {:ok, Map.put(period, :status, ClosingEvent.status_after(action))}
+    end
+  end
+
+  # The database numbers and stamps the event and refuses one that breaks
+  # the closing rules (see the migration).
+  defp record_event(scope, company_id, year, period, action, attributes, fields \\ []) do
+    %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+    %ClosingEvent{
+      tenant_id: Scope.tenant_id(scope),
+      company_id: company_id,
+      fiscal_year_id: year.id,
+      period_id: period && period.id,
+      action: action,
+      recorded_by_user_id: user_id,
+      recorded_by_impersonator_id: impersonator_id
+    }
+    |> struct(fields)
+    |> ClosingEvent.changeset(attributes)
+    |> Repo.insert()
+  end
+
+  # Every fiscal year and period of the company in date order, with the
+  # statuses its closing events leave them in.
+  defp closing_state(scope, company_id) do
+    events =
+      scope |> events_query(company_id) |> order_by([e], asc: e.event_number) |> Repo.all()
+
+    period_statuses =
+      for %ClosingEvent{period_id: id, action: action} <- events,
+          id != nil,
+          into: %{},
+          do: {id, ClosingEvent.status_after(action)}
+
+    year_events =
+      for %ClosingEvent{period_id: nil} = e <- events, into: %{}, do: {e.fiscal_year_id, e}
+
+    periods =
+      scope
+      |> periods_query(company_id)
+      |> order_by([p], asc: p.start_date)
+      |> Repo.all()
+      |> Enum.map(&period_view(&1, Map.get(period_statuses, &1.id, "open")))
+
+    years =
+      scope
+      |> fiscal_years_query(company_id)
+      |> order_by([y], asc: y.start_date)
+      |> Repo.all()
+      |> Enum.map(fn year ->
+        year_view(
+          year,
+          Map.get(year_events, year.id),
+          Enum.filter(periods, &(&1.fiscal_year_id == year.id))
+        )
+      end)
+
+    %{years: years, periods: periods}
+  end
+
+  defp neighbours(state, period) do
+    index = Enum.find_index(state.periods, &(&1.id == period.id))
+    previous = if index > 0, do: Enum.at(state.periods, index - 1)
+    {previous, Enum.at(state.periods, index + 1)}
+  end
+
+  defp find_period(state, period_id) do
+    case Enum.find(state.periods, &(&1.id == period_id)) do
+      nil -> {:error, :period_not_found}
+      period -> {:ok, period}
+    end
+  end
+
+  defp find_year(state, fiscal_year_id) do
+    case Enum.find(state.years, &(&1.id == fiscal_year_id)) do
+      nil -> {:error, :fiscal_year_not_found}
+      year -> {:ok, year}
+    end
+  end
+
+  defp fiscal_year_result(scope, company_id, fiscal_year_id) do
+    scope |> closing_state(company_id) |> find_year(fiscal_year_id)
+  end
+
+  # An entry dates into an open period, or after the company's last fiscal
+  # year; once a company has fiscal years, never before its first.
+  defp validate_open_period(changeset, scope, company_id) do
+    Changeset.validate_change(changeset, :entry_date, fn :entry_date, date ->
+      period =
+        scope
+        |> periods_query(company_id)
+        |> where([p], p.start_date <= ^date and p.end_date >= ^date)
+        |> Repo.one()
+
+      cond do
+        period ->
+          case period_status(scope, company_id, period.id) do
+            "open" -> []
+            status -> [entry_date: "falls in a #{status} period"]
+          end
+
+        scope
+        |> periods_query(company_id)
+        |> where([p], p.start_date > ^date)
+        |> Repo.exists?() ->
+          [entry_date: "is before the first fiscal year"]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp period_status(scope, company_id, period_id) do
+    scope
+    |> events_query(company_id)
+    |> where([e], e.period_id == ^period_id)
+    |> order_by([e], desc: e.event_number)
+    |> limit(1)
+    |> select([e], e.action)
+    |> Repo.one()
+    |> ClosingEvent.status_after()
+  end
 
   ## Trial balance
 
@@ -503,8 +1090,17 @@ defmodule Bilimbi.Finance.Ledger do
     end
   end
 
-  defp write(scope, company_id, capability, fun) do
-    with :ok <- authorize(scope, company_id, capability) do
+  defp authorize_all(scope, company_id, capabilities) do
+    Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
+      case authorize(scope, company_id, capability) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp write(scope, company_id, capabilities, fun) do
+    with :ok <- authorize_all(scope, company_id, List.wrap(capabilities)) do
       Repo.transact(fn ->
         case Company.lock_writable_company(scope, company_id) do
           {:ok, _proof} -> fun.()
@@ -630,10 +1226,16 @@ defmodule Bilimbi.Finance.Ledger do
         {:error, :reversal_not_reversible}
 
       entry ->
-        if reversed_by(scope, company_id, [entry.id]) == %{},
-          do: {:ok, entry},
-          else: {:error, :already_reversed}
+        cond do
+          reversed_by(scope, company_id, [entry.id]) != %{} -> {:error, :already_reversed}
+          closing_entry?(scope, company_id, entry.id) -> {:error, :closing_entry}
+          true -> {:ok, entry}
+        end
     end
+  end
+
+  defp closing_entry?(scope, company_id, entry_id) do
+    scope |> events_query(company_id) |> where([e], e.entry_id == ^entry_id) |> Repo.exists?()
   end
 
   ## Queries
@@ -657,6 +1259,18 @@ defmodule Bilimbi.Finance.Ledger do
   end
 
   defp lines_query(scope), do: Tenancy.scope_query(Line, scope)
+
+  defp fiscal_years_query(scope, company_id) do
+    from(y in Tenancy.scope_query(FiscalYear, scope), where: y.company_id == ^company_id)
+  end
+
+  defp periods_query(scope, company_id) do
+    from(p in Tenancy.scope_query(Period, scope), where: p.company_id == ^company_id)
+  end
+
+  defp events_query(scope, company_id) do
+    from(e in Tenancy.scope_query(ClosingEvent, scope), where: e.company_id == ^company_id)
+  end
 
   defp ordered_lines(scope), do: order_by(lines_query(scope), [l], asc: l.line_number)
 
@@ -713,7 +1327,16 @@ defmodule Bilimbi.Finance.Ledger do
   defp book_view(book), do: Map.take(book, [:company_id, :currency_code, :minor_units])
 
   defp account_view(account),
-    do: Map.take(account, [:id, :code, :name, :account_type, :parent_id, :active])
+    do:
+      Map.take(account, [
+        :id,
+        :code,
+        :name,
+        :account_type,
+        :parent_id,
+        :active,
+        :retained_earnings
+      ])
 
   defp entry_view(entry, reversals) do
     entry
@@ -739,7 +1362,72 @@ defmodule Bilimbi.Finance.Ledger do
     )
   end
 
+  defp year_view(year, latest_event, periods) do
+    closed = match?(%ClosingEvent{action: "close"}, latest_event)
+
+    year
+    |> Map.take([
+      :id,
+      :start_date,
+      :end_date,
+      :opened_by_user_id,
+      :opened_by_impersonator_id,
+      :opened_at
+    ])
+    |> Map.merge(%{
+      status: if(closed, do: "closed", else: "open"),
+      closing_entry_id: if(closed, do: latest_event.entry_id),
+      periods: periods
+    })
+  end
+
+  defp period_view(period, status) do
+    period
+    |> Map.take([:id, :fiscal_year_id, :period_number, :start_date, :end_date])
+    |> Map.put(:status, status)
+  end
+
+  defp event_view(event) do
+    Map.take(event, [
+      :event_number,
+      :fiscal_year_id,
+      :period_id,
+      :action,
+      :reason,
+      :entry_id,
+      :retained_earnings_account_id,
+      :recorded_by_user_id,
+      :recorded_by_impersonator_id,
+      :recorded_at
+    ])
+  end
+
   ## Accounts
+
+  # One account carries the retained-earnings designation: designating
+  # another releases the current one first, in the same transaction.
+  defp save_account(changeset, scope, company_id, save) do
+    with :ok <- release_designation(changeset, scope, company_id) do
+      changeset |> save.() |> public_result(&account_view/1)
+    end
+  end
+
+  defp release_designation(changeset, scope, company_id) do
+    current = if changeset.valid?, do: designated_account(scope, company_id)
+
+    cond do
+      Changeset.get_change(changeset, :retained_earnings) != true -> :ok
+      is_nil(current) or current.id == changeset.data.id -> :ok
+      true -> current |> Changeset.change(retained_earnings: false) |> Repo.update() |> ok()
+    end
+  end
+
+  defp designated_account(scope, company_id) do
+    scope |> accounts_query(company_id) |> where([a], a.retained_earnings) |> Repo.one()
+  end
+
+  defp ok({:ok, _result}), do: :ok
+  defp ok(error), do: error
 
   # A parent groups accounts of its own type, in this company, without a cycle.
   defp validate_parent(changeset, scope, company_id) do
