@@ -90,6 +90,48 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
     end
   end
 
+  @tag :capture_log
+  test "two sessions racing to record a posted event end with exactly one", %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    Repo.transaction(fn ->
+      query!.(
+        "INSERT INTO finance_einvoice_documents (id, tenant_id, company_id, authority, environment, document_type, code_number, issued_at, currency_code, supplier, buyer, line_extension_amount, tax_exclusive_amount, tax_amount, tax_inclusive_amount, payable_amount, issued_by_user_id, recorded_at) VALUES (1, 1, 1, 'authority', 'sandbox', '01', 'INV-1', '2026-10-01', 'XTS', '{}', '{}', 10, 10, 0, 10, 10, 1, '2000-01-01')"
+      )
+
+      query!.(
+        "INSERT INTO finance_einvoice_document_lines (tenant_id, company_id, document_id, line_number, description, classification_code, quantity, unit_price, subtotal, line_extension_amount, tax_type, tax_amount) VALUES (1, 1, 1, 1, 'Item', '022', 1, 10, 10, 10, '06', 0)"
+      )
+    end)
+
+    posted =
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, ledger_entry_id, recorded_at) VALUES (1, 1, 1, 99, 'posted', 'user', 1, 5, '2000-01-01')"
+
+    results =
+      for _session <- 1..2 do
+        Task.async(fn ->
+          Repo.put_dynamic_repo(repo)
+
+          try do
+            Repo.transaction(fn ->
+              query!.(posted)
+              Process.sleep(300)
+            end)
+          rescue
+            error in Postgrex.Error -> {:error, error}
+          end
+        end)
+      end
+      |> Task.await_many()
+
+    assert [{:ok, _}, {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}}] =
+             Enum.sort_by(results, &match?({:error, _}, &1))
+
+    assert %{rows: [[1]]} =
+             query!.("SELECT count(*) FROM finance_einvoice_status_events WHERE event = 'posted'")
+  end
+
   # The module's other suites prove these rules on temporary copies of the
   # tables; this proves the migration itself carries them, outside a sandbox,
   # where the deferred totals check runs at commit. A refused commit

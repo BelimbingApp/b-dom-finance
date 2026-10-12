@@ -776,7 +776,10 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                events(op, document)
     end
 
-    test "two racing retries post the document once", %{operator: op, document: document} do
+    test "retrying while another retry runs posts the document once", %{
+      operator: op,
+      document: document
+    } do
       owner = self()
 
       results =

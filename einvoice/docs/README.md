@@ -144,12 +144,14 @@ unknown, book not open or in another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who
 submits needs `finance.ledger.entries.post` for the posting to happen. A
-document posts once: a per-document advisory lock serializes the check,
-the ledger call, and the event, a second attempt is a no-op, and partial
-unique indexes make the database refuse a second `posted` or
-`posting_reversed` event. Only a database failure that may pass at once
-(a lost connection, a timeout, lock contention) is tried a second time,
-within the same call and recorded as one failure; a ledger refusal or a
+document posts once: the entry and the `posted` event are one transaction
+under the company's writable lock, so there is never an entry without its
+event, a second attempt is a no-op, and partial unique indexes make the
+database refuse a second `posted` or `posting_reversed` event. A refused
+entry rolls that transaction back, and the failure event is recorded
+afterwards. Only a database failure that may pass at once
+(a lost connection, a timeout, lock contention) is tried a second time as
+a fresh transaction and recorded as one failure; a ledger refusal or a
 configuration or grant failure is final and waits for `retry_posting/3`
 or `retry_reversal/3`, which the reconciliation page offers to a user
 holding both the e-invoice and the ledger grants. A status read never

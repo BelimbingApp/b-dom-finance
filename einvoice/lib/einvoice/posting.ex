@@ -20,25 +20,28 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   recorded as `posting_failed` or `reversal_failed` with its reason, and
   the reconciliation page lists the document until it is resolved by the
   manual retry. Only a database failure that may pass at once (a lost
-  connection, a timeout, lock contention) is tried a second time, inside
-  the same call and recorded as one failure; a ledger refusal (an
+  connection, a timeout, lock contention) is tried a second time, as a
+  fresh transaction once the first has ended, and recorded as one failure
+  that says it was tried twice; a ledger refusal (an
   inactive account, a closed period) or a configuration failure is final.
   A document posts once: asking again after a `posted` event is `:noop`.
   A rejected document is still valid at the authority, so it posts too.
 
-  The ledger rolls back its own transaction when it refuses an entry, so
-  `post/3` and `reverse/4` must not run inside one of ours. Each holds a
-  per-document advisory lock across the check, the ledger call, and the
-  event it records in a transaction of its own; the database also refuses
-  a second `posted` and a second `posting_reversed` event for a document.
+  An entry and the event that names it are one transaction under the
+  company's writable lock, so a document never has an entry without its
+  `posted` event, and the database also refuses a second `posted` and a
+  second `posting_reversed` event for a document. The ledger rolls back
+  the transaction it joins when it refuses an entry, so a failure event is
+  recorded afterwards, in a transaction of its own, and `post/3` and
+  `reverse/4` must not run inside one of the caller's.
   """
 
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
+  alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Ledger
-  alias Ecto.Adapters.SQL
 
   @debit_side ["01", "03"]
   @credit_side ["02"]
@@ -52,26 +55,30 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
   @doc """
   Posts the entry for a document the authority holds as valid and records
-  the outcome as an event. The document is read again under a lock of its
-  own, so a document that already has its entry is `:noop`, whatever view
-  of it the caller holds.
+  the outcome as an event. The document is read again under the company's
+  lock, so a document that already has its entry is `:noop`, whatever view
+  of it the caller holds. A database failure is returned as an error and
+  never raised.
   """
   @spec post(Scope.t(), pos_integer(), map()) :: {:ok, map()} | {:error, String.t()} | :noop
   def post(%Scope{} = scope, company_id, %{id: document_id}) do
-    locked(company_id, document_id, fn ->
-      case current(scope, company_id, document_id) do
-        nil -> {:error, "the document was not found"}
-        %{ledger_entry_id: entry_id} when not is_nil(entry_id) -> :noop
-        current -> post_entry(scope, company_id, current)
-      end
+    settle(scope, company_id, document_id, "posting_failed", fn ->
+      transaction(scope, company_id, fn ->
+        case current(scope, company_id, document_id) do
+          nil -> {:ok, :noop}
+          %{ledger_entry_id: entry_id} when not is_nil(entry_id) -> {:ok, :noop}
+          current -> post_entry(scope, company_id, current)
+        end
+      end)
     end)
   end
 
   @doc """
-  Runs one ledger attempt (`fun` returns `{:ok, _}` or `{:error, _}`). A
+  Runs `fun`, a whole transaction returning `{:ok, _}` or `{:error, _}`. A
   database failure that may pass at once (a lost connection, a timeout,
-  lock contention) is `{:error, {:transient, message}}` and is tried one
-  more time; every other result, including every ledger refusal, is final.
+  lock contention) is `{:error, {:transient, message}}` and `fun` runs one
+  more time, on a connection of its own; every other result, including
+  every ledger refusal, is final.
   """
   @spec attempt((-> {:ok, term()} | {:error, term()})) :: {:ok, term()} | {:error, term()}
   def attempt(fun) when is_function(fun, 0) do
@@ -96,20 +103,42 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   def transient?(%Postgrex.Error{postgres: %{code: code}}), do: code in @transient_codes
   def transient?(_error), do: false
 
-  # One decision at a time per document, across processes and nodes: the
-  # lock outlives the ledger's own transaction, which a refusal rolls back.
-  defp locked(company_id, document_id, fun) do
-    key = "finance/einvoice/posting/#{company_id}/#{document_id}"
+  # The attempt's outcome as the caller sees it. A failure is recorded once,
+  # after the attempt's transaction ended, and only if the database can take
+  # it; either way the error is returned.
+  defp settle(scope, company_id, document_id, failure_event, fun) do
+    case attempt(fun) do
+      {:ok, :noop} ->
+        :noop
 
-    Repo.checkout(fn ->
-      SQL.query!(Repo, "SELECT pg_advisory_lock(hashtextextended($1, 0))", [key])
+      {:ok, entry} ->
+        {:ok, entry}
 
-      try do
-        fun.()
-      after
-        SQL.query!(Repo, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key])
+      {:error, reason} ->
+        message = failure_message(reason)
+        record_failure(scope, company_id, document_id, failure_event, message)
+        {:error, message}
+    end
+  end
+
+  # One transaction holding the company's writable lock. An error returned
+  # from `fun` rolls it back, which the ledger's refusal has already done.
+  defp transaction(scope, company_id, fun) do
+    Repo.transact(fn ->
+      case Company.lock_writable_company(scope, company_id) do
+        {:ok, _proof} -> fun.()
+        {:error, reason} -> {:error, reason}
       end
     end)
+  end
+
+  defp record_failure(scope, company_id, document_id, event, message) do
+    transaction(scope, company_id, fn ->
+      {:ok,
+       Documents.record_event!(scope, company_id, document_id, %{event: event, reason: message})}
+    end)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, error}
   end
 
   defp current(scope, company_id, document_id) do
@@ -119,87 +148,62 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     end
   end
 
-  defp record!(scope, company_id, document_id, attributes) do
-    Documents.write!(scope, company_id, fn ->
-      Documents.record_event!(scope, company_id, document_id, attributes)
-    end)
-  end
-
   defp post_entry(scope, company_id, document) do
-    result =
-      attempt(fn ->
-        with :ok <- postable(document),
-             {:ok, book} <- book(scope, company_id, document),
-             {:ok, accounts} <- accounts(scope, company_id, document.document_type),
-             {:ok, lines} <- lines(document, accounts, book) do
-          Ledger.post_entry(scope, company_id, %{
-            entry_date: DateTime.to_date(document.issued_at),
-            description: description(document),
-            reference: reference(document),
-            lines: lines
-          })
-        end
-      end)
+    with :ok <- postable(document),
+         {:ok, book} <- book(scope, company_id, document),
+         {:ok, accounts} <- accounts(scope, company_id, document.document_type),
+         {:ok, lines} <- lines(document, accounts, book),
+         {:ok, entry} <-
+           Ledger.post_entry(scope, company_id, %{
+             entry_date: DateTime.to_date(document.issued_at),
+             description: description(document),
+             reference: reference(document),
+             lines: lines
+           }) do
+      Documents.record_event!(scope, company_id, document.id, %{
+        event: "posted",
+        ledger_entry_id: entry.id,
+        reason: "entry #{entry.entry_number}"
+      })
 
-    case result do
-      {:ok, entry} ->
-        record!(scope, company_id, document.id, %{
-          event: "posted",
-          ledger_entry_id: entry.id,
-          reason: "entry #{entry.entry_number}"
-        })
-
-        {:ok, entry}
-
-      {:error, reason} ->
-        message = failure_message(reason)
-        record!(scope, company_id, document.id, %{event: "posting_failed", reason: message})
-        {:error, message}
+      {:ok, entry}
     end
   end
 
   @doc """
   Reverses a cancelled document's entry and records the outcome as an
-  event. Read again under the document's lock: a document without an
-  entry, or already reversed, is `:noop`.
+  event. Read again under the company's lock: a document without an entry,
+  or already reversed, is `:noop`.
   """
   @spec reverse(Scope.t(), pos_integer(), map(), DateTime.t()) ::
           {:ok, map()} | {:error, String.t()} | :noop
   def reverse(%Scope{} = scope, company_id, %{id: document_id}, %DateTime{} = now) do
-    locked(company_id, document_id, fn ->
-      case current(scope, company_id, document_id) do
-        nil -> :noop
-        %{ledger_entry_id: nil} -> :noop
-        %{reversal_entry_id: entry_id} when not is_nil(entry_id) -> :noop
-        current -> reverse_entry(scope, company_id, current, now)
-      end
+    settle(scope, company_id, document_id, "reversal_failed", fn ->
+      transaction(scope, company_id, fn ->
+        case current(scope, company_id, document_id) do
+          nil -> {:ok, :noop}
+          %{ledger_entry_id: nil} -> {:ok, :noop}
+          %{reversal_entry_id: entry_id} when not is_nil(entry_id) -> {:ok, :noop}
+          current -> reverse_entry(scope, company_id, current, now)
+        end
+      end)
     end)
   end
 
   defp reverse_entry(scope, company_id, document, now) do
-    result =
-      attempt(fn ->
-        Ledger.reverse_entry(scope, company_id, document.ledger_entry_id, %{
-          entry_date: DateTime.to_date(now),
-          description: "Reversal of " <> description(document),
-          reference: reference(document)
-        })
-      end)
+    with {:ok, entry} <-
+           Ledger.reverse_entry(scope, company_id, document.ledger_entry_id, %{
+             entry_date: DateTime.to_date(now),
+             description: "Reversal of " <> description(document),
+             reference: reference(document)
+           }) do
+      Documents.record_event!(scope, company_id, document.id, %{
+        event: "posting_reversed",
+        ledger_entry_id: entry.id,
+        reason: "entry #{entry.entry_number}"
+      })
 
-    case result do
-      {:ok, entry} ->
-        record!(scope, company_id, document.id, %{
-          event: "posting_reversed",
-          ledger_entry_id: entry.id,
-          reason: "entry #{entry.entry_number}"
-        })
-
-        {:ok, entry}
-
-      {:error, reason} ->
-        message = failure_message(reason)
-        record!(scope, company_id, document.id, %{event: "reversal_failed", reason: message})
-        {:error, message}
+      {:ok, entry}
     end
   end
 

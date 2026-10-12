@@ -77,7 +77,7 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
     assert Enum.count(events, &(&1.event == "posted")) == 1
   end
 
-  test "two processes racing to post one document leave one entry and one posted event",
+  test "posting again while another posting runs is a no-op, with one entry and one posted event",
        %{operator: op} do
     document = validated!(op, TestFixtures.invoice_attributes())
     owner = self()
@@ -96,6 +96,28 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
 
     assert {:ok, %{events: events}} = Einvoice.get_document(op, 73, document.id)
     assert Enum.count(events, &(&1.event == "posted")) == 1
+  end
+
+  test "a ledger refusal leaves no entry and no posted event, only the failure",
+       %{operator: op, accounts: accounts} do
+    document = validated!(op, TestFixtures.invoice_attributes())
+    {:ok, _account} = Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: false})
+
+    assert {:error, _reason} = Posting.post(op, 73, document)
+    assert {:ok, []} = Ledger.list_entries(op, 73)
+
+    assert {:ok, %{ledger_entry_id: nil, events: events}} =
+             Einvoice.get_document(op, 73, document.id)
+
+    assert Enum.map(events, & &1.event) == ["issued", "submitted", "valid", "posting_failed"]
+
+    {:ok, _account} = Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: true})
+    assert {:ok, entry} = Posting.post(op, 73, document)
+    assert {:ok, [only_entry]} = Ledger.list_entries(op, 73)
+    assert only_entry.id == entry.id
+
+    assert {:ok, %{ledger_entry_id: entry_id}} = Einvoice.get_document(op, 73, document.id)
+    assert entry_id == entry.id
   end
 
   test "a refused posting is recorded as one failure",
