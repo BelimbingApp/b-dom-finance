@@ -182,7 +182,7 @@ note corrects it.
 - `/finance/einvoice/documents/:id/pdf/:artifact_id`: the PDF download,
   read through Base Artifacts on every request.
 - `/finance/einvoice/reconciliation` (Finance › E-invoice Reconciliation).
-- `/finance/einvoice/setup` (Finance › E-invoice Setup), as before.
+- `/finance/einvoice/setup` (Finance › E-invoice Setup): see Settings.
 
 The PDF is rendered by `Bilimbi.Finance.Einvoice.ArtifactOwner` with Base
 Artifacts' pure PDF serializer, so it needs no browser; it carries the
@@ -238,7 +238,8 @@ and one authority's rules. Everything MyInvois defines sits in
   with a generated certificate.
 - `MyInvois.Client` calls the API through `Bilimbi.Base.Integration.request/3`
   with the caller's scope: login, submit, submission status, document
-  details, cancel, and TIN validation. The validation link is
+  details, the recently sent documents (searched by `find_submission`),
+  cancel, and TIN validation. The validation link is
   `{portal}/{uuid}/share/{longId}`, with the portal per environment a
   platform setting (`finance.einvoice.<environment>.portal_url`). `MyInvois.TokenCache` keeps one token
   per company, environment, and client ID in ETS until two minutes before it
@@ -390,4 +391,5 @@ would have, for tests that start from a valid document. Party data is the SDK's 
 generated (`test_certificate!/1`). Authority calls answer from `Req.Test`
 stubs set in `test_helper.exs`; no test reaches the authority. The SDK's
 signed samples are in `test/fixtures/sdk/`, signed with the SDK's dummy test
-certificate. `web_test/` covers the setup page against the real host.
+certificate. `web_test/` covers the setup, document list and page, PDF download, and
+reconciliation pages against the real host.
