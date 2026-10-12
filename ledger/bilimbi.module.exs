@@ -13,7 +13,10 @@
     "core/company"
   ],
   migrations: "priv/repo/migrations",
-  migration_dispositions: %{20_261_012_170_100 => :bilimbi_only},
+  migration_dispositions: %{
+    20_261_012_170_100 => :bilimbi_only,
+    20_261_013_101_700 => :bilimbi_only
+  },
   web: nil,
   # Compatibility verification runs before pending Bilimbi-only migrations.
   # Registering these fresh tables would make adoption expect them already;

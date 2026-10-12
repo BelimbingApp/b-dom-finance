@@ -38,7 +38,13 @@ here; they govern this code and are not copied here.
   order and each number's written form must survive.
 - Post to the ledger through `Bilimbi.Finance.Ledger`'s facade, from Finance
   modules and other Domains alike; never write or read its tables. A posted
-  entry is corrected with `reverse_entry/4`, never edited.
+  entry is corrected with `reverse_entry/4`, never edited. Its `entry_date`
+  must fall in an open period: handle that changeset error, never reopen a
+  period to post.
+- Keep a record's changing state (open, closed, approved, ...) as append-only
+  events with actor, reason, and a database-stamped time, the latest deciding
+  the state, as the ledger's closing log does; an updatable status column
+  loses the history an auditor asks for.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's
@@ -54,7 +60,9 @@ here; they govern this code and are not copied here.
 - Module tests run against temporary tables in each module's
   `test/support/test_fixtures.ex`, not its migrations. Mirror a migration's
   constraints and triggers there, or a test that makes PostgreSQL refuse
-  proves nothing. The sandbox never commits, so a deferred trigger runs only
+  proves nothing; a migration's public `functions/1` (the closing migration's)
+  lets fixtures create its trigger functions in `pg_temp.` instead of copying
+  them. The sandbox never commits, so a deferred trigger runs only
   after `check_deferred_constraints!/0`, and TRUNCATE with pending trigger
   events fails for that reason rather than the trigger's; prove those in the
   fresh-database contract test.
