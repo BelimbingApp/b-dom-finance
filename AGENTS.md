@@ -40,6 +40,9 @@ here; they govern this code and are not copied here.
   globally unique version, and keep the module's `SchemaContract` out of the
   descriptor (adoption would expect the tables before they exist); a
   `test/schema_contract_test.exs` verifies it against a fresh database.
+  Pass a table name as an argument (`owned_columns("table") |> ...`), never
+  as the head of a pipe: Bilimbi's `TenantScopeGateTest` reads a piped string
+  literal as an unscoped query over that tenant-owned table.
 - Module tests run against temporary tables in each module's
   `test/support/test_fixtures.ex`, not its migrations. Mirror a migration's
   constraints and triggers there, or a test that makes PostgreSQL refuse

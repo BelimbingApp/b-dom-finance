@@ -19,8 +19,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
       %{
         name: "finance_ledger_books",
         columns:
-          "finance_ledger_books"
-          |> owned_columns()
+          owned_columns("finance_ledger_books")
           |> Map.merge(%{
             "currency_code" => column({:varchar, 3}, false),
             "minor_units" => column(:smallint, false),
@@ -43,8 +42,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
       %{
         name: "finance_ledger_accounts",
         columns:
-          "finance_ledger_accounts"
-          |> owned_columns()
+          owned_columns("finance_ledger_accounts")
           |> Map.merge(%{
             "code" => column({:varchar, 50}, false),
             "name" => column({:varchar, 200}, false),
@@ -79,8 +77,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
       %{
         name: "finance_ledger_entries",
         columns:
-          "finance_ledger_entries"
-          |> owned_columns()
+          owned_columns("finance_ledger_entries")
           |> Map.merge(%{
             "entry_date" => column(:date, false),
             "description" => column({:varchar, 500}, false),
@@ -119,8 +116,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
       %{
         name: "finance_ledger_entry_lines",
         columns:
-          "finance_ledger_entry_lines"
-          |> owned_columns()
+          owned_columns("finance_ledger_entry_lines")
           |> Map.merge(%{
             "entry_id" => column(:bigint, false),
             "line_number" => column(:integer, false),

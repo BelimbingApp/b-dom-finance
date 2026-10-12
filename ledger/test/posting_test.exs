@@ -94,14 +94,16 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
       assert %{lines: ["needs at least two lines"]} = errors_on(changeset)
     end
 
-    test "refuses a line with both, neither, a negative, or too fine an amount", context do
+    test "refuses a line with both, neither, a negative, too fine, or too large an amount",
+         context do
       %{cash: cash, income: income} = context
 
       for {line, field} <- [
             {%{account_id: cash.id, debit: "5", credit: "5"}, :debit},
             {%{account_id: cash.id}, :debit},
             {%{account_id: cash.id, debit: "-5"}, :debit},
-            {%{account_id: cash.id, debit: "5.001"}, :debit}
+            {%{account_id: cash.id, debit: "5.001"}, :debit},
+            {%{account_id: cash.id, debit: "10000000000000000"}, :debit}
           ] do
         assert {:error, changeset} = post(context, [line, credit(income, "5")])
         assert %{lines: [line_errors, %{}]} = errors_on(changeset)

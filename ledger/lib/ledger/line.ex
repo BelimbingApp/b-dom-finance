@@ -3,6 +3,9 @@ defmodule Bilimbi.Finance.Ledger.Line do
   use Ecto.Schema
   import Ecto.Changeset
 
+  # The column is numeric(20, 4): sixteen digits before the point.
+  @amount_limit Decimal.new("1E16")
+
   schema "finance_ledger_entry_lines" do
     field(:tenant_id, :integer)
     field(:company_id, :integer)
@@ -26,8 +29,8 @@ defmodule Bilimbi.Finance.Ledger.Line do
     |> put_zero(:debit)
     |> put_zero(:credit)
     |> validate_required([:account_id])
-    |> validate_number(:debit, greater_than_or_equal_to: 0)
-    |> validate_number(:credit, greater_than_or_equal_to: 0)
+    |> validate_number(:debit, greater_than_or_equal_to: 0, less_than: @amount_limit)
+    |> validate_number(:credit, greater_than_or_equal_to: 0, less_than: @amount_limit)
     |> validate_amount_scale(:debit, minor_units)
     |> validate_amount_scale(:credit, minor_units)
     |> validate_one_side()
