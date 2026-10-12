@@ -1,0 +1,9 @@
+# Mix writes builds, dependencies, and the composition lock to the enclosing
+# Bilimbi checkout. These cover a stray standalone run inside this repository.
+/_build
+/deps
+/cover
+/doc
+/.scratchpad
+/.elixir_ls
+erl_crash.dump
