@@ -11,7 +11,10 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_version, do: 20_261_012_200_000
+  @doc "The migrations that build this contract, in order."
+  def migration_versions, do: [20_261_012_200_000, 20_261_013_090_000, 20_261_013_143_000]
+
+  def migration_version, do: List.last(migration_versions())
 
   @environments "(environment)::text = ANY ((ARRAY['sandbox'::character varying, " <>
                   "'production'::character varying])::text[])"
@@ -201,12 +204,28 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
           "reason" => column({:varchar, 300}, true),
           "http_status" => column(:integer, true),
           "response" => column(:jsonb, true),
+          "ledger_entry_id" => column(:bigint, true),
           "recorded_at" => column({:timestamp, 6}, false)
         }),
       indexes: %{
         "finance_einvoice_status_events_pkey" => index(["id"], true),
+        "finance_einvoice_status_events_ledger_entry_index" => %{
+          columns: ["company_id", "document_id", "event"],
+          unique: false,
+          where: "(ledger_entry_id IS NOT NULL)"
+        },
         "finance_einvoice_status_events_document_sequence_unique" =>
           index(["document_id", "sequence"], true),
+        "finance_einvoice_status_events_posted_unique" => %{
+          columns: ["document_id"],
+          unique: true,
+          where: "((event)::text = 'posted'::text)"
+        },
+        "finance_einvoice_status_events_reversed_unique" => %{
+          columns: ["document_id"],
+          unique: true,
+          where: "((event)::text = 'posting_reversed'::text)"
+        },
         "finance_einvoice_status_events_company_id_document_uuid_index" => %{
           columns: ["company_id", "document_uuid"],
           unique: false,
@@ -223,6 +242,8 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
         "finance_einvoice_status_events_event" => check("(event)::text ~ '^[a-z][a-z_]*$'::text"),
         "finance_einvoice_status_events_http_status" =>
           check("http_status IS NULL OR (http_status >= 100 AND http_status <= 599)"),
+        "finance_einvoice_status_events_ledger_entry_id" =>
+          check("ledger_entry_id IS NULL OR ledger_entry_id > 0"),
         "finance_einvoice_status_events_actor" => check(@actor)
       }
     }

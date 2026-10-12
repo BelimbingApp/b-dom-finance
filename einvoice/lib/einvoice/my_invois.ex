@@ -6,20 +6,43 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   (`MyInvois.Client`).
 
   Rules follow the authority's e-Invoice Guideline v4.8 (30 August 2026) and
-  its SDK as read on 12 October 2026, document format version 1.1, which
-  turns on signature validation. Only individual invoices (type `01`) in
-  ringgit are issued in this release; notes, foreign currencies,
-  consolidated, and self-billed documents come later. The builder already
-  writes every element the SDK's samples use, foreign currency included.
+  its SDK as read on 12 October 2026. Format version 1.1 turns on signature
+  validation; version 1.0 is submitted unsigned, which is how a company
+  tests the sandbox before its certificate arrives. Invoices (`01`) and the
+  credit, debit, and refund notes that reference a validated original
+  (`02` to `04`), in ringgit, are issued in this release; foreign
+  currencies, consolidated, and self-billed documents come later. The
+  builder already writes every element the SDK's samples use.
+
+  The API callbacks translate the authority's answers into the meta-terms
+  the facade and workers record, keeping each raw response beside them:
+  a 202 whose accepted list names the document is `:accepted`; a 202 that
+  lists it as rejected is `:rejected`; `DuplicateSubmission` (422) is
+  `:duplicate`; 429 is `:rate_limited`; a 5xx or transport failure is
+  `:unavailable`; any other refusal is `:refused`. A document the
+  authority may already hold is found again among the documents the
+  taxpayer recently sent (up to #{30} days back), by its internal ID,
+  which is the company's code number.
   """
 
   @behaviour Bilimbi.Finance.Einvoice.Authority
 
   import Ecto.Changeset
 
+  alias Bilimbi.Base.Settings
   alias Bilimbi.Finance.Einvoice.MyInvois.{Builder, Client, Signer}
 
   @version "1.1"
+  @versions [%{version: "1.1", signed: true}, %{version: "1.0", signed: false}]
+  @invoice "01"
+  @notes ["02", "03", "04"]
+  @referable ["valid", "rejected"]
+  @search_days 30
+  @search_pages 10
+  @portal_urls %{
+    "sandbox" => "https://preprod.myinvois.hasil.gov.my",
+    "production" => "https://myinvois.hasil.gov.my"
+  }
   # The authority reports tax in ringgit, whatever the document currency.
   @tax_currency "MYR"
   @registration_types ["BRN", "NRIC", "PASSPORT", "ARMY"]
@@ -44,10 +67,64 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   def id, do: "myinvois"
 
   @impl true
-  def issuable_document_types, do: ["01"]
+  def issuable_document_types, do: [@invoice | @notes]
 
-  @doc "The UBL format version documents are built in."
+  @impl true
+  def note_document_types, do: @notes
+
+  @impl true
+  def posting_rule("01"), do: {:debit, :receivable_account}
+  def posting_rule("02"), do: {:credit, :receivable_account}
+  def posting_rule("03"), do: {:debit, :receivable_account}
+  def posting_rule("04"), do: {:credit, :settlement_account}
+  def posting_rule(_type), do: nil
+
+  @impl true
+  def document_type_name("01"), do: "Invoice"
+  def document_type_name("02"), do: "Credit note"
+  def document_type_name("03"), do: "Debit note"
+  def document_type_name("04"), do: "Refund note"
+  def document_type_name(type), do: "Document type #{type}"
+
+  @impl true
+  def cancellation_window_hours, do: 72
+
+  @impl true
+  def outage_notice_hours, do: 72
+
+  @impl true
+  def document_versions, do: @versions
+
+  @doc "The UBL format version documents are built in when a company chose none."
   def version, do: @version
+
+  @doc "Platform settings for the portal that shows validated documents, per environment."
+  @spec portal_settings_definitions() :: %{String.t() => map()}
+  def portal_settings_definitions do
+    Map.new(@portal_urls, fn {environment, url} ->
+      {"finance.einvoice.#{environment}.portal_url",
+       %{
+         type: :string,
+         scopes: [:global],
+         default: url,
+         label: "E-invoice #{environment} portal URL",
+         help:
+           "Base URL of the MyInvois #{environment} portal that a document's validation link opens.",
+         editable: "operator",
+         capability: "base.settings.global.manage",
+         validator: {Client, :valid_url?, "must be an https URL without a path"}
+       }}
+    end)
+  end
+
+  @impl true
+  def validation_url(environment, document_uuid, long_id) do
+    url =
+      Settings.get("finance.einvoice.#{environment}.portal_url") ||
+        Map.fetch!(@portal_urls, environment)
+
+    "#{String.trim_trailing(url, "/")}/#{document_uuid}/share/#{long_id}"
+  end
 
   @impl true
   def valid_format?(kind, value), do: is_binary(value) and value =~ format(kind).pattern
@@ -69,6 +146,13 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     }
 
   defp format(:industry_code), do: %{pattern: ~r/\A[0-9]{5}\z/, message: "must be five digits"}
+
+  defp format(:registration_type),
+    do: %{
+      pattern: ~r/\A(BRN|NRIC|PASSPORT|ARMY)\z/,
+      message: "must be BRN, NRIC, PASSPORT, or ARMY"
+    }
+
   defp format(:state_code), do: %{pattern: ~r/\A[0-9]{2}\z/, message: "must be two digits"}
 
   defp format(:country_code),
@@ -94,7 +178,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   @impl true
-  def validate(changeset, supplier, codes) do
+  def validate(changeset, %{supplier: supplier, codes: codes} = context) do
     changeset
     |> validate_inclusion(:document_type, issuable_document_types(),
       message: "is not a document type this release issues"
@@ -103,9 +187,46 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     |> validate_code(:currency_code, codes.("currency"))
     |> validate_code(:payment_means_code, codes.("payment_means"))
     |> validate_tax_currency()
+    |> validate_original(Map.get(context, :original))
     |> validate_supplier(supplier, codes)
     |> update_embed(:buyer, &validate_buyer(&1, codes))
     |> update_embeds(:lines, &validate_line(&1, codes))
+  end
+
+  # A note references the validated original it corrects (Guideline
+  # §2.4.5): the original must be valid at the authority (a buyer's
+  # rejection request leaves it valid there), carry its UUID,
+  # be an invoice rather than another note, and share the currency. An
+  # invoice references nothing.
+  defp validate_original(changeset, original) do
+    type = get_field(changeset, :document_type)
+    original_id = get_field(changeset, :original_document_id)
+
+    cond do
+      type in @notes and is_nil(original_id) ->
+        add_error(changeset, :original_document_id, "is required for a note")
+
+      type in @notes and is_nil(original) ->
+        add_error(changeset, :original_document_id, "is not a document of this company")
+
+      type in @notes and original.status not in @referable ->
+        add_error(changeset, :original_document_id, "is not a validated document")
+
+      type in @notes and is_nil(original.document_uuid) ->
+        add_error(changeset, :original_document_id, "has no document UUID from the authority")
+
+      type in @notes and original.document_type in @notes ->
+        add_error(changeset, :original_document_id, "is itself a note; reference the invoice")
+
+      type in @notes and original.currency_code != get_field(changeset, :currency_code) ->
+        add_error(changeset, :currency_code, "must match the original document's currency")
+
+      type not in @notes and not is_nil(original_id) ->
+        add_error(changeset, :original_document_id, "is only given for a note")
+
+      true ->
+        changeset
+    end
   end
 
   # The SDK's foreign-currency sample writes tax amounts in ringgit beside
@@ -234,17 +355,310 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   ## Payload
 
   @impl true
-  def payload(document, signing_key, %DateTime{} = signing_time) do
-    bytes = document |> ubl() |> Builder.build() |> Signer.sign(signing_key, signing_time)
-    %{format: "JSON", version: @version, bytes: bytes}
+  def payload(document, %{version: version} = options, %DateTime{} = signing_time) do
+    case Enum.find(@versions, &(&1.version == version)) do
+      %{signed: true} ->
+        case options[:signing_key] do
+          %{certificate: _, key: _} = signing_key ->
+            bytes =
+              document
+              |> ubl(version)
+              |> Builder.build()
+              |> Signer.sign(signing_key, signing_time)
+
+            {:ok, %{format: "JSON", version: version, bytes: bytes}}
+
+          _none ->
+            {:error, :signing_key_required}
+        end
+
+      %{signed: false} ->
+        bytes = document |> ubl(version) |> Builder.build() |> Signer.document_bytes()
+        {:ok, %{format: "JSON", version: version, bytes: bytes}}
+
+      nil ->
+        {:error, :unsupported_version}
+    end
   end
+
+  ## API answers, in meta-terms
+
+  @impl true
+  def submit(scope, company_id, credentials, %{format: format, bytes: bytes, code_number: code}) do
+    document = %{format: format, document: bytes, code_number: code}
+
+    case Client.submit(scope, company_id, credentials, [document], owner_id: company_id) do
+      {:ok, %{status: status, body: body}} ->
+        submission_outcome(code, status, body)
+
+      {:error, {:retry_after, seconds, 422, body}} ->
+        {:duplicate, answer(422, body, retry_after: seconds)}
+
+      {:error, {:http, 422, body}} ->
+        if error_code(body) == "DuplicateSubmission",
+          do: {:duplicate, answer(422, body)},
+          else: {:refused, answer(422, body)}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  # A 202 lists each document as accepted (with its UUID) or rejected
+  # (with the authority's error); a document missing from both lists is
+  # treated as rejected, never as accepted.
+  defp submission_outcome(code, status, %{"submissionUid" => uid} = body) when is_binary(uid) do
+    accepted =
+      body
+      |> Map.get("acceptedDocuments", [])
+      |> List.wrap()
+      |> Enum.find(&code_matches?(&1, code))
+
+    rejected =
+      body
+      |> Map.get("rejectedDocuments", [])
+      |> List.wrap()
+      |> Enum.find(&code_matches?(&1, code))
+
+    cond do
+      is_map(accepted) and is_binary(accepted["uuid"]) ->
+        {:accepted, answer(status, body, submission_uid: uid, document_uuid: accepted["uuid"])}
+
+      is_map(rejected) ->
+        {:rejected,
+         answer(status, body, submission_uid: uid, reason: error_message(rejected["error"]))}
+
+      true ->
+        {:rejected, answer(status, body, submission_uid: uid, reason: "not listed as accepted")}
+    end
+  end
+
+  defp submission_outcome(_code, status, body),
+    do: {:refused, answer(status, body, reason: "no submission UID in the answer")}
+
+  defp code_matches?(%{"invoiceCodeNumber" => code}, code), do: true
+  defp code_matches?(_entry, _code), do: false
+
+  @impl true
+  def submission_progress(scope, company_id, credentials, submission_uid) do
+    case Client.submission_status(scope, company_id, credentials, submission_uid,
+           owner_id: company_id
+         ) do
+      {:ok, %{status: status, body: %{"overallStatus" => overall} = body}} ->
+        if overall |> to_string() |> String.downcase() == "in progress",
+          do: {:in_progress, answer(status, body)},
+          else: {:done, answer(status, body)}
+
+      {:ok, %{status: status, body: body}} ->
+        {:refused, answer(status, body, reason: "no overall status in the answer")}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  @impl true
+  def find_submission(
+        scope,
+        company_id,
+        credentials,
+        %{
+          code_number: code,
+          since: since,
+          until: until
+        } = lookup
+      ) do
+    from = Enum.max([since, DateTime.add(until, -@search_days * 86_400, :second)], DateTime)
+    known = Map.get(lookup, :exclude, [])
+    search_sent(scope, company_id, credentials, {code, known}, [from: from, to: until], 1)
+  end
+
+  defp search_sent(scope, company_id, credentials, {code, known} = wanted, window, page) do
+    case Client.recent_documents(scope, company_id, credentials, window,
+           owner_id: company_id,
+           page: page
+         ) do
+      {:ok, %{status: status, body: %{"result" => results} = body}} when is_list(results) ->
+        case results
+             |> Enum.filter(&(&1["internalId"] == code and &1["uuid"] not in known))
+             |> Enum.max_by(&to_string(&1["dateTimeReceived"]), fn -> nil end) do
+          %{"uuid" => uuid, "submissionUid" => uid} = entry
+          when is_binary(uuid) and is_binary(uid) ->
+            {:found,
+             answer(status, entry,
+               submission_uid: uid,
+               document_uuid: uuid,
+               reason: "found at the authority by its code number"
+             )}
+
+          _none ->
+            cond do
+              not more_pages?(body, page) ->
+                {:not_found, answer(status, body)}
+
+              page < @search_pages ->
+                search_sent(scope, company_id, credentials, wanted, window, page + 1)
+
+              true ->
+                {:refused, answer(status, body, reason: "search window too large to read")}
+            end
+        end
+
+      {:ok, %{status: status, body: body}} ->
+        {:refused, answer(status, body, reason: "no document list in the answer")}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  defp more_pages?(%{"metadata" => %{"totalPages" => total}}, page) when is_integer(total),
+    do: page < total
+
+  defp more_pages?(_body, _page), do: false
+
+  @impl true
+  def document_status(scope, company_id, credentials, document_uuid) do
+    case Client.document_details(scope, company_id, credentials, document_uuid,
+           owner_id: company_id
+         ) do
+      {:ok, %{status: http_status, body: %{"status" => status} = body}} ->
+        case status_name(status) do
+          nil ->
+            {:refused, answer(http_status, body, reason: "unknown status #{inspect(status)}")}
+
+          name ->
+            {:ok,
+             answer(http_status, body,
+               status: name,
+               long_id: blank_to_nil(body["longId"]),
+               validated_at: instant(body["dateTimeValidated"]),
+               cancelled_at: instant(body["cancelDateTime"]),
+               rejection_requested_at: instant(body["rejectRequestDateTime"]),
+               reason: blank_to_nil(body["documentStatusReason"])
+             )}
+        end
+
+      {:ok, %{status: http_status, body: body}} ->
+        {:refused, answer(http_status, body, reason: "no status in the answer")}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  @impl true
+  def cancel(scope, company_id, credentials, document_uuid, reason) do
+    case Client.cancel_document(scope, company_id, credentials, document_uuid, reason,
+           owner_id: company_id
+         ) do
+      {:ok, %{status: status, body: body}} ->
+        {:ok, answer(status, body)}
+
+      {:error, {:http, status, body}} when status in 400..499 ->
+        code = error_code(body)
+
+        reason_code =
+          case code do
+            "OperationPeriodOver" -> :period_over
+            "IncorrectState" -> :incorrect_state
+            "ActiveReferencingDocuments" -> :active_referencing_documents
+            _other -> :other
+          end
+
+        {:refused,
+         answer(status, body, reason_code: reason_code, reason: error_message(body["error"]))}
+
+      {:error, :invalid_reason} ->
+        {:refused,
+         %{http_status: nil, response: nil, reason_code: :other, reason: "invalid reason"}}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  defp failure({:error, {:retry_after, seconds, status, body}}),
+    do: {:rate_limited, answer(status, body, retry_after: seconds)}
+
+  defp failure({:error, {:http, 429, body}}), do: {:rate_limited, answer(429, body)}
+
+  defp failure({:error, {:http, status, body}}) when status >= 500,
+    do: {:unavailable, answer(status, body, reason: "HTTP #{status}")}
+
+  defp failure({:error, {:http, status, body}}),
+    do: {:refused, answer(status, body, reason: error_message(body) || "HTTP #{status}")}
+
+  defp failure({:error, {:transport, exception}}),
+    do: {:unavailable, %{http_status: nil, response: nil, reason: transport_reason(exception)}}
+
+  defp failure({:error, {:unexpected_token_response, status}}),
+    do: {:refused, %{http_status: status, response: nil, reason: "unexpected login answer"}}
+
+  defp failure({:error, :missing_credentials}),
+    do: {:refused, %{http_status: nil, response: nil, reason: "missing credentials"}}
+
+  defp failure({:error, reason}),
+    do: {:refused, %{http_status: nil, response: nil, reason: inspect(reason)}}
+
+  defp answer(status, body, extra \\ []) do
+    Map.merge(%{http_status: status, response: body}, Map.new(extra))
+  end
+
+  defp transport_reason(%{__struct__: module}), do: module |> Module.split() |> List.last()
+  defp transport_reason(other), do: inspect(other)
+
+  defp error_code(%{"error" => %{"code" => code}}) when is_binary(code), do: code
+  defp error_code(_body), do: nil
+
+  defp error_message(%{"error" => error}), do: error_message(error)
+
+  defp error_message(%{"message" => message} = error) when is_binary(message) do
+    details =
+      error
+      |> Map.get("details", [])
+      |> List.wrap()
+      |> Enum.map(& &1["message"])
+      |> Enum.filter(&is_binary/1)
+
+    [message | details] |> Enum.join("; ") |> String.slice(0, 300)
+  end
+
+  defp error_message(%{"code" => code}) when is_binary(code), do: code
+  defp error_message(_other), do: nil
+
+  defp status_name(status) when is_binary(status) do
+    case String.downcase(status) do
+      "submitted" -> :submitted
+      "valid" -> :valid
+      "invalid" -> :invalid
+      "cancelled" -> :cancelled
+      _other -> nil
+    end
+  end
+
+  defp status_name(_status), do: nil
+
+  defp instant(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, instant, _offset} -> instant
+      _error -> nil
+    end
+  end
+
+  defp instant(_value), do: nil
+
+  defp blank_to_nil(value) when is_binary(value) and value != "", do: value
+  defp blank_to_nil(_value), do: nil
 
   @doc """
   The builder's input for a recorded document (`Einvoice.get_document/3`'s
-  map): parties from their snapshots, per-tax-type subtotals from the lines.
+  map): parties from their snapshots, per-tax-type subtotals from the
+  lines, and for a note the original's code number and UUID as the issue
+  snapshotted them.
   """
-  @spec ubl(map()) :: map()
-  def ubl(document) do
+  @spec ubl(map(), String.t()) :: map()
+  def ubl(document, version \\ @version) do
     issued_at = DateTime.truncate(document.issued_at, :second)
     details = document.details
 
@@ -253,7 +667,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
       issue_date: issued_at |> DateTime.to_date() |> Date.to_iso8601(),
       issue_time: (issued_at |> DateTime.to_time() |> Time.to_iso8601()) <> "Z",
       type_code: document.document_type,
-      version: @version,
+      version: version,
+      billing_references: billing_references(details),
       currency_code: document.currency_code,
       tax_currency_code: @tax_currency,
       tax_exchange_rate:
@@ -284,6 +699,12 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     }
   end
 
+  defp billing_references(%{"original_code_number" => code, "original_document_uuid" => uuid})
+       when is_binary(code) and is_binary(uuid),
+       do: [%{id: code, uuid: uuid}]
+
+  defp billing_references(_details), do: []
+
   defp invoice_period(%{"billing_period_start" => start} = details) when is_binary(start) do
     %{
       start_date: start,
@@ -300,7 +721,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
       industry_code: %{code: supplier["industry_code"], name: supplier["business_activity"]},
       identifications: [
         {"TIN", supplier["tax_id"]},
-        {"BRN", supplier["registration_number"]},
+        {supplier["registration_type"] || "BRN", supplier["registration_number"]},
         {"SST", supplier["sales_tax_registration"] || "NA"},
         {"TTX", supplier["tourism_tax_registration"] || "NA"}
       ],

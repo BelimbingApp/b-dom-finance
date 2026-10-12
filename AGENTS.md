@@ -57,6 +57,27 @@ here; they govern this code and are not copied here.
 - Base Menu already declares the `finance` menu root; a module contributes
   its items with `parent: "finance"` and never declares the root, or boot
   fails on a duplicate id.
+- Record an e-invoice status event through
+  `Bilimbi.Finance.Einvoice.Documents.record_event!/4` and an outcome's
+  audit action through `Documents.record_action!/4`, never by inserting the
+  schemas: they take the actor from the scope. Talk to the authority only
+  through the `Bilimbi.Finance.Einvoice.Authority` callbacks (`submit`,
+  `document_status`, `cancel`, ...), which return meta-term outcomes;
+  `Bilimbi.Finance.Einvoice.Clearance` is the one caller that records them.
+  On a duplicate or an outage, look the document up with `find_submission`
+  before stopping or retrying; never resubmit one the authority holds.
+  Post a document once (`Posting.post` is a no-op after a `posted` event),
+  decide a status change from the document read under the company lock,
+  never call the ledger inside a `write!`: its refusal rolls back the
+  transaction it joins. Only `Posting` calls it inside a transaction, of
+  its own, which it rolls back whole on a refusal before recording the
+  failure in a fresh one. Resolve a failed posting with
+  `Einvoice.retry_posting/3` or `retry_reversal/3`.
+- A job that acts for a user is queued with `Queue.enqueue_for/3` and its
+  arguments are identifiers only (`SubmitWorker.validate_args/1` is the
+  allowlist shape). Base Queue has no snooze: a worker returns `{:retry,
+  code}` and the queue's backoff spaces attempts; it never sleeps for a
+  `Retry-After`.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's

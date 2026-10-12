@@ -17,6 +17,7 @@ defmodule Bilimbi.Finance.Einvoice.StatusEvent do
     field(:reason, :string)
     field(:http_status, :integer)
     field(:response, :map)
+    field(:ledger_entry_id, :integer)
     field(:actor_type, :string)
     field(:actor_user_id, :integer)
     field(:actor_impersonator_id, :integer)
