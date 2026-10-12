@@ -15,7 +15,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
     field(:discount_amount, :decimal, default: Decimal.new(0))
     field(:charge_amount, :decimal, default: Decimal.new(0))
     field(:tax_type, :string)
-    field(:tax_rate, :decimal, default: Decimal.new(0))
+    field(:tax_rate, :decimal)
     field(:tax_exemption_reason, :string)
     # Derived from the fields above (see `Draft`).
     field(:subtotal, :decimal)
@@ -41,7 +41,16 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
       :tax_rate,
       :tax_exemption_reason
     ])
-    |> validate_required([:description, :classification_code, :quantity, :unit_price, :tax_type])
+    |> blank_is_zero(:discount_amount)
+    |> blank_is_zero(:charge_amount)
+    |> validate_required([
+      :description,
+      :classification_code,
+      :quantity,
+      :unit_price,
+      :tax_type,
+      :tax_rate
+    ])
     |> validate_length(:description, max: 300)
     |> validate_length(:tariff_code, max: 32)
     |> validate_length(:tax_exemption_reason, max: 300)
@@ -56,6 +65,13 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
     |> validate_scale(:charge_amount, 2)
     |> validate_scale(:tax_rate, 4)
     |> derive_amounts()
+  end
+
+  # A blank discount or charge is none; a blank tax rate is refused, never zero.
+  defp blank_is_zero(changeset, field) do
+    if is_nil(get_field(changeset, field)),
+      do: put_change(changeset, field, Decimal.new(0)),
+      else: changeset
   end
 
   # Amounts are refused, not rounded, when finer than their column.

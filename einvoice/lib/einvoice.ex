@@ -37,15 +37,11 @@ defmodule Bilimbi.Finance.Einvoice do
   alias Bilimbi.Finance.Einvoice.CodeLists
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.{Document, Draft, Line, StatusEvent}
-  alias Bilimbi.Finance.Einvoice.MyInvois.Client
   alias Ecto.Changeset
 
   @view "finance.einvoice.view"
   @issue "finance.einvoice.documents.issue"
   @settings "finance.einvoice.settings.manage"
-
-  # The one authority this release clears documents with; see `Authority`.
-  @authority Bilimbi.Finance.Einvoice.MyInvois
 
   @default_limit 50
   @max_limit 200
@@ -85,9 +81,10 @@ defmodule Bilimbi.Finance.Einvoice do
       (`billing_period_start`, `billing_period_end`,
       `billing_period_description`);
     * `lines`, each with `description`, `classification_code`, `quantity`,
-      `unit_price`, `tax_type`, and optionally `unit_code`, `tax_rate`,
-      `discount_amount`, `charge_amount`, `tax_exemption_reason`,
-      `tariff_code`, and `origin_country_code`.
+      `unit_price`, `tax_type`, and `tax_rate` (always stated, `0` where the
+      authority takes no tax), and optionally `unit_code`, `discount_amount`,
+      `charge_amount` (blank is none), `tax_exemption_reason`, `tariff_code`,
+      and `origin_country_code`.
 
   The supplier comes from the company's e-invoicing settings and the
   environment from its current setting. Amounts are derived, never taken:
@@ -117,7 +114,7 @@ defmodule Bilimbi.Finance.Einvoice do
           Repo.insert!(%Document{
             tenant_id: Scope.tenant_id(scope),
             company_id: company_id,
-            authority: @authority.id(),
+            authority: authority().id(),
             environment: environment(scope, company_id),
             document_type: draft.document_type,
             code_number: draft.code_number,
@@ -215,8 +212,8 @@ defmodule Bilimbi.Finance.Einvoice do
           {:ok, %{String.t() => String.t()}} | {:error, refusal() | :unknown_list}
   def list_codes(%Scope{} = scope, company_id, list) do
     with :ok <- authorize(scope, company_id, @view) do
-      if list in CodeLists.lists(@authority.id()),
-        do: {:ok, CodeLists.codes(scope, company_id, @authority.id(), list)},
+      if list in CodeLists.lists(authority().id()),
+        do: {:ok, CodeLists.codes(scope, company_id, authority().id(), list)},
         else: {:error, :unknown_list}
     end
   end
@@ -230,7 +227,17 @@ defmodule Bilimbi.Finance.Einvoice do
   def override_code(%Scope{} = scope, company_id, list, code, attributes)
       when is_binary(list) and is_binary(code) and is_map(attributes) do
     write(scope, company_id, @settings, fn _company ->
-      CodeLists.put_override(scope, company_id, @authority.id(), list, code, attributes)
+      with {:ok, override} <-
+             CodeLists.put_override(scope, company_id, authority().id(), list, code, attributes) do
+        record_action(scope, company_id, "finance.einvoice.code.overridden", %{
+          "list" => override.list,
+          "code" => override.code,
+          "description" => override.description,
+          "active" => override.active
+        })
+
+        {:ok, override}
+      end
     end)
   end
 
@@ -275,10 +282,10 @@ defmodule Bilimbi.Finance.Einvoice do
          certificate: certificate,
          expiry_alert_days: alert_days,
          expiring: expiring,
-         supplier_missing: supplier_missing(supplier),
+         supplier_missing: authority().supplier_missing(supplier),
          tax_id_matches_certificate?:
            not is_nil(supplier.tax_id) and is_map(certificate) and
-             certificate[:organization_identifier] == supplier.tax_id
+             certificate[:tax_id] == supplier.tax_id
        }}
     end
   end
@@ -295,11 +302,7 @@ defmodule Bilimbi.Finance.Einvoice do
     with {:ok, _company} <- authorize_company(scope, company_id, @settings) do
       credentials = Configuration.credentials(scope, company_id)
 
-      outcome =
-        case Client.login(scope, company_id, credentials) do
-          {:ok, _token} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+      outcome = authority().login(scope, company_id, credentials)
 
       record_action(scope, company_id, "finance.einvoice.connection.tested", %{
         "environment" => credentials.environment,
@@ -374,16 +377,18 @@ defmodule Bilimbi.Finance.Einvoice do
 
   defp environment(scope, company_id), do: Configuration.environment(scope, company_id)
 
+  defp authority, do: Configuration.authority()
+
   # Every list once per issue, so each rule reads the same snapshot.
   defp code_lookup(scope, company_id) do
-    codes = CodeLists.all_codes(scope, company_id, @authority.id())
+    codes = CodeLists.all_codes(scope, company_id, authority().id())
     &Map.fetch!(codes, &1)
   end
 
   defp validate_with_authority(%{valid?: false} = changeset, _supplier, _codes), do: changeset
 
   defp validate_with_authority(changeset, supplier, codes),
-    do: @authority.validate(changeset, supplier, codes)
+    do: authority().validate(changeset, supplier, codes)
 
   defp unused_code_number(scope, company_id, environment, draft) do
     taken? =
@@ -493,12 +498,14 @@ defmodule Bilimbi.Finance.Einvoice do
             {:error, _} -> false
           end
 
+        identity = authority().certificate_identity(certificate.subject)
+
         %{
           issuer_name: certificate.issuer_name,
           subject_name: certificate.subject_name,
           serial_number: certificate.serial_number,
-          organization_identifier: certificate.subject["organization_identifier"],
-          registration_number: certificate.subject["serial_number"],
+          tax_id: identity.tax_id,
+          registration_number: identity.registration_number,
           not_before: certificate.not_before,
           not_after: certificate.not_after,
           days_until_expiry: Certificate.days_until_expiry(certificate, now),
@@ -508,22 +515,6 @@ defmodule Bilimbi.Finance.Einvoice do
       {:error, :invalid_certificate} ->
         %{invalid?: true}
     end
-  end
-
-  defp supplier_missing(supplier) do
-    for field <- [
-          :tax_id,
-          :registration_number,
-          :industry_code,
-          :business_activity,
-          :phone,
-          :address_line1,
-          :city,
-          :state_code,
-          :country_code
-        ],
-        is_nil(supplier[field]),
-        do: field
   end
 
   ## Queries

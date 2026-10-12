@@ -48,7 +48,8 @@ operation, and later receivables all issue through it: `document_type`,
 registration type and number, contact, address), optional payment means,
 terms, and billing period, and `lines` (description, classification code,
 quantity, unit price, tax type and rate, optional unit, discount, charge,
-exemption reason, tariff code, origin country). The supplier comes from the
+exemption reason, tariff code, origin country). A line states its tax rate
+explicitly, never defaulting it; a blank discount or charge is none. The supplier comes from the
 company's settings and the environment from its current setting.
 
 Amounts are derived, never taken: a line's subtotal is quantity times unit
@@ -67,7 +68,15 @@ and one authority's rules. Everything MyInvois defines sits in
 `Bilimbi.Finance.Einvoice.MyInvois`:
 
 - `MyInvois` validates a draft (type `01` invoices in ringgit for now) and
-  maps a recorded document to the builder's input.
+  maps a recorded document to the builder's input. It alone defines the
+  authority's field shapes (TIN, phone as a plus sign and 8 to 20 digits in
+  20 characters, industry, state, and country codes), which the settings
+  validators and the buyer's checks both ask (`valid_format?/2`), so supplier
+  and buyer follow one rule each. It also ties a line's rate to its tax type:
+  types `01` to `05` need a rate above zero, and `06` and `E` need zero (`E`
+  also needs its exemption reason). Its login, the missing supplier fields,
+  and the identity a certificate's subject carries are reached through
+  `Authority` callbacks, not named by the facade.
 - `MyInvois.Builder` writes UBL 2.1 JSON in the element order of the SDK's
   samples, and `test/builder_golden_test.exs` rebuilds all four SDK version
   1.1 samples byte for byte. It maps and never computes, which is why it can
@@ -197,8 +206,10 @@ it against a fresh database and proves the triggers outside the sandbox.
   exchange, redacted, with bodies and secrets omitted.
 - **Audit trail.** Every write is a Repo write that Base Audit records with
   its actor (ADR 0013). Issuing a document records the action
-  `finance.einvoice.document.issued` and each connection test
-  `finance.einvoice.connection.tested` with its outcome. Submission outcomes
+  `finance.einvoice.document.issued`, each connection test
+  `finance.einvoice.connection.tested` with its outcome, and each code
+  override `finance.einvoice.code.overridden` with the list, code,
+  description, and active flag it set. Submission outcomes
   (`finance.einvoice.submitted`, `.validated`, `.invalid`, `.cancelled`,
   `.rejected`) are recorded by the submit and poll workers in slice 6.
 - **Retention.** Nothing is deleted and there is no purge path; unmounting

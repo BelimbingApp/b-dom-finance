@@ -26,14 +26,16 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
   @capability "finance.einvoice.settings.manage"
   @environments ["sandbox", "production"]
 
+  # The one authority this release clears documents with; see `Authority`.
+  @authority Bilimbi.Finance.Einvoice.MyInvois
+
   @supplier_fields [
     name:
       {"Supplier name", "The registered name on documents. Blank uses the company's name.", 300,
        nil},
     tax_id:
       {"Supplier TIN",
-       "The tax identification number the authority registered the company under.", 14,
-       :valid_tax_id?},
+       "The tax identification number the authority registered the company under.", 14, :tax_id},
     registration_number:
       {"Supplier registration number",
        "The business registration number, as on the signing certificate.", 20, nil},
@@ -44,14 +46,11 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
     tourism_tax_registration: {"Tourism tax registration", "Blank when not registered.", 17, nil},
     industry_code:
       {"Industry classification code", "The five-digit industry code the company registered.", 5,
-       :valid_industry_code?},
+       :industry_code},
     business_activity:
       {"Business activity", "The description of the business activity that goes with the code.",
        300, nil},
-    phone:
-      {"Supplier phone",
-       "In international form, for example +60123456789: a plus sign and 8 to 20 digits.", 20,
-       :valid_phone?},
+    phone: {"Supplier phone", "In international form, for example +60123456789.", 20, :phone},
     email: {"Supplier email", "Optional contact email on documents.", 320, nil},
     address_line1: {"Address line 1", "First line of the supplier address.", 150, nil},
     address_line2: {"Address line 2", "Optional second line.", 150, nil},
@@ -60,10 +59,9 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
     postcode: {"Postcode", "Postcode of the supplier address.", 50, nil},
     state_code:
       {"State code", "The authority's two-digit code for the state of the supplier address.", 2,
-       :valid_state_code?},
+       :state_code},
     country_code:
-      {"Country code", "Three-letter ISO 3166 code of the supplier address.", 3,
-       :valid_country_code?}
+      {"Country code", "Three-letter ISO 3166 code of the supplier address.", 3, :country_code}
   ]
 
   @doc "The editable settings group the Settings screen shows these under."
@@ -71,6 +69,9 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
   @doc "The capability that edits these settings and tests the connection."
   def capability, do: @capability
+
+  @doc "The authority module every company's documents are cleared with."
+  def authority, do: @authority
 
   @doc "The environments a company can submit to."
   def environments, do: @environments
@@ -160,15 +161,8 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
   defp supplier_validator(nil, max),
     do: {__MODULE__, :"valid_text_#{max}?", "must be at most #{max} characters"}
 
-  defp supplier_validator(function, _max), do: {__MODULE__, function, validator_message(function)}
-
-  defp validator_message(:valid_tax_id?),
-    do: "must be one or two capital letters and 8 to 12 digits"
-
-  defp validator_message(:valid_industry_code?), do: "must be five digits"
-  defp validator_message(:valid_phone?), do: "must be a plus sign and 8 to 20 digits"
-  defp validator_message(:valid_state_code?), do: "must be two digits"
-  defp validator_message(:valid_country_code?), do: "must be three capital letters"
+  defp supplier_validator(kind, _max),
+    do: {__MODULE__, :"valid_#{kind}?", @authority.format_message(kind)}
 
   defp editable(type, default, label, help, options) do
     Map.merge(
@@ -191,11 +185,9 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
   def valid_date?(value), do: is_binary(value) and match?({:ok, _}, Date.from_iso8601(value))
 
-  def valid_tax_id?(value), do: is_binary(value) and value =~ ~r/^[A-Z]{1,2}[0-9]{8,12}$/
-  def valid_industry_code?(value), do: is_binary(value) and value =~ ~r/^[0-9]{5}$/
-  def valid_phone?(value), do: is_binary(value) and value =~ ~r/^\+[0-9]{8,20}$/
-  def valid_state_code?(value), do: is_binary(value) and value =~ ~r/^[0-9]{2}$/
-  def valid_country_code?(value), do: is_binary(value) and value =~ ~r/^[A-Z]{3}$/
+  for kind <- [:tax_id, :industry_code, :phone, :state_code, :country_code] do
+    def unquote(:"valid_#{kind}?")(value), do: @authority.valid_format?(unquote(kind), value)
+  end
 
   for max <- [2, 3, 5, 14, 17, 20, 35, 50, 150, 300, 320] do
     def unquote(:"valid_text_#{max}?")(value),

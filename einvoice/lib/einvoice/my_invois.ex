@@ -17,15 +17,16 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
 
   import Ecto.Changeset
 
-  alias Bilimbi.Finance.Einvoice.MyInvois.{Builder, Signer}
+  alias Bilimbi.Finance.Einvoice.MyInvois.{Builder, Client, Signer}
 
   @version "1.1"
   # The authority reports tax in ringgit, whatever the document currency.
   @tax_currency "MYR"
   @registration_types ["BRN", "NRIC", "PASSPORT", "ARMY"]
-  @tax_id ~r/^[A-Z]{1,2}[0-9]{8,12}$/
-  @phone ~r/^\+?[0-9]{8,20}$/
   @exempt "E"
+  # Tax types that charge tax, so a rate above zero; and those that take none.
+  @taxed ["01", "02", "03", "04", "05"]
+  @untaxed ["06", @exempt]
 
   @supplier_required [
     tax_id: "supplier TIN",
@@ -47,6 +48,50 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
 
   @doc "The UBL format version documents are built in."
   def version, do: @version
+
+  @impl true
+  def valid_format?(kind, value), do: is_binary(value) and value =~ format(kind).pattern
+
+  @impl true
+  def format_message(kind), do: format(kind).message
+
+  # Supplier settings and buyer details alike are checked against these.
+  defp format(:tax_id),
+    do: %{
+      pattern: ~r/^[A-Z]{1,2}[0-9]{8,12}$/,
+      message: "must be one or two capital letters and 8 to 12 digits"
+    }
+
+  defp format(:phone),
+    do: %{
+      pattern: ~r/^\+[0-9]{8,19}$/,
+      message: "must be a plus sign and 8 to 20 digits, 20 characters at most"
+    }
+
+  defp format(:industry_code), do: %{pattern: ~r/^[0-9]{5}$/, message: "must be five digits"}
+  defp format(:state_code), do: %{pattern: ~r/^[0-9]{2}$/, message: "must be two digits"}
+
+  defp format(:country_code),
+    do: %{pattern: ~r/^[A-Z]{3}$/, message: "must be three capital letters"}
+
+  @impl true
+  def supplier_missing(supplier),
+    do: for({field, _label} <- @supplier_required, is_nil(supplier[field]), do: field)
+
+  @impl true
+  def certificate_identity(subject),
+    do: %{
+      tax_id: subject["organization_identifier"],
+      registration_number: subject["serial_number"]
+    }
+
+  @impl true
+  def login(scope, company_id, credentials) do
+    case Client.login(scope, company_id, credentials) do
+      {:ok, _token} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @impl true
   def validate(changeset, supplier, codes) do
@@ -75,7 +120,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   defp validate_supplier(changeset, supplier, codes) do
-    missing = for {field, label} <- @supplier_required, is_nil(supplier[field]), do: label
+    missing = for field <- supplier_missing(supplier), do: @supplier_required[field]
 
     cond do
       missing != [] ->
@@ -101,10 +146,10 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
 
   defp validate_buyer(party, codes) do
     party
-    |> validate_format(:tax_id, @tax_id, message: "is not a TIN")
+    |> validate_shape(:tax_id, :tax_id)
     |> validate_inclusion(:registration_type, @registration_types)
     |> validate_required([:phone])
-    |> validate_format(:phone, @phone, message: "must be 8 to 20 digits, optionally after a +")
+    |> validate_shape(:phone, :phone)
     |> update_embed(:address, fn address ->
       address
       |> validate_code(:state_code, codes.("state"))
@@ -112,8 +157,15 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     end)
   end
 
+  defp validate_shape(changeset, field, kind) do
+    validate_change(changeset, field, fn ^field, value ->
+      if valid_format?(kind, value), do: [], else: [{field, format_message(kind)}]
+    end)
+  end
+
   defp validate_line(line, codes) do
     line
+    |> validate_rate()
     |> validate_code(:classification_code, codes.("classification"))
     |> validate_code(:tax_type, codes.("tax_type"))
     |> validate_code(:unit_code, codes.("unit"))
@@ -123,6 +175,22 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
         do: add_error(line, :tax_exemption_reason, "is required for an exempt line"),
         else: line
     end)
+  end
+
+  defp validate_rate(line) do
+    tax_type = get_field(line, :tax_type)
+    rate = get_field(line, :tax_rate)
+
+    cond do
+      tax_type in @taxed and not Decimal.gt?(rate, 0) ->
+        add_error(line, :tax_rate, "must be above 0 for this tax type")
+
+      tax_type in @untaxed and not Decimal.eq?(rate, 0) ->
+        add_error(line, :tax_rate, "must be 0 for this tax type")
+
+      true ->
+        line
+    end
   end
 
   defp validate_code(changeset, field, codes) do

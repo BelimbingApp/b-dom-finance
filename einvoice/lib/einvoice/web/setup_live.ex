@@ -164,7 +164,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.SetupLive do
               <:item title="Issuer">{@setup.certificate.issuer_name}</:item>
               <:item title="Serial number">{@setup.certificate.serial_number}</:item>
               <:item title="TIN on certificate">
-                {@setup.certificate.organization_identifier || "—"}
+                {@setup.certificate.tax_id || "—"}
               </:item>
               <:item title="Registration number on certificate">
                 {@setup.certificate.registration_number || "—"}

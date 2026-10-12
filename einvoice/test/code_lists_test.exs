@@ -74,6 +74,25 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
     assert %{payment_means_code: ["is not a known code"]} = errors_on(changeset)
   end
 
+  test "records each override as an audit action", %{operator: op} do
+    assert {:ok, _} = Einvoice.override_code(op, 73, "tax_type", "06", %{description: "No tax"})
+    assert {:ok, _} = Einvoice.override_code(op, 73, "payment_means", "01", %{active: false})
+    assert {:error, :unknown_list} = Einvoice.override_code(op, 73, "colours", "01", %{})
+
+    assert [
+             [
+               %{
+                 "list" => "tax_type",
+                 "code" => "06",
+                 "description" => "No tax",
+                 "active" => true
+               }
+             ],
+             [%{"list" => "payment_means", "code" => "01", "active" => false}]
+           ] =
+             Bilimbi.Base.Audit.TestFixtures.action_payloads("finance.einvoice.code.overridden")
+  end
+
   test "refuses an unknown list or malformed code, and needs the settings capability",
        %{first_scope: scope, operator: op} do
     assert {:error, :unknown_list} = Einvoice.override_code(op, 73, "colours", "01", %{})

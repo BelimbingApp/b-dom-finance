@@ -72,6 +72,7 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
               quantity: "1",
               unit_price: "5",
               tax_type: "E",
+              tax_rate: "0",
               tax_exemption_reason: "Exempt under the schedule"
             }
           ]
@@ -108,7 +109,8 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
               quantity: "1",
               unit_price: "1",
               unit_code: "ZZZ",
-              tax_type: "09"
+              tax_type: "09",
+              tax_rate: "6"
             }
           ]
         })
@@ -136,7 +138,8 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
               classification_code: "022",
               quantity: "1",
               unit_price: "1",
-              tax_type: "E"
+              tax_type: "E",
+              tax_rate: "0"
             }
           ]
         })
@@ -146,8 +149,105 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
       errors = errors_on(changeset)
       assert %{document_type: ["is not a document type this release issues"]} = errors
       assert %{currency_code: ["must be MYR in this release"]} = errors
-      assert %{buyer: %{tax_id: ["is not a TIN"]}} = errors
+
+      assert %{buyer: %{tax_id: ["must be one or two capital letters and 8 to 12 digits"]}} =
+               errors
+
       assert %{lines: [%{tax_exemption_reason: ["is required for an exempt line"]}]} = errors
+    end
+
+    test "treats a blank or nil discount or charge as none", %{operator: op} do
+      for {blank, n} <- Enum.with_index([nil, "", "  "], 1) do
+        attributes =
+          TestFixtures.invoice_attributes(%{
+            code_number: "BLANK-#{n}",
+            lines: [
+              line(%{discount_amount: blank, charge_amount: blank, tax_type: "01", tax_rate: "6"})
+            ]
+          })
+
+        assert {:ok, %{lines: [line]}} = Einvoice.issue_document(op, 73, attributes)
+        assert Decimal.equal?(line.discount_amount, "0")
+        assert Decimal.equal?(line.charge_amount, "0")
+        assert Decimal.equal?(line.line_extension_amount, "10.00")
+      end
+    end
+
+    test "refuses a missing, blank, or nil tax rate instead of recording zero tax",
+         %{operator: op} do
+      for rate <- [:missing, nil, "", "  "] do
+        attributes =
+          TestFixtures.invoice_attributes(%{
+            lines: [line(if(rate == :missing, do: %{}, else: %{tax_rate: rate}))]
+          })
+
+        assert {:error, changeset} = Einvoice.issue_document(op, 73, attributes)
+        assert %{lines: [%{tax_rate: ["can't be blank"]}]} = errors_on(changeset)
+      end
+
+      assert {:ok, []} = Einvoice.list_documents(op, 73)
+    end
+
+    test "ties the tax rate to the tax type", %{operator: op} do
+      refuse = fn tax_type, rate ->
+        attributes =
+          TestFixtures.invoice_attributes(%{
+            lines: [
+              line(%{tax_type: tax_type, tax_rate: rate, tax_exemption_reason: "Exempt"})
+            ]
+          })
+
+        assert {:error, changeset} = Einvoice.issue_document(op, 73, attributes)
+        assert %{lines: [%{tax_rate: [message]}]} = errors_on(changeset)
+        message
+      end
+
+      for type <- ~w(01 02 03 04 05) do
+        assert refuse.(type, "0") == "must be above 0 for this tax type"
+      end
+
+      for type <- ~w(06 E) do
+        assert refuse.(type, "6") == "must be 0 for this tax type"
+      end
+
+      for {type, rate, number} <- [
+            {"01", "10", 1},
+            {"02", "8", 2},
+            {"03", "10", 3},
+            {"04", "5", 4},
+            {"05", "5", 5},
+            {"06", "0", 6},
+            {"E", "0", 7}
+          ] do
+        attributes =
+          TestFixtures.invoice_attributes(%{
+            code_number: "RATE-#{number}",
+            lines: [line(%{tax_type: type, tax_rate: rate, tax_exemption_reason: "Exempt"})]
+          })
+
+        assert {:ok, _} = Einvoice.issue_document(op, 73, attributes), "#{type} at #{rate}"
+      end
+    end
+
+    test "checks the buyer's TIN and phone as it checks the supplier's", %{operator: op} do
+      refuse = fn field, value ->
+        attributes =
+          TestFixtures.invoice_attributes() |> put_in([:buyer, field], value)
+
+        assert {:error, changeset} = Einvoice.issue_document(op, 73, attributes)
+        assert %{buyer: %{^field => [_message]}} = errors_on(changeset)
+      end
+
+      refuse.(:phone, "60123456789")
+      refuse.(:phone, "+6012345")
+      refuse.(:phone, "+" <> String.duplicate("1", 20))
+      refuse.(:tax_id, "123")
+
+      attributes =
+        TestFixtures.invoice_attributes()
+        |> put_in([:buyer, :phone], "+" <> String.duplicate("1", 19))
+
+      assert {:ok, _} = Einvoice.issue_document(op, 73, attributes)
     end
 
     test "refuses amounts finer than their columns and future issue times", %{operator: op} do
@@ -161,7 +261,8 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
               quantity: "1",
               unit_price: "1",
               discount_amount: "0.001",
-              tax_type: "06"
+              tax_type: "06",
+              tax_rate: "0"
             }
           ]
         })
@@ -202,6 +303,19 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
 
       assert id == document.id
     end
+  end
+
+  defp line(overrides) do
+    Map.merge(
+      %{
+        description: "Item",
+        classification_code: "022",
+        quantity: "1",
+        unit_code: "C62",
+        unit_price: "10.00"
+      },
+      overrides
+    )
   end
 
   describe "authorization" do

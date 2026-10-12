@@ -71,6 +71,34 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
       end
     end
 
+    test "supplier settings and buyer details follow the authority's rules" do
+      authority = Einvoice.Configuration.authority()
+
+      for {kind, field, valid, invalid} <- [
+            {:tax_id, :valid_tax_id?, ["C29702635060", "IG12345678901"], ["123", "c29702635060"]},
+            {:phone, :valid_phone?,
+             ["+60123456789", "+12345678", "+" <> String.duplicate("1", 19)],
+             ["0123456789", "+6012345", "+" <> String.duplicate("1", 20)]},
+            {:industry_code, :valid_industry_code?, ["46510"], ["4651"]},
+            {:state_code, :valid_state_code?, ["10"], ["Selangor"]},
+            {:country_code, :valid_country_code?, ["MYS"], ["my"]}
+          ] do
+        for value <- valid do
+          assert authority.valid_format?(kind, value), "#{kind} refused #{value}"
+          assert apply(Einvoice.Configuration, field, [value])
+        end
+
+        for value <- invalid do
+          refute authority.valid_format?(kind, value), "#{kind} accepted #{value}"
+          refute apply(Einvoice.Configuration, field, [value])
+        end
+
+        definition = Einvoice.Configuration.definitions()["finance.einvoice.supplier.#{kind}"]
+        assert {Einvoice.Configuration, ^field, message} = definition.validator
+        assert message == authority.format_message(kind)
+      end
+    end
+
     test "the API URLs are platform settings with the SDK's hosts" do
       assert Settings.get("finance.einvoice.sandbox.api_url") ==
                "https://preprod-api.myinvois.hasil.gov.my"
@@ -136,7 +164,7 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
                supplier_missing: [],
                tax_id_matches_certificate?: true,
                certificate: %{
-                 organization_identifier: "C29702635060",
+                 tax_id: "C29702635060",
                  days_until_expiry: 20,
                  private_key_matches?: true
                }

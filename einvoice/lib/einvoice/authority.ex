@@ -24,6 +24,36 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
               Ecto.Changeset.t()
 
   @doc """
+  Whether `value` has the shape the authority requires of a field of this
+  kind: `:tax_id`, `:phone`, `:industry_code`, `:state_code`, or
+  `:country_code`. Settings validators and document validation both ask here.
+  """
+  @callback valid_format?(kind :: atom(), value :: term()) :: boolean()
+
+  @doc "What `valid_format?/2` requires of a field of this kind, for an error message."
+  @callback format_message(kind :: atom()) :: String.t()
+
+  @doc "The supplier profile fields every document carries that `supplier` leaves blank."
+  @callback supplier_missing(supplier :: map()) :: [atom()]
+
+  @doc """
+  The tax ID and registration number a signing certificate's subject
+  carries, as the authority writes them there.
+  """
+  @callback certificate_identity(subject :: map()) :: %{
+              tax_id: String.t() | nil,
+              registration_number: String.t() | nil
+            }
+
+  @doc """
+  Logs in to the authority with the company's credentials: `:ok`, or
+  `{:error, reason}` where `reason` is `:missing_credentials`,
+  `{:http, status, body}`, or `{:transport, exception}`.
+  """
+  @callback login(scope :: Bilimbi.Base.Tenancy.Scope.t(), company_id :: pos_integer(), map()) ::
+              :ok | {:error, term()}
+
+  @doc """
   The signed payload for a recorded document: its format, the format version,
   and the exact bytes to submit.
   """
