@@ -41,8 +41,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   records `valid` (with the long ID that completes the validation link)
   or `invalid` (with the validation results), then posts the ledger entry
   for a valid document (`Bilimbi.Finance.Einvoice.Posting`). A posting that
-  failed for a reason that may pass on its own is tried once more by each
-  status read that finds the document still unposted.
+  fails stays on the reconciliation page until `retry_posting/3`; a status
+  read never posts again.
 
   ## Refreshing and cancelling
 
@@ -491,8 +491,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   end
 
   # Records the status event and returns the status with the ledger work it
-  # leaves for after the transaction commits: `:post`, `:reverse`, `:retry`,
-  # or `nil`.
+  # leaves for after the transaction commits: `:post`, `:reverse`, or `nil`.
   defp apply_status(scope, company_id, document, answer) do
     base = %{
       "document_id" => document.id,
@@ -526,7 +525,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         )
 
         action(scope, company_id, "finance.einvoice.rejected", base, answer)
-        {"rejected", if(document.status == "valid", do: :retry, else: :post)}
+        {"rejected", if(document.status == "valid", do: nil, else: :post)}
 
       answer.status == :valid and document.status not in ["valid", "rejected", "cancelled"] ->
         record_valid_if_new(scope, company_id, document, answer, common, base)
@@ -577,7 +576,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           })
         )
 
-        {document.status, :retry}
+        {document.status, nil}
     end
   end
 
@@ -598,21 +597,14 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
   # The ledger work a status change leaves, run once the status is
   # committed and outside any transaction of ours: the ledger rolls back
-  # its own on a refusal, which would take ours with it. A posting is tried
-  # once more when it failed for a reason that may pass.
-  defp settle(scope, company_id, document_id, :post, now) do
+  # its own on a refusal, which would take ours with it.
+  defp settle(scope, company_id, document_id, :post, _now) do
     Posting.post(scope, company_id, fresh_view(scope, company_id, document_id))
-    settle(scope, company_id, document_id, :retry, now)
+    :ok
   end
 
   defp settle(scope, company_id, document_id, :reverse, now) do
     Posting.reverse(scope, company_id, fresh_view(scope, company_id, document_id), now)
-    :ok
-  end
-
-  defp settle(scope, company_id, document_id, :retry, _now) do
-    document = fresh_view(scope, company_id, document_id)
-    if Posting.retry_due?(document), do: Posting.post(scope, company_id, document)
     :ok
   end
 
@@ -760,25 +752,26 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
       case authority().cancel(scope, company_id, credentials, document.document_uuid, reason) do
         {:ok, answer} ->
-          write!(scope, company_id, fn ->
-            record(scope, company_id, document.id, %{
-              event: "cancelled",
-              authority_status: "Cancelled",
-              document_uuid: document.document_uuid,
-              reason: reason,
-              http_status: answer[:http_status],
-              response: answer[:response]
-            })
+          recorded? =
+            while_cancellable(scope, company_id, document.id, fn ->
+              record(scope, company_id, document.id, %{
+                event: "cancelled",
+                authority_status: "Cancelled",
+                document_uuid: document.document_uuid,
+                reason: reason,
+                http_status: answer[:http_status],
+                response: answer[:response]
+              })
 
-            action(scope, company_id, "finance.einvoice.cancelled", base, answer)
-          end)
+              action(scope, company_id, "finance.einvoice.cancelled", base, answer)
+            end)
 
-          settle(scope, company_id, document.id, :reverse, now)
+          if recorded?, do: settle(scope, company_id, document.id, :reverse, now)
 
           {:ok, Documents.document_view(Documents.fetch(scope, company_id, document_id))}
 
         {:refused, answer} ->
-          write!(scope, company_id, fn ->
+          while_cancellable(scope, company_id, document.id, fn ->
             record(scope, company_id, document.id, %{
               event: "cancellation_refused",
               document_uuid: document.document_uuid,
@@ -799,6 +792,20 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           {:error, :authority_unavailable}
       end
     end
+  end
+
+  # Records only if the document, read again under the company lock, is
+  # still one the supplier may cancel: a refresh or the portal may have
+  # moved it while the authority was asked.
+  defp while_cancellable(scope, company_id, document_id, record_fun) do
+    write!(scope, company_id, fn ->
+      if fresh_view(scope, company_id, document_id).status in @cancellable do
+        record_fun.()
+        true
+      else
+        false
+      end
+    end)
   end
 
   defp cancellable_document(scope, company_id, document_id, now) do

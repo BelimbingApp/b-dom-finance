@@ -3,9 +3,11 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
   use Bilimbi.Base.Database.DataCase, async: false
 
   alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
+  alias Bilimbi.Base.Repo
   alias Bilimbi.Finance.Einvoice
   alias Bilimbi.Finance.Einvoice.{Posting, TestFixtures}
   alias Bilimbi.Finance.Ledger
+  alias Ecto.Adapters.SQL.Sandbox
 
   setup do
     context = TestFixtures.setup_einvoice!()
@@ -73,6 +75,101 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
 
     assert entry_id == entry.id
     assert Enum.count(events, &(&1.event == "posted")) == 1
+  end
+
+  test "two processes racing to post one document leave one entry and one posted event",
+       %{operator: op} do
+    document = validated!(op, TestFixtures.invoice_attributes())
+    owner = self()
+
+    results =
+      for _try <- 1..2 do
+        Task.async(fn ->
+          Sandbox.allow(Repo, owner, self())
+          Posting.post(op, 73, document)
+        end)
+      end
+      |> Task.await_many()
+
+    assert [{:ok, _entry}, :noop] = Enum.sort_by(results, &(&1 == :noop))
+    assert {:ok, [_only_entry]} = Ledger.list_entries(op, 73)
+
+    assert {:ok, %{events: events}} = Einvoice.get_document(op, 73, document.id)
+    assert Enum.count(events, &(&1.event == "posted")) == 1
+  end
+
+  test "a refused posting is recorded as one failure",
+       %{operator: op} = context do
+    document = validated!(op, TestFixtures.invoice_attributes())
+    :ok = TestFixtures.put_settings!(context.first_scope, 73, %{"posting.tax_account" => "9999"})
+
+    assert {:error, _reason} = Posting.post(op, 73, document)
+
+    assert {:ok, %{events: events}} = Einvoice.get_document(op, 73, document.id)
+    assert Enum.count(events, &(&1.event == "posting_failed")) == 1
+  end
+
+  describe "attempt/1" do
+    defp counted(results) do
+      {:ok, calls} = Agent.start_link(fn -> results end)
+
+      fun = fn ->
+        Agent.get_and_update(calls, fn [next | rest] -> {next, rest} end).()
+      end
+
+      {fun, calls}
+    end
+
+    test "tries a transient database failure once more" do
+      {fun, calls} =
+        counted([
+          fn -> raise DBConnection.ConnectionError, "connection closed" end,
+          fn -> {:ok, :posted} end
+        ])
+
+      assert {:ok, :posted} = Posting.attempt(fun)
+      assert Agent.get(calls, & &1) == []
+    end
+
+    test "gives up after the second transient failure, recording one failure" do
+      lock = %Postgrex.Error{
+        postgres: %{
+          severity: "ERROR",
+          pg_code: "55P03",
+          code: :lock_not_available,
+          message: "could not obtain lock"
+        }
+      }
+
+      {fun, _calls} =
+        counted([fn -> raise lock end, fn -> raise lock end, fn -> flunk("third") end])
+
+      assert {:error, {:transient, _message}} = Posting.attempt(fun)
+    end
+
+    test "never repeats a ledger refusal or a non-transient database error" do
+      {fun, calls} = counted([fn -> {:error, :book_not_open} end, fn -> flunk("second") end])
+      assert {:error, :book_not_open} = Posting.attempt(fun)
+      assert length(Agent.get(calls, & &1)) == 1
+
+      unique = %Postgrex.Error{postgres: %{code: :unique_violation, message: "duplicate"}}
+      {fun, _calls} = counted([fn -> raise unique end, fn -> flunk("second") end])
+      assert_raise Postgrex.Error, fn -> Posting.attempt(fun) end
+    end
+
+    test "classifies connection, timeout, and lock failures as transient only" do
+      assert Posting.transient?(%DBConnection.ConnectionError{message: "timeout"})
+
+      for code <- [:lock_not_available, :serialization_failure, :deadlock_detected] do
+        assert Posting.transient?(%Postgrex.Error{postgres: %{code: code, message: "x"}})
+      end
+
+      refute Posting.transient?(%Postgrex.Error{postgres: %{code: :unique_violation}})
+
+      refute Posting.transient?(%RuntimeError{
+               message: "a ledger refusal is not a database failure"
+             })
+    end
   end
 
   test "a credit note posts the mirror image, a refund note credits the settlement account, and zero tax posts no tax line",

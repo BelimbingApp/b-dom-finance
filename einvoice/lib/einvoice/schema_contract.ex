@@ -12,7 +12,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
   # verifier compares after removing whitespace and parentheses.
 
   @doc "The migrations that build this contract, in order."
-  def migration_versions, do: [20_261_012_200_000, 20_261_013_090_000]
+  def migration_versions, do: [20_261_012_200_000, 20_261_013_090_000, 20_261_013_143_000]
 
   def migration_version, do: List.last(migration_versions())
 
@@ -216,6 +216,16 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
         },
         "finance_einvoice_status_events_document_sequence_unique" =>
           index(["document_id", "sequence"], true),
+        "finance_einvoice_status_events_posted_unique" => %{
+          columns: ["document_id"],
+          unique: true,
+          where: "((event)::text = 'posted'::text)"
+        },
+        "finance_einvoice_status_events_reversed_unique" => %{
+          columns: ["document_id"],
+          unique: true,
+          where: "((event)::text = 'posting_reversed'::text)"
+        },
         "finance_einvoice_status_events_company_id_document_uuid_index" => %{
           columns: ["company_id", "document_uuid"],
           unique: false,

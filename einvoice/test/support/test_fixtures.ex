@@ -587,6 +587,14 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
         ON finance_einvoice_status_events (document_id, sequence)
       """,
       """
+      CREATE UNIQUE INDEX finance_einvoice_status_events_posted_unique
+        ON finance_einvoice_status_events (document_id) WHERE event = 'posted'
+      """,
+      """
+      CREATE UNIQUE INDEX finance_einvoice_status_events_reversed_unique
+        ON finance_einvoice_status_events (document_id) WHERE event = 'posting_reversed'
+      """,
+      """
       CREATE TEMPORARY TABLE finance_einvoice_code_overrides (
         id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
         authority varchar(32) NOT NULL, list varchar(32) NOT NULL, code varchar(16) NOT NULL,

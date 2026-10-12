@@ -5,12 +5,17 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261013143000_add_finance_einvoice_posting_uniqueness.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Einvoice.Migrations.{AddLedgerEntry, CreateEinvoice}
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddLedgerEntry, AddPostingUniqueness, CreateEinvoice}
   alias Bilimbi.Finance.Einvoice.SchemaContract
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -34,9 +39,13 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       )
     )
 
-    [first, second] = SchemaContract.migration_versions()
+    [first, second, third] = SchemaContract.migration_versions()
 
-    for {version, migration} <- [{first, CreateEinvoice}, {second, AddLedgerEntry}] do
+    for {version, migration} <- [
+          {first, CreateEinvoice},
+          {second, AddLedgerEntry},
+          {third, AddPostingUniqueness}
+        ] do
       assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
     end
 
@@ -45,6 +54,40 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
   test "the fresh migration implements the complete e-invoicing contract", %{repo: repo} do
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  test "the database refuses a second posted or posting_reversed event for a document",
+       %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    Repo.transaction(fn ->
+      query!.(
+        "INSERT INTO finance_einvoice_documents (id, tenant_id, company_id, authority, environment, document_type, code_number, issued_at, currency_code, supplier, buyer, line_extension_amount, tax_exclusive_amount, tax_amount, tax_inclusive_amount, payable_amount, issued_by_user_id, recorded_at) VALUES (1, 1, 1, 'authority', 'sandbox', '01', 'INV-1', '2026-10-01', 'XTS', '{}', '{}', 10, 10, 0, 10, 10, 1, '2000-01-01')"
+      )
+
+      query!.(
+        "INSERT INTO finance_einvoice_document_lines (tenant_id, company_id, document_id, line_number, description, classification_code, quantity, unit_price, subtotal, line_extension_amount, tax_type, tax_amount) VALUES (1, 1, 1, 1, 'Item', '022', 1, 10, 10, 10, '06', 0)"
+      )
+    end)
+
+    event = fn name, entry ->
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, ledger_entry_id, recorded_at) VALUES (1, 1, 1, 99, '#{name}', 'user', 1, #{entry}, '2000-01-01')"
+    end
+
+    assert %{num_rows: 1} = query!.(event.("posted", 5))
+    assert %{num_rows: 1} = query!.(event.("posting_failed", "NULL"))
+    assert %{num_rows: 1} = query!.(event.("posting_failed", "NULL"))
+
+    assert_raise Postgrex.Error, ~r/finance_einvoice_status_events_posted_unique/, fn ->
+      query!.(event.("posted", 6))
+    end
+
+    assert %{num_rows: 1} = query!.(event.("posting_reversed", 7))
+
+    assert_raise Postgrex.Error, ~r/finance_einvoice_status_events_reversed_unique/, fn ->
+      query!.(event.("posting_reversed", 8))
+    end
   end
 
   # The module's other suites prove these rules on temporary copies of the

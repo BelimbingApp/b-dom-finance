@@ -107,7 +107,7 @@ and records `valid` (with the long ID that completes the validation link)
 or `invalid` (with the validation results), then posts the ledger entry.
 A status change is decided from the document as read under the company's
 lock, so a refresh and a poll cannot both record it. The ledger work it
-leaves (posting, reversing, one more try at a transient failure) runs
+leaves (posting or reversing) runs
 after that transaction commits, never inside it: the ledger rolls back
 its own transaction on a refusal, which would take the status with it.
 
@@ -144,12 +144,16 @@ unknown, book not open or in another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who
 submits needs `finance.ledger.entries.post` for the posting to happen. A
-document posts once: a second attempt is a no-op. The failure records
-whether it may pass on its own; a status read tries such a posting once
-more, while a configuration or grant failure waits for
-`retry_posting/3` or `retry_reversal/3`, which the reconciliation page
-offers to a user holding both the e-invoice and the ledger grants. A
-rejected document stays valid at the authority, so its entry stands and a
+document posts once: a per-document advisory lock serializes the check,
+the ledger call, and the event, a second attempt is a no-op, and partial
+unique indexes make the database refuse a second `posted` or
+`posting_reversed` event. Only a database failure that may pass at once
+(a lost connection, a timeout, lock contention) is tried a second time,
+within the same call and recorded as one failure; a ledger refusal or a
+configuration or grant failure is final and waits for `retry_posting/3`
+or `retry_reversal/3`, which the reconciliation page offers to a user
+holding both the e-invoice and the ledger grants. A status read never
+posts again. A rejected document stays valid at the authority, so its entry stands and a
 note corrects it.
 
 ## Pages
@@ -279,7 +283,9 @@ later file drops still names what recorded documents carry.
 
 ## Database
 
-The migrations `20261012200000` and `20261013090000` are `:bilimbi_only`:
+The migrations `20261012200000`, `20261013090000`, and `20261013143000`
+(one `posted` and one `posting_reversed` event per document) are
+`:bilimbi_only`:
 
 - `finance_einvoice_documents`: authority, environment, type, code number,
   issue instant (UTC), currency and rate, supplier and buyer snapshots as

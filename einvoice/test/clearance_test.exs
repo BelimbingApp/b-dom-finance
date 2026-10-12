@@ -10,6 +10,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
   alias Bilimbi.Finance.Einvoice.{Clearance, PollWorker, Submission, SubmitWorker, TestFixtures}
   alias Bilimbi.Finance.Einvoice.MyInvois.TokenCache
   alias Bilimbi.Finance.Ledger
+  alias Ecto.Adapters.SQL.Sandbox
 
   @submit_path "/api/v1.0/documentsubmissions/"
   @progress_path "/api/v1.0/documentsubmissions/HJSD135P2S7D8IU"
@@ -580,7 +581,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                Einvoice.get_document(op, 73, document.id)
     end
 
-    test "a ledger refusal leaves the valid event committed and the failure recorded", %{
+    test "a ledger refusal leaves the valid event committed and is recorded once", %{
       operator: op,
       document: document
     } do
@@ -601,15 +602,16 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                {"issued", _},
                {"submitted", _},
                {"valid", _},
-               {"posting_failed", failed},
-               {"posting_failed", _tried_again}
+               {"posting_failed", failed}
              ] = events(op, document)
 
-      assert is_binary(failed.reason) and failed.response == %{"retryable" => true}
+      assert is_binary(failed.reason)
       assert "finance.einvoice.validated" in action_events(op)
 
       assert {:ok, %{status: "valid", attention: [:posting_failed]}} =
-               Einvoice.get_document(op, 73, document.id)
+               Einvoice.refresh_status(op, 73, document.id)
+
+      assert [_, _, _, {"posting_failed", _}, {"status_checked", _}] = events(op, document)
 
       assert {:error, {:failed, _reason}} = Einvoice.retry_posting(op, 73, document.id)
       assert "finance.einvoice.posting.retried" in action_events(op)
@@ -751,7 +753,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert "finance.einvoice.cancelled" in action_events(op)
     end
 
-    test "a status read tries a transient posting failure once more, not a configuration one", %{
+    test "a status read never posts a failed document again", %{
       operator: op,
       document: document
     } do
@@ -760,25 +762,59 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
         {"GET", @details_path} => &TestFixtures.details_response(&1, "Valid")
       })
 
-      failed = fn retryable ->
-        Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
-          event: "posting_failed",
-          reason: "failed",
-          response: %{"retryable" => retryable}
-        })
+      Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+        event: "posting_failed",
+        reason: "failed"
+      })
+
+      for _read <- 1..2 do
+        assert {:ok, %{status: "valid", ledger_entry_id: nil, attention: [:posting_failed]}} =
+                 Einvoice.refresh_status(op, 73, document.id)
       end
 
-      failed.(false)
+      assert [_, _, _, {"posting_failed", _}, {"status_checked", _}, {"status_checked", _}] =
+               events(op, document)
+    end
 
-      assert {:ok, %{status: "valid", ledger_entry_id: nil}} =
-               Einvoice.refresh_status(op, 73, document.id)
+    test "two racing retries post the document once", %{operator: op, document: document} do
+      owner = self()
 
-      failed.(true)
+      results =
+        for _try <- 1..2 do
+          Task.async(fn ->
+            Sandbox.allow(Repo, owner, self())
+            Einvoice.retry_posting(op, 73, document.id)
+          end)
+        end
+        |> Task.await_many()
 
-      assert {:ok, %{status: "valid", ledger_entry_id: entry_id, attention: []}} =
-               Einvoice.refresh_status(op, 73, document.id)
-
+      assert [{:ok, %{ledger_entry_id: entry_id}}, {:ok, %{ledger_entry_id: entry_id}}] = results
       assert is_integer(entry_id)
+      assert Enum.count(events(op, document), &match?({"posted", _}, &1)) == 1
+      assert {:ok, [_only_entry]} = Ledger.list_entries(op, 73)
+    end
+
+    test "a cancellation the portal already made is not recorded again", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"PUT", @cancel_path} => fn conn ->
+          Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+            event: "cancelled",
+            authority_status: "Cancelled",
+            reason: "portal"
+          })
+
+          Req.Test.json(conn, %{uuid: "F9D425P6DS7D8IU", status: "Cancelled"})
+        end
+      })
+
+      assert {:ok, %{status: "cancelled"}} = Einvoice.cancel_document(op, 73, document.id, "Late")
+
+      assert [_, _, _, {"cancelled", %{reason: "portal"}}] = events(op, document)
+      refute "finance.einvoice.cancelled" in action_events(op)
     end
 
     test "a rejected document is still valid at the authority and posts like one", %{
