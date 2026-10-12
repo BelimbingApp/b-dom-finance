@@ -105,8 +105,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
   end
 
   defp next_number(scope, company_id, series_id) do
-    Payment
-    |> Records.query(scope, company_id)
+    Records.query(Payment, scope, company_id)
     |> where([p], p.series_id == ^series_id)
     |> select([p], coalesce(max(p.payment_number), 0))
     |> Repo.one()
@@ -298,8 +297,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
     with {:ok, limit, cursor} <- Records.page_options(options),
          true <- is_nil(customer_id) or (is_integer(customer_id) and customer_id > 0) do
       payments =
-        Payment
-        |> Records.query(scope, company_id)
+        Records.query(Payment, scope, company_id)
         |> then(fn query ->
           if customer_id, do: where(query, [p], p.customer_id == ^customer_id), else: query
         end)
@@ -314,8 +312,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
   end
 
   defp payment(scope, company_id, payment_id) when is_integer(payment_id) do
-    Payment
-    |> Records.query(scope, company_id)
+    Records.query(Payment, scope, company_id)
     |> where([p], p.id == ^payment_id)
     |> preload_parts(scope, company_id)
     |> Repo.one()

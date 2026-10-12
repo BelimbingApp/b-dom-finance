@@ -13,6 +13,8 @@ defmodule Bilimbi.Finance.Receivables.Records do
 
   def max_bigint, do: @max_bigint
 
+  # Take the schema as an argument, never as a pipe's head: Bilimbi's
+  # TenantScopeGateTest reads a piped schema as an unscoped query.
   def query(schema, scope, company_id) when is_integer(company_id) do
     from(r in Tenancy.scope_query(schema, scope), where: r.company_id == ^company_id)
   end

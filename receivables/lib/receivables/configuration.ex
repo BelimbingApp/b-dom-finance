@@ -33,7 +33,7 @@ defmodule Bilimbi.Finance.Receivables.Configuration do
   ## Setup
 
   def setup(scope, company_id) do
-    Setup |> Records.query(scope, company_id) |> Repo.one()
+    Repo.one(Records.query(Setup, scope, company_id))
   end
 
   def configure(scope, company_id, attributes) do
@@ -54,8 +54,7 @@ defmodule Bilimbi.Finance.Receivables.Configuration do
   ## Series
 
   def list_series(scope, company_id) do
-    Series
-    |> Records.query(scope, company_id)
+    Records.query(Series, scope, company_id)
     |> order_by([s], asc: s.code)
     |> Repo.all()
     |> Enum.map(&series_view/1)
@@ -84,8 +83,7 @@ defmodule Bilimbi.Finance.Receivables.Configuration do
   ## Tax codes
 
   def list_tax_codes(scope, company_id) do
-    TaxCode
-    |> Records.query(scope, company_id)
+    Records.query(TaxCode, scope, company_id)
     |> order_by([t], asc: t.code)
     |> Repo.all()
     |> Enum.map(&tax_code_view/1)

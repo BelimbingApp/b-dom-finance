@@ -136,8 +136,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
       end)
 
     tax_codes =
-      TaxCode
-      |> Records.query(scope, company_id)
+      Records.query(TaxCode, scope, company_id)
       |> where([t], t.id in ^tax_code_ids(cast))
       |> Repo.all()
       |> Map.new(&{&1.id, &1})
@@ -257,8 +256,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   end
 
   defp next_number(scope, company_id, series_id) do
-    Document
-    |> Records.query(scope, company_id)
+    Records.query(Document, scope, company_id)
     |> where([d], d.series_id == ^series_id)
     |> select([d], coalesce(max(d.document_number), 0))
     |> Repo.one()
@@ -403,8 +401,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   def list(scope, company_id, options) do
     with {:ok, limit, cursor} <- Records.page_options(options),
          {:ok, filters} <- filters(options) do
-      Document
-      |> Records.query(scope, company_id)
+      Records.query(Document, scope, company_id)
       |> where(^filters)
       |> Records.page(limit, cursor)
       |> preload_lines(scope, company_id)
@@ -421,8 +418,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
 
     if is_integer(limit) and limit in 1..500 and is_integer(cursor) and
          cursor in 0..Records.max_bigint() do
-      Document
-      |> Records.query(scope, company_id)
+      Records.query(Document, scope, company_id)
       |> where([d], d.status == "issued" and d.ledger_entry_number > ^cursor)
       |> order_by([d], asc: d.ledger_entry_number)
       |> limit(^limit)
@@ -472,8 +468,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   end
 
   def document(scope, company_id, document_id) when is_integer(document_id) do
-    Document
-    |> Records.query(scope, company_id)
+    Records.query(Document, scope, company_id)
     |> where([d], d.id == ^document_id)
     |> preload_lines(scope, company_id)
     |> Repo.one()

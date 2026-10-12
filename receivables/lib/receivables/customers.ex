@@ -10,8 +10,7 @@ defmodule Bilimbi.Finance.Receivables.Customers do
   alias Bilimbi.Finance.Receivables.{Customer, Records}
 
   def list(scope, company_id) do
-    Customer
-    |> Records.query(scope, company_id)
+    Records.query(Customer, scope, company_id)
     |> order_by([c], asc: c.code)
     |> Repo.all()
     |> Enum.map(&view/1)

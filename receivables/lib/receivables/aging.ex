@@ -32,8 +32,7 @@ defmodule Bilimbi.Finance.Receivables.Aging do
       end)
 
     customers_by_id =
-      Customer
-      |> Records.query(scope, company_id)
+      Records.query(Customer, scope, company_id)
       |> where([c], c.id in ^Enum.map(rows, & &1.customer_id))
       |> Repo.all()
       |> Map.new(&{&1.id, &1})

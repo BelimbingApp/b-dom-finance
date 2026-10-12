@@ -93,8 +93,7 @@ defmodule Bilimbi.Finance.Receivables.Balances do
   def last_entry_number(scope, company_id) do
     [Document, Payment, PaymentReversal]
     |> Enum.map(fn schema ->
-      schema
-      |> Records.query(scope, company_id)
+      Records.query(schema, scope, company_id)
       |> select([r], coalesce(max(r.ledger_entry_number), 0))
       |> Repo.one()
     end)
