@@ -222,7 +222,9 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
             [to: 20_261_001],
             [after: ~D[2026-10-01]],
             [after: {"2026-10-01", 1}],
-            [after: {~D[2026-10-01], "1"}]
+            [after: {~D[2026-10-01], "1"}],
+            [after: {~D[2026-10-01], 0}],
+            [after: {~D[2026-10-01], 9_223_372_036_854_775_808}]
           ] do
         assert {:error, :invalid_option} = Ledger.list_entries(operator, 73, option)
       end

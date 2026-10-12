@@ -114,6 +114,11 @@ defmodule Bilimbi.Finance.Ledger.TrialBalanceTest do
 
     assert {:error, :invalid_option} =
              Ledger.trial_balance(operator, 73, ~D[2026-10-02], through_entry_number: "3")
+
+    for number <- [-1, 9_223_372_036_854_775_808] do
+      assert {:error, :invalid_option} =
+               Ledger.trial_balance(operator, 73, ~D[2026-10-02], through_entry_number: number)
+    end
   end
 
   test "is empty before the first posting", %{operator: operator} do

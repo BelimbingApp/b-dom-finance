@@ -88,7 +88,7 @@ skipped (a refused or rolled-back post takes none) or reused.
 from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
 `limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
-shape is `{:error, :invalid_option}`.
+shape or range is `{:error, :invalid_option}`.
 
 ## Trial balance
 

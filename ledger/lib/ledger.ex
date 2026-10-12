@@ -50,6 +50,7 @@ defmodule Bilimbi.Finance.Ledger do
 
   @default_entry_limit 100
   @max_entry_limit 500
+  @max_bigint 9_223_372_036_854_775_807
 
   @type refusal :: :unauthorized | :company_not_found
   @type write_refusal :: refusal() | :company_archived
@@ -283,8 +284,8 @@ defmodule Bilimbi.Finance.Ledger do
     to = Keyword.get(options, :to)
     cursor = Keyword.get(options, :after)
 
-    if is_integer(limit) and limit in 1..@max_entry_limit and optional_date?(from) and optional_date?(to) and
-         valid_cursor?(cursor),
+    if is_integer(limit) and limit in 1..@max_entry_limit and optional_date?(from) and
+         optional_date?(to) and valid_cursor?(cursor),
        do: {:ok, limit, from, to, cursor},
        else: {:error, :invalid_option}
   end
@@ -292,7 +293,7 @@ defmodule Bilimbi.Finance.Ledger do
   defp optional_date?(value), do: is_nil(value) or match?(%Date{}, value)
 
   defp valid_cursor?(nil), do: true
-  defp valid_cursor?({%Date{}, id}), do: is_integer(id)
+  defp valid_cursor?({%Date{}, id}), do: is_integer(id) and id in 1..@max_bigint
   defp valid_cursor?(_cursor), do: false
 
   ## Trial balance
@@ -328,7 +329,7 @@ defmodule Bilimbi.Finance.Ledger do
   defp through_option(options) do
     case Keyword.get(options, :through_entry_number) do
       nil -> {:ok, nil}
-      number when is_integer(number) and number >= 0 -> {:ok, number}
+      number when is_integer(number) and number in 0..@max_bigint -> {:ok, number}
       _other -> {:error, :invalid_option}
     end
   end
