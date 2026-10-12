@@ -69,6 +69,27 @@ defmodule Bilimbi.Finance.Receivables.DocumentsTest do
       assert amounts([draft], :total) == ["141.57"]
     end
 
+    test "accept string keys and values, as a form or an API sends them", context do
+      assert {:ok, %{lines: [line], tax_lines: [%{tax_code: "T10"}], total: total}} =
+               Receivables.create_draft(context.operator, 73, %{
+                 "kind" => "invoice",
+                 "series_id" => to_string(context.invoice_series.id),
+                 "customer_id" => to_string(context.customer.id),
+                 "issue_date" => "2026-10-01",
+                 "lines" => [
+                   %{
+                     "description" => "Service",
+                     "quantity" => "2",
+                     "unit_price" => "10",
+                     "tax_code_id" => to_string(context.standard_tax.id)
+                   }
+                 ]
+               })
+
+      assert line.tax_code_id == context.standard_tax.id
+      assert Decimal.equal?(total, "22.00")
+    end
+
     test "replace their lines whole, or keep them when lines are omitted", context do
       %{operator: operator} = context
       {:ok, draft} = create_invoice(context, [line("100"), line("50")])

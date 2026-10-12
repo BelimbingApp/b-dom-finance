@@ -34,7 +34,8 @@ defmodule Bilimbi.Finance.Receivables do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Ledger
-  alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Documents, Payments}
+  alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
+  alias Bilimbi.Finance.Receivables.{Payments, Records, Series}
   alias Ecto.Changeset
 
   @view "finance.receivables.view"
@@ -133,7 +134,7 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc "The kinds of record a series numbers."
   @spec series_kinds() :: [String.t()]
-  def series_kinds, do: Bilimbi.Finance.Receivables.Series.kinds()
+  def series_kinds, do: Series.kinds()
 
   @doc "The company's tax codes, ordered by code."
   @spec list_tax_codes(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
@@ -216,7 +217,7 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc "The kinds of document: `invoice` and `credit_note`."
   @spec document_kinds() :: [String.t()]
-  def document_kinds, do: Bilimbi.Finance.Receivables.Document.kinds()
+  def document_kinds, do: Document.kinds()
 
   @doc """
   Creates a draft document: `kind`, `series_id` (a series of that kind),
@@ -427,7 +428,7 @@ defmodule Bilimbi.Finance.Receivables do
     through = Keyword.get(options, :through_entry_number)
     days = Keyword.get(options, :bucket_days, @default_bucket_days)
 
-    if (is_nil(through) or (is_integer(through) and through in 0..9_223_372_036_854_775_807)) and
+    if (is_nil(through) or (is_integer(through) and through in 0..Records.max_bigint())) and
          ascending_days?(days),
        do: {:ok, through, days},
        else: {:error, :invalid_option}

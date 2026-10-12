@@ -62,6 +62,22 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
       assert owed(context, second) == "0.00"
     end
 
+    test "accepts string keys and values, as a form or an API sends them", context do
+      assert {:ok, %{allocations: [%{document_id: id}]}} =
+               Receivables.record_payment(context.operator, 73, %{
+                 "series_id" => to_string(context.payment_series.id),
+                 "customer_id" => to_string(context.customer.id),
+                 "payment_date" => "2026-10-10",
+                 "amount" => "25",
+                 "deposit_account_id" => to_string(context.accounts.cash.id),
+                 "allocations" => [
+                   %{"document_id" => to_string(context.first.id), "amount" => "25"}
+                 ]
+               })
+
+      assert id == context.first.id
+    end
+
     test "refuses allocations that do not add up, overpay, repeat, or miss", context do
       %{first: first, second: second} = context
 

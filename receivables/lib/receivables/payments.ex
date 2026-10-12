@@ -61,16 +61,21 @@ defmodule Bilimbi.Finance.Receivables.Payments do
   defp valid(changeset), do: {:error, changeset}
 
   defp validate_customer(changeset, scope, company_id) do
-    with id when is_integer(id) <- Changeset.get_field(changeset, :customer_id),
-         message when is_binary(message) <-
-           (case Records.get(Customer, scope, company_id, id) do
-              nil -> "is not a customer of this company"
-              %Customer{active: false} -> "is an inactive customer"
-              %Customer{} -> nil
-            end) do
-      Changeset.add_error(changeset, :customer_id, message)
-    else
-      _no_problem -> changeset
+    case Changeset.get_field(changeset, :customer_id) do
+      nil ->
+        changeset
+
+      id ->
+        case Records.get(Customer, scope, company_id, id) do
+          nil ->
+            Changeset.add_error(changeset, :customer_id, "is not a customer of this company")
+
+          %Customer{active: false} ->
+            Changeset.add_error(changeset, :customer_id, "is an inactive customer")
+
+          %Customer{} ->
+            changeset
+        end
     end
   end
 

@@ -118,17 +118,9 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   defp put_lines(changeset, _scope, _company_id, _context, nil), do: changeset
 
   defp put_lines(changeset, scope, company_id, context, lines) do
-    lines = List.wrap(lines)
-
-    tax_codes =
-      TaxCode
-      |> Records.query(scope, company_id)
-      |> where([t], t.id in ^tax_code_ids(lines))
-      |> Repo.all()
-      |> Map.new(&{&1.id, &1})
-
-    line_changesets =
+    cast =
       lines
+      |> List.wrap()
       |> Enum.with_index(1)
       |> Enum.map(fn {line, number} ->
         %DocumentLine{
@@ -141,9 +133,16 @@ defmodule Bilimbi.Finance.Receivables.Documents do
           context.setup.income_account_id
         )
         |> LedgerAccounts.validate(context.accounts, :account_id, "income")
-        |> put_tax(tax_codes, context.book.minor_units)
       end)
 
+    tax_codes =
+      TaxCode
+      |> Records.query(scope, company_id)
+      |> where([t], t.id in ^tax_code_ids(cast))
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    line_changesets = Enum.map(cast, &put_tax(&1, tax_codes, context.book.minor_units))
     changeset = Changeset.put_assoc(changeset, :lines, line_changesets)
 
     if Enum.all?(line_changesets, & &1.valid?),
@@ -152,10 +151,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
   end
 
   defp tax_code_ids(lines) do
-    lines
-    |> Enum.filter(&is_map/1)
-    |> Enum.map(&Records.fetch(&1, :tax_code_id))
-    |> Enum.filter(&is_integer/1)
+    lines |> Enum.map(&Changeset.get_field(&1, :tax_code_id)) |> Enum.filter(&is_integer/1)
   end
 
   defp put_tax(line, tax_codes, minor_units) do
