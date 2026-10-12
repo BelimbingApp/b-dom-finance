@@ -1,0 +1,145 @@
+defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
+  use Bilimbi.Finance.Payables.PayablesCase
+
+  setup context do
+    %{accounts: accounts} = context
+
+    overdue = post_bill!(context, bill("P-1", "A", [line(accounts.expense, "100")]))
+
+    not_due =
+      post_bill!(
+        context,
+        bill("P-1", "B", [line(accounts.expense, "50")], %{due_date: ~D[2026-11-15]})
+      )
+
+    older =
+      post_bill!(
+        context,
+        bill("P-2", "C", [line(accounts.expense, "30")], %{
+          document_date: ~D[2026-08-01],
+          due_date: ~D[2026-08-10]
+        })
+      )
+
+    {:ok, note} =
+      Payables.create_debit_note(context.operator, 73, older.id, %{
+        document_date: ~D[2026-09-01],
+        lines: [line(accounts.expense, "5")]
+      })
+
+    {:ok, _} = Payables.approve_document(context.operator, 73, note.id)
+    {:ok, _} = Payables.post_document(context.operator, 73, note.id)
+
+    {:ok, payment} =
+      Payables.post_payment(context.operator, 73, %{
+        payment_date: ~D[2026-10-20],
+        party_key: "P-1",
+        paid_from_account_id: accounts.bank.id,
+        allocations: [%{document_id: overdue.id, amount: "40"}]
+      })
+
+    %{overdue: overdue, not_due: not_due, older: older, payment: payment}
+  end
+
+  defp aged(context, as_of, options \\ []) do
+    {:ok, report} = Payables.aged_payables(context.operator, 73, as_of, options)
+    report
+  end
+
+  defp amounts(values), do: Enum.map(values, &Decimal.to_string(Decimal.normalize(&1), :normal))
+
+  test "groups what is owed by party and how long it is overdue", context do
+    report = aged(context, ~D[2026-11-01])
+
+    assert %{as_of: ~D[2026-11-01], bucket_days: [30, 60, 90]} = report
+    assert [%{party_key: "P-1"} = first, %{party_key: "P-2"} = second] = report.parties
+
+    assert [
+             %{party_document_number: "A", days_overdue: 31, bucket: 2},
+             %{party_document_number: "B", days_overdue: 0, bucket: 0}
+           ] = first.documents
+
+    assert amounts(Enum.map(first.documents, & &1.outstanding)) == ["60", "50"]
+    assert amounts(first.buckets) == ["50", "0", "60", "0", "0"]
+    assert amounts([first.total]) == ["110"]
+
+    assert [%{party_document_number: "C", days_overdue: 83, bucket: 3, outstanding: owed}] =
+             second.documents
+
+    assert amounts([owed]) == ["25"]
+    assert amounts(report.buckets) == ["50", "0", "60", "25", "0"]
+    assert amounts([report.total]) == ["135"]
+  end
+
+  test "counts only what was dated on or before the date", context do
+    report = aged(context, ~D[2026-10-10])
+
+    assert [%{documents: [%{outstanding: before_payment}, _]}, _] =
+             Enum.sort_by(report.parties, & &1.party_key)
+
+    assert amounts([before_payment]) == ["100"]
+    assert amounts([report.total]) == ["175"]
+
+    assert %{parties: [%{party_key: "P-2", total: older}]} = aged(context, ~D[2026-08-15])
+    assert amounts([older]) == ["30"]
+
+    assert %{parties: [], total: nothing} = aged(context, ~D[2026-07-31])
+    assert amounts([nothing]) == ["0"]
+  end
+
+  test "reproduces a report after a back-dated posting", context do
+    %{operator: operator, accounts: accounts, overdue: overdue} = context
+    report = aged(context, ~D[2026-11-01])
+
+    {:ok, _} =
+      Payables.post_payment(operator, 73, %{
+        payment_date: ~D[2026-10-15],
+        party_key: "P-1",
+        paid_from_account_id: accounts.bank.id,
+        allocations: [%{document_id: overdue.id, amount: "10"}]
+      })
+
+    assert amounts([aged(context, ~D[2026-11-01]).total]) == ["125"]
+
+    assert aged(context, ~D[2026-11-01], through_entry_number: report.through_entry_number) ==
+             report
+  end
+
+  test "counts a payment reversed by the date as unpaid", context do
+    {:ok, _} =
+      Payables.reverse_payment(context.operator, 73, context.payment.id, %{
+        payment_date: ~D[2026-11-05]
+      })
+
+    assert amounts([aged(context, ~D[2026-11-01]).total]) == ["135"]
+    assert amounts([aged(context, ~D[2026-11-05]).total]) == ["175"]
+  end
+
+  test "takes the company's own bucket boundaries", context do
+    report = aged(context, ~D[2026-11-01], bucket_days: [45])
+
+    assert amounts(report.buckets) == ["50", "60", "25"]
+
+    assert [%{documents: [%{bucket: 1}, %{bucket: 0}]}, %{documents: [%{bucket: 2}]}] =
+             report.parties
+  end
+
+  test "refuses a malformed option and needs the view grant", context do
+    for option <- [
+          [through_entry_number: -1],
+          [through_entry_number: "1"],
+          [bucket_days: []],
+          [bucket_days: [60, 30]],
+          [bucket_days: [0, 30]],
+          [bucket_days: [30, 30]]
+        ] do
+      assert {:error, :invalid_option} =
+               Payables.aged_payables(context.operator, 73, ~D[2026-11-01], option)
+    end
+
+    poster =
+      TestFixtures.sign_in!(context.first_scope, 73, 93, ["finance.payables.payments.post"])
+
+    assert {:error, :unauthorized} = Payables.aged_payables(poster, 73, ~D[2026-11-01])
+  end
+end
