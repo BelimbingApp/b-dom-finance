@@ -23,7 +23,6 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
   alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
-  alias Bilimbi.Finance.Einvoice.CodeLists
   alias Bilimbi.Finance.Einvoice.Contributions
   alias Ecto.Adapters.SQL
 
@@ -36,8 +35,7 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
-  e-invoicing, settings, audit, exchange and Authz tables, the seeded code
-  lists, and a contribution snapshot with the module's capabilities and
+  e-invoicing, settings, audit, exchange and Authz tables, and a contribution snapshot with the module's capabilities and
   settings. Returns the two tenants' system scopes.
   """
   def setup_einvoice! do
@@ -47,7 +45,6 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
     Bilimbi.Base.Audit.TestFixtures.create_audit_tables!()
     Bilimbi.Base.Integration.TestFixtures.create_exchanges_table!()
     create_einvoice_tables!()
-    :ok = CodeLists.seed!("myinvois")
     install_contributions!()
 
     CompanyFixtures.insert_tenant!(%{id: 41, name: "First tenant"})
@@ -405,17 +402,6 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
       """
       CREATE UNIQUE INDEX finance_einvoice_status_events_document_sequence_unique
         ON finance_einvoice_status_events (document_id, sequence)
-      """,
-      """
-      CREATE TEMPORARY TABLE finance_einvoice_code_entries (
-        id bigserial PRIMARY KEY, authority varchar(32) NOT NULL, list varchar(32) NOT NULL,
-        code varchar(16) NOT NULL, description varchar(500) NOT NULL,
-        inserted_at timestamp(0) NOT NULL, updated_at timestamp(0) NOT NULL
-      ) ON COMMIT PRESERVE ROWS
-      """,
-      """
-      CREATE UNIQUE INDEX finance_einvoice_code_entries_unique
-        ON finance_einvoice_code_entries (authority, list, code)
       """,
       """
       CREATE TEMPORARY TABLE finance_einvoice_code_overrides (

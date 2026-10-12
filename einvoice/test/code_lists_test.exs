@@ -15,7 +15,7 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
     Map.put(context, :operator, operator)
   end
 
-  test "the shipped lists are seeded whole, and seeding again changes nothing", %{operator: op} do
+  test "every shipped list is available whole", %{operator: op} do
     assert CodeLists.lists("myinvois") ==
              ~w(classification country currency document_type industry payment_means state tax_type unit)
 
@@ -37,7 +37,6 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
              "unit" => 2162
            }
 
-    assert :ok = CodeLists.seed!("myinvois")
 
     assert {:ok, %{"E" => "Tax exemption (where applicable)"} = tax_types} =
              Einvoice.list_codes(op, 73, "tax_type")

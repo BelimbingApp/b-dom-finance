@@ -12,8 +12,8 @@ the plan):
 1. the module, its immutable tables, its facade, and its capabilities;
 2. company settings for the environment, credentials, certificate, and
    supplier profile, a setup page, PEM validation, and "Test connection";
-3. a UBL 2.1 JSON builder, the authority's code lists as overridable
-   reference data, and field validation;
+3. a UBL 2.1 JSON builder, the authority's code lists as shipped reference
+   data each company can override, and field validation;
 4. a JSON XAdES signer in Erlang's `:public_key` and `:crypto`;
 5. a MyInvois API client behind Base Integration.
 
@@ -135,11 +135,13 @@ secret expires within the alert window. Its "Test connection" logs in afresh.
 `priv/code_lists/myinvois.json` holds the authority's nine lists (document
 types, tax types, classifications, states, countries, currencies, units,
 industry codes, payment means) as read from the SDK on 12 October 2026, with
-each list's source URL. The production seed `myinvois-code-lists-2026-10-12`
-loads them into `finance_einvoice_code_entries`; a refreshed file ships with
-a new seed ID. A code the file drops stays, because recorded documents still
-name it. A company's override (`override_code/5`) renames a code, retires it,
-or adds one the file lacks, for that company only.
+each list's source URL. They are compiled into `CodeLists` as the reference
+data every company starts from, so a refreshed list is a new file in a
+release, reviewed like code, and no seed has to run. A company's override
+(`override_code/5`, stored in `finance_einvoice_code_overrides`) renames a
+code, retires it, or adds one the file lacks yet, for that company only, so a
+list change the authority announces need not wait for a release. A code a
+later file drops still names what recorded documents carry.
 
 ## Database
 
@@ -156,7 +158,8 @@ The migration `20261012200000` is `:bilimbi_only`:
 - `finance_einvoice_status_events`: every status change and answer, with the
   authority's status, submission UID, document UUID, long ID, reason, HTTP
   status, and response body;
-- `finance_einvoice_code_entries` and `finance_einvoice_code_overrides`.
+- `finance_einvoice_code_overrides`: a company's renamed, retired, or added
+  codes.
 
 PostgreSQL enforces what the facade checks:
 
@@ -210,8 +213,7 @@ it against a fresh database and proves the triggers outside the sandbox.
 Module tests run on temporary copies of the tables, constraints and triggers
 included, from `test/support/test_fixtures.ex`; change them with the
 migration. `setup_einvoice!/0` builds two tenants' companies, the settings,
-audit, and exchange tables, the seeded code lists, and a contribution
-snapshot. Party data is the SDK's placeholder data, and certificates are
+audit, and exchange tables, and a contribution snapshot. Party data is the SDK's placeholder data, and certificates are
 generated (`test_certificate!/1`). Authority calls answer from `Req.Test`
 stubs set in `test_helper.exs`; no test reaches the authority. The SDK's
 signed samples are in `test/fixtures/sdk/`, signed with the SDK's dummy test

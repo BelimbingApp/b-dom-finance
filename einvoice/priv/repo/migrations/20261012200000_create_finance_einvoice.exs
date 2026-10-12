@@ -2,8 +2,8 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
   @moduledoc """
   Fiscal documents a company issues through a clearance authority, the
   signed submissions sent for them, the status events the authority's
-  answers produce, and the authority's code lists with each company's
-  overrides.
+  answers produce, and each company's overrides of the authority's code
+  lists.
 
   Bilimbi-only. A document, its lines, a submission, and a status event are
   append-only: a trigger refuses UPDATE, DELETE, and TRUNCATE, so a
@@ -15,9 +15,9 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
   totals differ from its lines'. Rows of one company reference each other
   through composite `(id, company_id)` foreign keys.
 
-  Code list entries are installation-wide reference data that a production
-  seed loads; a company's overrides rename, retire, or add a code for that
-  company only. Neither is a fiscal record, so both stay editable.
+  The authority's code lists ship with the module as reference data; a
+  company's overrides rename, retire, or add a code for that company only.
+  An override is not a fiscal record, so it stays editable.
   """
 
   use Ecto.Migration
@@ -260,19 +260,6 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
              check: actor_check()
            )
 
-    create table(:finance_einvoice_code_entries, primary_key: false) do
-      add :id, :bigserial, primary_key: true
-      add :authority, :string, size: 32, null: false
-      add :list, :string, size: 32, null: false
-      add :code, :string, size: 16, null: false
-      add :description, :string, size: 500, null: false
-      timestamps(type: :naive_datetime)
-    end
-
-    create unique_index(:finance_einvoice_code_entries, [:authority, :list, :code],
-             name: :finance_einvoice_code_entries_unique
-           )
-
     create table(:finance_einvoice_code_overrides, primary_key: false) do
       add :id, :bigserial, primary_key: true
       add :tenant_id, :bigint, null: false
@@ -437,7 +424,6 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
 
   def down do
     drop table(:finance_einvoice_code_overrides)
-    drop table(:finance_einvoice_code_entries)
     drop table(:finance_einvoice_status_events)
     drop table(:finance_einvoice_submissions)
     drop table(:finance_einvoice_document_lines)

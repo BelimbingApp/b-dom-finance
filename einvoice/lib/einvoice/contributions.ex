@@ -27,7 +27,7 @@ defmodule Bilimbi.Finance.Einvoice.Contributions do
         %{
           id: "finance.einvoice.setup",
           label: "E-invoice Setup",
-          icon: "document-check",
+          icon: "clipboard-document-list",
           parent: "finance",
           route: "/finance/einvoice/setup",
           capability: @settings,

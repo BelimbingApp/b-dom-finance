@@ -23,7 +23,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
 
   @impl true
   def tables do
-    [documents(), lines(), submissions(), status_events(), code_entries(), code_overrides()]
+    [documents(), lines(), submissions(), status_events(), code_overrides()]
   end
 
   defp documents do
@@ -225,27 +225,6 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
           check("http_status IS NULL OR (http_status >= 100 AND http_status <= 599)"),
         "finance_einvoice_status_events_actor" => check(@actor)
       }
-    }
-  end
-
-  defp code_entries do
-    %{
-      name: "finance_einvoice_code_entries",
-      columns: %{
-        "id" => column(:bigint, false, {:sequence, "finance_einvoice_code_entries_id_seq"}),
-        "authority" => column({:varchar, 32}, false),
-        "list" => column({:varchar, 32}, false),
-        "code" => column({:varchar, 16}, false),
-        "description" => column({:varchar, 500}, false),
-        "inserted_at" => column({:timestamp, 0}, false),
-        "updated_at" => column({:timestamp, 0}, false)
-      },
-      indexes: %{
-        "finance_einvoice_code_entries_pkey" => index(["id"], true),
-        "finance_einvoice_code_entries_unique" => index(["authority", "list", "code"], true)
-      },
-      foreign_keys: %{},
-      checks: %{}
     }
   end
 

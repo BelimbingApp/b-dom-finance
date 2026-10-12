@@ -17,8 +17,7 @@ defmodule Bilimbi.Finance.Einvoice.MixProject do
   def application do
     Bilimbi.Base.ModuleRegistry.MixDiscovery.module_application(__DIR__,
       mod: {Bilimbi.Finance.Einvoice.Application, []},
-      extra_applications: [:logger, :crypto, :public_key],
-      env: [bilimbi_production_seed_provider: Bilimbi.Finance.Einvoice.ProductionSeeds]
+      extra_applications: [:logger, :crypto, :public_key]
     )
   end
 
