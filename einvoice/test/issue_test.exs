@@ -130,7 +130,7 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
     test "requires the authority's rules", %{operator: op} do
       attributes =
         TestFixtures.invoice_attributes(%{
-          document_type: "02",
+          document_type: "11",
           currency_code: "USD",
           lines: [
             %{

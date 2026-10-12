@@ -1,9 +1,10 @@
 defmodule Bilimbi.Finance.Einvoice.Configuration do
   @moduledoc """
   A company's e-invoicing settings: the environment it submits to, the
-  credentials the authority issued it for each environment, its signing
-  certificate and private key, and the supplier profile every document it
-  issues carries.
+  format version it submits in, the credentials the authority issued it
+  for each environment, its signing certificate and private key, the
+  supplier profile every document it issues carries, and the ledger
+  accounts a validated document posts to.
 
   Every value is a company-scoped Base Setting in the editable group
   `finance.einvoice`, guarded by `finance.einvoice.settings.manage`, so the
@@ -26,6 +27,22 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
   @capability "finance.einvoice.settings.manage"
   @environments ["sandbox", "production"]
 
+  # The ledger accounts a validated document's entry names, by the account
+  # codes of the company's own chart; none is a default.
+  @posting_accounts [
+    receivable_account:
+      {"Receivable account",
+       "Account code debited by a validated invoice or debit note and credited by a credit note."},
+    revenue_account:
+      {"Revenue account",
+       "Account code credited with the tax-exclusive amount of a validated invoice or debit note."},
+    tax_account:
+      {"Tax account", "Account code credited with the tax of a validated invoice or debit note."},
+    settlement_account:
+      {"Settlement account",
+       "Account code credited by a validated refund note, in place of the receivable account."}
+  ]
+
   # The one authority this release clears documents with; see `Authority`.
   @authority Bilimbi.Finance.Einvoice.MyInvois
 
@@ -36,9 +53,14 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
     tax_id:
       {"Supplier TIN",
        "The tax identification number the authority registered the company under.", 14, :tax_id},
+    registration_type:
+      {"Supplier registration type",
+       "The kind of registration number: BRN for a business, NRIC, PASSPORT, or ARMY for an individual. Blank means BRN.",
+       8, :registration_type},
     registration_number:
       {"Supplier registration number",
-       "The business registration number, as on the signing certificate.", 20, nil},
+       "The business registration number, as on the signing certificate, or the individual's identification number.",
+       20, nil},
     sales_tax_registration:
       {"Sales and service tax registration",
        "Up to two registration numbers separated by a semicolon. Blank when not registered.", 35,
@@ -75,6 +97,9 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
   @doc "The environments a company can submit to."
   def environments, do: @environments
+
+  @doc "The ledger account settings, by field."
+  def posting_account_fields, do: Keyword.keys(@posting_accounts)
 
   @doc "Setting definitions for the module's settings contribution."
   @spec definitions() :: %{String.t() => map()}
@@ -119,8 +144,27 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
           "Warn this many days before the certificate or a client secret expires.",
           minimum: 1,
           maximum: 365
+        ),
+      "finance.einvoice.document_version" =>
+        editable(
+          :string,
+          @authority.version(),
+          "Document format version",
+          "The authority's format version documents are submitted in. " <>
+            "A signed version needs the certificate and private key; an unsigned one is for sandbox testing before the certificate arrives.",
+          validator:
+            {__MODULE__, :valid_document_version?, "must be a version the authority accepts"}
         )
     }
+
+    posting =
+      Map.new(@posting_accounts, fn {field, {label, help}} ->
+        {"finance.einvoice.posting.#{field}",
+         editable(:string, nil, label, help,
+           nullable: true,
+           validator: {__MODULE__, :valid_text_50?, "must be at most 50 characters"}
+         )}
+      end)
 
     per_environment = @environments |> Enum.flat_map(&environment_definitions/1) |> Map.new()
 
@@ -130,7 +174,7 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
         {"finance.einvoice.supplier.#{field}", editable(:string, nil, label, help, options)}
       end)
 
-    connection |> Map.merge(per_environment) |> Map.merge(supplier)
+    connection |> Map.merge(per_environment) |> Map.merge(supplier) |> Map.merge(posting)
   end
 
   defp environment_definitions(environment) do
@@ -183,9 +227,12 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
   def valid_environment?(value), do: value in @environments
 
+  def valid_document_version?(value),
+    do: Enum.any?(@authority.document_versions(), &(&1.version == value))
+
   def valid_date?(value), do: is_binary(value) and match?({:ok, _}, Date.from_iso8601(value))
 
-  for kind <- [:tax_id, :industry_code, :phone, :state_code, :country_code] do
+  for kind <- [:tax_id, :industry_code, :phone, :state_code, :country_code, :registration_type] do
     def unquote(:"valid_#{kind}?")(value), do: @authority.valid_format?(unquote(kind), value)
   end
 
@@ -210,18 +257,40 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
         {field, blank_to_nil(Map.get(values, "finance.einvoice.supplier.#{field}"))}
       end)
 
-    Map.update!(profile, :name, &(&1 || company_name))
+    profile
+    |> Map.update!(:name, &(&1 || company_name))
+    |> Map.update!(:registration_type, &(&1 || "BRN"))
   end
 
   @doc """
-  The company's current environment and the credentials for it, secrets
-  included. Only the authority client and the setup page's checks call this;
-  never log or render the result.
+  The ledger account codes a validated document posts to, blank ones as
+  `nil`: `receivable_account`, `revenue_account`, `tax_account`, and
+  `settlement_account`.
   """
-  @spec credentials(Scope.t(), pos_integer()) :: map()
-  def credentials(%Scope{} = scope, company_id) do
+  @spec posting_accounts(Scope.t(), pos_integer()) :: %{atom() => String.t() | nil}
+  def posting_accounts(%Scope{} = scope, company_id) do
+    keys = Enum.map(@posting_accounts, fn {field, _} -> "finance.einvoice.posting.#{field}" end)
+    values = Settings.get_many(keys, settings_scope(scope, company_id))
+
+    Map.new(@posting_accounts, fn {field, _} ->
+      {field, blank_to_nil(Map.get(values, "finance.einvoice.posting.#{field}"))}
+    end)
+  end
+
+  @doc "The format version the company submits documents in."
+  @spec document_version(Scope.t(), pos_integer()) :: String.t()
+  def document_version(%Scope{} = scope, company_id),
+    do: Settings.get("finance.einvoice.document_version", settings_scope(scope, company_id))
+
+  @doc """
+  The company's credentials for `environment` (its current one by
+  default), secrets included. Only the authority client and the setup
+  page's checks call this; never log or render the result.
+  """
+  @spec credentials(Scope.t(), pos_integer(), String.t() | nil) :: map()
+  def credentials(%Scope{} = scope, company_id, environment \\ nil) do
     settings_scope = settings_scope(scope, company_id)
-    environment = Settings.get("finance.einvoice.environment", settings_scope)
+    environment = environment || Settings.get("finance.einvoice.environment", settings_scope)
 
     values =
       Settings.get_many(

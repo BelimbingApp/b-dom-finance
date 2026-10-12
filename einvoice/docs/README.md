@@ -6,20 +6,30 @@ gave. The first authority is Malaysia's LHDN MyInvois. Each company registers
 with the authority and holds its own credentials and signing certificate;
 Bilimbi is never an intermediary.
 
-This release covers the work that needs no authority account (slices 1 to 5 of
-the plan):
+The module covers:
 
 1. the module, its immutable tables, its facade, and its capabilities;
-2. company settings for the environment, credentials, certificate, and
-   supplier profile, a setup page, PEM validation, and "Test connection";
+2. company settings for the environment, format version, credentials,
+   certificate, supplier profile, and posting accounts, a setup page, PEM
+   validation, and "Test connection";
 3. a UBL 2.1 JSON builder, the authority's code lists as shipped reference
    data each company can override, and field validation;
 4. a JSON XAdES signer in Erlang's `:public_key` and `:crypto`;
-5. a MyInvois API client behind Base Integration.
+5. a MyInvois API client behind Base Integration;
+6. submit and poll jobs on Base Queue that act for the issuing user, a
+   status event and an audit action per outcome, and an outage retry with
+   an operator notice after 72 hours (see Clearance);
+7. credit, debit, and refund notes that reference a validated original,
+   the 72-hour cancellation guard, and a buyer's rejection request;
+8. a document page with the validation link and its QR code, a share link,
+   a PDF through Base Artifacts, and a filtered, paged list;
+9. the ledger bridge: a validated document posts a balanced entry, a
+   cancelled one reverses it, and a reconciliation page lists what differs.
 
-Submitting and polling (slice 6), the live sandbox proof (7), notes and the
-cancellation guard (8), the printable visual (9), the ledger bridge (10),
-and consolidated and self-billed documents (11) come later.
+The signed proof with a real certificate (format version 1.1 against the
+sandbox) waits for the certificate; sandbox testing submits unsigned
+version 1.0 documents. Consolidated and self-billed documents, and the
+production cutover, come later.
 
 ## Public API
 
@@ -28,9 +38,16 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 
 | Function | Capability | Does |
 | --- | --- | --- |
-| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document from plain attributes, with an `issued` status event |
-| `get_document/3` | `finance.einvoice.view` | One document with its lines, status events, and current `status` |
+| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document (or a note naming its `original_document_id`) from plain attributes, with an `issued` status event |
+| `get_document/3` | `finance.einvoice.view` | One document with its lines, status events, current `status`, the authority's identifiers, validation link, ledger entries, and `attention` flags |
 | `list_documents/3` | `finance.einvoice.view` | Documents newest first; `limit` and `before` page them |
+| `page_documents/3` | `finance.einvoice.view` | One page for a list, filtered by `search`, `status`, `document_type`, and `environment` |
+| `submit_document/3` | `finance.einvoice.documents.submit` | Queues the submission as the signed-in user, after checking credentials and the signing key |
+| `refresh_status/3` | `finance.einvoice.documents.submit` | Reads the status at the authority and records what changed |
+| `cancel_document/4` | `finance.einvoice.documents.cancel` | Cancels a validated document inside its 72-hour window, then reverses its entry |
+| `reconciliation/2` | `finance.einvoice.view` | Valid (or rejected) documents without an entry, and cancelled documents whose entry was not reversed |
+| `retry_posting/3`, `retry_reversal/3` | `finance.einvoice.documents.submit` and `finance.ledger.entries.post` | Posts or reverses the entry of a listed document once its cause is fixed; idempotent, and an audit action names each try |
+| `generate_pdf/3`, `read_pdf/3` | `finance.einvoice.view` | Renders and reads the printable document through Base Artifacts |
 | `list_codes/3` | `finance.einvoice.view` | The company's active codes in one of the authority's lists |
 | `override_code/5` | `finance.einvoice.settings.manage` | Renames, retires, or adds a code for the company |
 | `setup/3` | `finance.einvoice.settings.manage` | What the company has configured, never a secret |
@@ -39,16 +56,17 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 Every call authorizes its capability through
 `Bilimbi.Core.Company.authorize_company_target/3` when it runs, and writes
 take `Company.lock_writable_company/2`, as the ledger does. A system scope is
-`{:error, :unauthorized}`. The Tenant Owner role holds all three
+`{:error, :unauthorized}`. The Tenant Owner role holds all five
 capabilities.
 
 `issue_document/3` takes plain attributes, so a form, an import, an agent
 operation, and later receivables all issue through it: `document_type`,
 `code_number`, optional `issued_at`, `currency_code`, `buyer` (name, TIN,
 registration type and number, contact, address), optional payment means,
-terms, and billing period, and `lines` (description, classification code,
-quantity, unit price, tax type and rate, optional unit, discount, charge,
-exemption reason, tariff code, origin country). A line states its tax rate
+terms, and billing period, for a note the `original_document_id`, and
+`lines` (description, classification code, quantity, unit price, tax type
+and rate, optional unit, discount, charge, exemption reason, tariff code,
+origin country). A line states its tax rate
 explicitly, never defaulting it; a blank discount or charge is none. The supplier comes from the
 company's settings and the environment from its current setting.
 
@@ -61,14 +79,137 @@ the authority (`Authority.validate/3`) then checks codes against the
 company's code lists and its own rules, and names any supplier-profile field
 still missing. A code number is unique per company and environment.
 
+## Clearance
+
+`Bilimbi.Finance.Einvoice.Clearance` owns what happens between a recorded
+document and the authority's verdict; its moduledoc is the contract.
+`submit_document/3` queues `Bilimbi.Finance.Einvoice.SubmitWorker` with
+`Bilimbi.Base.Queue.enqueue_for/3`, so the job runs as the user who asked
+and every event, audit action, and ledger entry names them. It refuses
+with `:already_queued` while a submit job for the document is waiting or
+running, and the page hides its submit button meanwhile. The job
+commits a submission row with the exact bytes before the HTTP call,
+records the authority's answer as a status event (`submitted`, `refused`,
+`duplicate`, `rate_limited`, or `unavailable`), and never resubmits a
+document the authority accepted: a 2xx ends the job. An outcome is
+recorded under the company lock only while the document is still
+submittable, so two overlapping jobs leave one `submitted` event and one
+poll job. After a
+`DuplicateSubmission` answer, or an outage that may have hidden an
+accepted request, it asks the authority for the document by its code number
+(`Authority.find_submission/4`; MyInvois lists the documents the taxpayer
+recently sent) and records the UID and UUID it finds as `submitted`, with
+the authority's own entry, and queues the poll. Only when nothing is found
+does a duplicate stop the job for an operator, and an outage retry. The
+search runs from a minute before the oldest attempt without a final answer
+to a minute past the moment of asking, ignoring any document whose UUID
+this document already recorded, and it also runs before any retry that
+finds such an attempt (a crash, an outage, or an earlier search that could
+not answer): the bytes go out again only on a clean not-found, and not at
+all while the search is rate limited, unavailable, refused, or too long to
+read within MyInvois' ten pages (recorded as `search_deferred`). A rate limit or outage retries under Base Queue's
+backoff (Base Queue has no snooze, so the authority's `Retry-After` is
+recorded on the event rather than honoured to the second); an outage that
+has lasted 72 hours records `overdue` and the audit action
+`finance.einvoice.submission.overdue` once, which the document page and
+list show. `PollWorker` reads the submission's progress a few seconds
+apart (`:poll_interval_ms`, 4 seconds), a bounded number of reads per job,
+and records `valid` (with the long ID that completes the validation link)
+or `invalid` (with the validation results), then posts the ledger entry.
+A status change is decided from the document as read under the company's
+lock, so a refresh and a poll cannot both record it. The ledger work it
+leaves (posting or reversing) runs
+after that transaction commits, never inside it: the ledger rolls back
+its own transaction on a refusal, which would take the status with it.
+
+A refresh (`refresh_status/3`) reads the document at the authority and
+records a buyer's rejection request as `rejected`, a cancellation made on
+the portal as `cancelled`, or an unchanged status as `status_checked`.
+There is no scheduled status sync yet: a rejection request is noticed
+when someone refreshes the document. A cancellation (`cancel_document/4`)
+is guarded locally (valid or rejected, inside the 72 hours after
+validation, no note the authority holds referencing it) before the
+authority is asked; its refusal is recorded as `cancellation_refused`.
+
+Every clearance call (the jobs, a refresh, a cancellation, a ledger retry)
+checks that the company is writable before it asks the authority anything,
+so an archived company is `{:error, :company_archived}` (a cancelled job)
+rather than an authority answer that cannot be recorded.
+
+Audit actions per outcome: `finance.einvoice.submission.queued`,
+`.submitted`, `.refused`, `.submission.duplicate`, `.submission.overdue`,
+`.validated`, `.invalid`, `.rejected`, `.cancelled`,
+`.cancellation.refused`, `.posting.retried`, and `.pdf.generated`, each
+carrying the document ID, code number, environment, and the authority's
+identifiers.
+
+## Ledger bridge
+
+`Bilimbi.Finance.Einvoice.Posting` posts one balanced entry through
+`Bilimbi.Finance.Ledger.post_entry/3` when a document is validated, dated
+the issue date, with the code number and authority UUID in the entry's
+`reference`, and records the entry's ID on a `posted` status event; a
+cancellation reverses it with `Ledger.reverse_entry/4` and records
+`posting_reversed`. The accounts are the company's
+`finance.einvoice.posting.*` settings, by account code in its own chart.
+An invoice or debit note debits the receivable account and credits
+revenue and tax; a credit note posts the mirror image; a refund note
+debits revenue and tax and credits the settlement account; a tax of zero
+posts no tax line. A posting that cannot happen (accounts unset or
+unknown, book not open or in another currency, missing grant) records
+`posting_failed` or `reversal_failed` with the reason, and
+`reconciliation/2` lists the document until it is resolved. The user who
+submits needs `finance.ledger.entries.post` for the posting to happen. A
+document posts once: the entry and the `posted` event are one transaction
+under the company's writable lock, so there is never an entry without its
+event, a second attempt is a no-op, and partial unique indexes make the
+database refuse a second `posted` or `posting_reversed` event. A refused
+entry rolls that transaction back, and the failure event is recorded
+afterwards. Only a database failure that may pass at once
+(a lost connection, a timeout, lock contention) is tried a second time as
+a fresh transaction and recorded as one failure; a ledger refusal or a
+configuration or grant failure is final and waits for `retry_posting/3`
+or `retry_reversal/3`, which the reconciliation page offers to a user
+holding both the e-invoice and the ledger grants. A status read never
+posts again. A rejected document stays valid at the authority, so its entry stands and a
+note corrects it.
+
+## Pages
+
+- `/finance/einvoice/documents` (Finance › E-invoices): the company's
+  documents, newest first, searched by number or buyer and filtered by
+  status, type, and environment; page state lives in the URL.
+- `/finance/einvoice/documents/:id`: the document, its parties, lines,
+  totals, the authority's identifiers, the validation link with its QR code
+  (`QrCode`, through `eqrcode`) and a copy control, every status event,
+  the ledger entries, the attention flags, and the actions: submit,
+  refresh, cancel with a reason, generate and download the PDF.
+- `/finance/einvoice/documents/:id/pdf/:artifact_id`: the PDF download,
+  read through Base Artifacts on every request.
+- `/finance/einvoice/reconciliation` (Finance › E-invoice Reconciliation).
+- `/finance/einvoice/setup` (Finance › E-invoice Setup): see Settings.
+
+The PDF is rendered by `Bilimbi.Finance.Einvoice.ArtifactOwner` with Base
+Artifacts' pure PDF serializer, so it needs no browser; it carries the
+validation link in text, and the QR code is on the page. Base Artifacts
+needs a storage root and retention period configured (Operator Settings)
+before a PDF can be stored. The `pdf_generated` event keeps the sequence of
+the last other event the PDF was rendered from; asking again while the
+document has gained none returns the stored artifact and records no new
+artifact, event, or audit action.
+
 ## Authority
 
 `Bilimbi.Finance.Einvoice.Authority` is the seam between the meta-term facade
 and one authority's rules. Everything MyInvois defines sits in
 `Bilimbi.Finance.Einvoice.MyInvois`:
 
-- `MyInvois` validates a draft (type `01` invoices in ringgit for now) and
-  maps a recorded document to the builder's input. It alone defines the
+- `MyInvois` validates a draft (invoices and notes in ringgit) and maps a
+  recorded document to the builder's input, a note carrying the original's
+  code number and UUID as a `BillingReference`. Its API callbacks translate
+  the authority's answers into the outcomes `Clearance` records
+  (`:accepted`, `:rejected`, `:refused`, `:duplicate`, `:rate_limited`,
+  `:unavailable`), keeping each raw response beside them. It alone defines the
   authority's field shapes (TIN, phone as a plus sign and 8 to 20 digits in
   20 characters, industry, state, and country codes), which the settings
   validators and the buyer's checks both ask (`valid_format?/2`), so supplier
@@ -76,7 +217,13 @@ and one authority's rules. Everything MyInvois defines sits in
   types `01` to `05` need a rate above zero, and `06` and `E` need zero (`E`
   also needs its exemption reason). Its login, the missing supplier fields,
   and the identity a certificate's subject carries are reached through
-  `Authority` callbacks, not named by the facade.
+  `Authority` callbacks, not named by the facade. So are the posting side
+  of each document type (`posting_rule/1`), its human name
+  (`document_type_name/1`), the cancellation window
+  (`cancellation_window_hours/0`, 72 for MyInvois), and the outage
+  allowance before the operator notice (`outage_notice_hours/0`, 72);
+  `Posting`, `Documents`, `Clearance`, the pages, and the PDF name no
+  document type code and no window.
 - `MyInvois.Builder` writes UBL 2.1 JSON in the element order of the SDK's
   samples, and `test/builder_golden_test.exs` rebuilds all four SDK version
   1.1 samples byte for byte. It maps and never computes, which is why it can
@@ -96,7 +243,10 @@ and one authority's rules. Everything MyInvois defines sits in
   with a generated certificate.
 - `MyInvois.Client` calls the API through `Bilimbi.Base.Integration.request/3`
   with the caller's scope: login, submit, submission status, document
-  details, cancel, and TIN validation. `MyInvois.TokenCache` keeps one token
+  details, the recently sent documents (searched by `find_submission`),
+  cancel, and TIN validation. The validation link is
+  `{portal}/{uuid}/share/{longId}`, with the portal per environment a
+  platform setting (`finance.einvoice.<environment>.portal_url`). `MyInvois.TokenCache` keeps one token
   per company, environment, and client ID in ETS until two minutes before it
   expires; a 401 drops it. The client never retries: a 2xx submission must
   not be resent, and a 422 or 429 returns the `Retry-After` seconds to the
@@ -114,6 +264,12 @@ guarded by `finance.einvoice.settings.manage`, are edited on the Settings
 screen with the company chosen:
 
 - `finance.einvoice.environment`: `sandbox` (default) or `production`;
+- `finance.einvoice.document_version`: the authority's format version
+  (`1.1`, signed, the default; or `1.0`, unsigned, for sandbox testing
+  before the certificate arrives);
+- `finance.einvoice.posting.*`: the account codes a validated document
+  posts to (`receivable_account`, `revenue_account`, `tax_account`,
+  `settlement_account`), none set by default;
 - per environment, `client_id`, `client_secret` (encrypted), and
   `secret_expires_on`;
 - `certificate_pem` and `private_key_pem` (both encrypted), validated as one
@@ -121,7 +277,8 @@ screen with the company chosen:
   not PKCS#12, so the company exports both from its `.p12`;
 - `expiry_alert_days` (default 30);
 - the supplier profile, `finance.einvoice.supplier.*`: name (blank uses the
-  company's), TIN, registration number, sales and service tax and tourism
+  company's), TIN, registration type (BRN for a business; NRIC, PASSPORT,
+  or ARMY for an individual) and number, sales and service tax and tourism
   tax registrations, industry classification code, business activity,
   phone, email, and address with the authority's state code and the ISO
   country code.
@@ -154,7 +311,9 @@ later file drops still names what recorded documents carry.
 
 ## Database
 
-The migration `20261012200000` is `:bilimbi_only`:
+The migrations `20261012200000`, `20261013090000`, and `20261013143000`
+(one `posted` and one `posting_reversed` event per document) are
+`:bilimbi_only`:
 
 - `finance_einvoice_documents`: authority, environment, type, code number,
   issue instant (UTC), currency and rate, supplier and buyer snapshots as
@@ -166,7 +325,8 @@ The migration `20261012200000` is `:bilimbi_only`:
   their SHA-256, environment, format, version, and who submitted them;
 - `finance_einvoice_status_events`: every status change and answer, with the
   authority's status, submission UID, document UUID, long ID, reason, HTTP
-  status, and response body;
+  status, response body, and the ledger entry a `posted` or
+  `posting_reversed` event names;
 - `finance_einvoice_code_overrides`: a company's renamed, retired, or added
   codes.
 
@@ -209,9 +369,13 @@ it against a fresh database and proves the triggers outside the sandbox.
   `finance.einvoice.document.issued`, each connection test
   `finance.einvoice.connection.tested` with its outcome, and each code
   override `finance.einvoice.code.overridden` with the list, code,
-  description, and active flag it set. Submission outcomes
-  (`finance.einvoice.submitted`, `.validated`, `.invalid`, `.cancelled`,
-  `.rejected`) are recorded by the submit and poll workers in slice 6.
+  description, and active flag it set. Each outcome the authority decides
+  is an audit action too (see Clearance), recorded by the job as the user
+  it runs for.
+- **Ledger tie-in.** A validated document's entry carries the code number
+  and UUID, the document records the entry ID, and both are immutable, so
+  an auditor walks document to UUID to entry to trial balance; the
+  reconciliation page lists what does not tie (see Ledger bridge).
 - **Retention.** Nothing is deleted and there is no purge path; unmounting
   Finance keeps every row. Malaysia requires seven years (Income Tax Act 1967
   section 82); how long a company keeps records is law, not code.
@@ -224,8 +388,13 @@ it against a fresh database and proves the triggers outside the sandbox.
 Module tests run on temporary copies of the tables, constraints and triggers
 included, from `test/support/test_fixtures.ex`; change them with the
 migration. `setup_einvoice!/0` builds two tenants' companies, the settings,
-audit, and exchange tables, and a contribution snapshot. Party data is the SDK's placeholder data, and certificates are
+audit, exchange, artifacts, and ledger tables, and a contribution snapshot.
+The jobs are exercised by calling their `handle_job/2` with an
+`Execution` carrying the signed-in scope, against `Req.Test` stubs
+(`stub_authority!/1`); `validate!/4` records the events a validation
+would have, for tests that start from a valid document. Party data is the SDK's placeholder data, and certificates are
 generated (`test_certificate!/1`). Authority calls answer from `Req.Test`
 stubs set in `test_helper.exs`; no test reaches the authority. The SDK's
 signed samples are in `test/fixtures/sdk/`, signed with the SDK's dummy test
-certificate. `web_test/` covers the setup page against the real host.
+certificate. `web_test/` covers the setup, document list and page, PDF download, and
+reconciliation pages against the real host.

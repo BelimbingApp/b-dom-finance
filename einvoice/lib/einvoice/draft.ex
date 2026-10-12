@@ -5,7 +5,8 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
 
   The draft owns the shape every authority shares: the document's type and
   code number, its issue instant, currency and exchange rate, the buyer,
-  optional payment and billing-period details, and the lines. It derives
+  optional payment and billing-period details, the original document a
+  note corrects, and the lines. It derives
   each line's amounts and the document's totals, so a caller sends
   quantities, prices, discounts, and tax rates and never a total. The
   authority then checks codes and its own rules (`Authority.validate/3`).
@@ -28,6 +29,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     field(:billing_period_start, :date)
     field(:billing_period_end, :date)
     field(:billing_period_description, :string)
+    field(:original_document_id, :integer)
     embeds_one(:buyer, Party, on_replace: :update)
     embeds_many(:lines, Line, on_replace: :delete)
     # Derived from the lines.
@@ -54,7 +56,8 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
       :payment_terms,
       :billing_period_start,
       :billing_period_end,
-      :billing_period_description
+      :billing_period_description,
+      :original_document_id
     ])
     |> update_change(:code_number, &String.trim/1)
     |> put_default_issued_at(now)
@@ -64,6 +67,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     |> validate_length(:code_number, min: 1, max: 50)
     |> validate_format(:currency_code, ~r/\A[A-Z]{3}\z/)
     |> validate_number(:exchange_rate, greater_than: 0)
+    |> validate_number(:original_document_id, greater_than: 0)
     |> validate_length(:payment_terms, max: 300)
     |> validate_length(:billing_period_description, max: 50)
     |> validate_length(:lines, max: @max_lines)

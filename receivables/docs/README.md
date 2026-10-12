@@ -187,6 +187,12 @@ lines, tax codes and rates, totals, currency, reference, dates). An issued
 document never changes, so each is read once; a submission's own state
 belongs to that module.
 
+A document issued here has already posted its entry. `finance/einvoice`
+also posts a document to the ledger when the authority validates it (its
+"Ledger bridge"), so a bridge that submits receivables' documents through
+`Bilimbi.Finance.Einvoice` must keep that sale from being posted a second
+time.
+
 ## Database
 
 The migration `20261012214517` is `:bilimbi_only` and creates

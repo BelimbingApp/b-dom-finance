@@ -12,8 +12,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
   `InvoicingAPI`) yields a token that lives an hour; `TokenCache` keeps it
   per company, environment, and client ID, and a 401 drops it. The other
   calls are the API's own: submit documents, read a submission's status,
-  read a document's details, cancel a document, and validate a taxpayer's
-  TIN.
+  read a document's details, list the documents recently sent, cancel a
+  document, and validate a taxpayer's TIN.
 
   Results keep the authority's answer intact so a caller can store it as
   the record: `{:ok, %{status: http_status, body: decoded_body}}` for a 2xx
@@ -145,6 +145,30 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
       )
     end
   end
+
+  @doc """
+  The documents the taxpayer sent between `from` and `to` (at most 31 days
+  apart), one page at a time. Each entry names its `uuid`, `submissionUid`,
+  and `internalId`, the code number the submitter gave it.
+  """
+  @spec recent_documents(Scope.t(), pos_integer(), credentials(), keyword(), keyword()) ::
+          result()
+  def recent_documents(%Scope{} = scope, company_id, credentials, window, options \\ []) do
+    authorized(scope, company_id, credentials, "documents.recent", options,
+      method: :get,
+      url: "/api/v1.0/documents/recent",
+      params: [
+        pageNo: Keyword.get(options, :page, 1),
+        pageSize: Keyword.get(options, :page_size, 100),
+        submissionDateFrom: instant(Keyword.fetch!(window, :from)),
+        submissionDateTo: instant(Keyword.fetch!(window, :to)),
+        InvoiceDirection: "Sent"
+      ]
+    )
+  end
+
+  defp instant(%DateTime{} = value),
+    do: value |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
   @doc "Cancels an issued document with a reason of at most 300 characters."
   @spec cancel_document(
