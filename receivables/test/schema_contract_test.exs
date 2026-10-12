@@ -78,11 +78,18 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
       "INSERT INTO finance_receivables_document_tax_lines (tenant_id, company_id, document_id, tax_code_id, tax_code, tax_rate, taxable_amount, tax_amount, account_id) VALUES (1, 1, #{document_id}, 1, 'T', 10, 100, 10, 9)"
     end
 
-    issue = fn id, number ->
-      "UPDATE finance_receivables_documents SET status = 'issued', document_number = #{number}, document_reference = 'R-#{id}', due_date = '2026-10-31', party_name = 'Customer', ledger_entry_id = #{id}, ledger_entry_number = #{id}, issued_by_user_id = 1, issued_at = '2000-01-01' WHERE id = #{id}"
+    issue_to = fn id, number, account ->
+      "UPDATE finance_receivables_documents SET status = 'issued', document_number = #{number}, document_reference = 'R-#{id}', due_date = '2026-10-31', party_name = 'Customer', receivable_account_id = #{account}, ledger_entry_id = #{id}, ledger_entry_number = #{id}, issued_by_user_id = 1, issued_at = '2000-01-01' WHERE id = #{id}"
     end
 
+    issue = &issue_to.(&1, &2, 5)
+
     assert {:ok, _} = in_transaction.([draft.(1, "invoice", 1, "NULL"), line.(1), tax_line.(1)])
+
+    # An issued document records the receivable account it posted to.
+    assert_raise Postgrex.Error, ~r/finance_receivables_documents_issued/, fn ->
+      in_transaction.([issue_to.(1, 1, "NULL")])
+    end
 
     # A number other than the series' next is refused, and so are totals
     # that do not equal the lines.
@@ -125,6 +132,11 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
                line.(3),
                tax_line.(3)
              ])
+
+    # ... and posts to the receivable account its invoice recorded.
+    assert_raise Postgrex.Error, ~r/receivable account of its invoice/, fn ->
+      in_transaction.([issue_to.(3, 1, 6)])
+    end
 
     assert {:ok, _} = in_transaction.([issue.(3, 1)])
     assert %{rows: [[zero]]} = query!.("SELECT finance_receivables_outstanding(1)")
@@ -179,6 +191,29 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
           "UPDATE finance_receivables_customers SET code = 'C2'"
         ] do
       assert_raise Postgrex.Error, ~r/finance receivables keeps \w+ of/, fn -> query!.(sql) end
+    end
+
+    # The setup's change log is append-only, and the database stamps when.
+    assert {:ok, _} =
+             in_transaction.([
+               "INSERT INTO finance_receivables_setup_changes (tenant_id, company_id, field, old_value, new_value, changed_by_user_id, changed_at) VALUES (1, 1, 'receivable_account_id', NULL, 5, 1, '2000-01-01')"
+             ])
+
+    assert %{rows: [[true]]} =
+             query!.("SELECT changed_at > '2026-01-01' FROM finance_receivables_setup_changes")
+
+    for sql <- [
+          "UPDATE finance_receivables_setup_changes SET new_value = 6",
+          "DELETE FROM finance_receivables_setup_changes",
+          "TRUNCATE finance_receivables_setup_changes"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance receivables keeps/, fn -> query!.(sql) end
+    end
+
+    assert_raise Postgrex.Error, ~r/finance_receivables_setup_changes_field/, fn ->
+      query!.(
+        "INSERT INTO finance_receivables_setup_changes (tenant_id, company_id, field, new_value, changed_by_user_id, changed_at) VALUES (1, 1, 'other', 5, 1, now())"
+      )
     end
 
     # The database stamped the issue and record times it was handed.

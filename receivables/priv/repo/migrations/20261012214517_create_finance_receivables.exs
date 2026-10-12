@@ -1,8 +1,9 @@
 defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
   @moduledoc """
-  Receivables: each company's receivables setup, document series, tax codes,
-  customers, invoices and credit notes with their lines and tax lines, and
-  payments received with their allocations and reversals.
+  Receivables: each company's receivables setup and its change history,
+  document series, tax codes, customers, invoices and credit notes with their
+  lines and tax lines, and payments received with their allocations and
+  reversals.
 
   Bilimbi-only. Rows of one company reference each other through composite
   `(id, company_id)` foreign keys. Ledger accounts and entries are named by
@@ -18,7 +19,10 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
   than the invoice still owes. Payments, allocations, and payment reversals
   are append-only; a deferred constraint trigger refuses a commit in which
   a payment's allocations do not add up to its amount or settle an invoice
-  beyond what it owes. Nothing here is deleted: setups, series, tax codes,
+  beyond what it owes. An issued document records the receivable account it
+  posted to, and what settles it posts there, so changing the setup's account
+  never splits the subledger from the ledger; the setup's changes are kept in
+  an append-only log. Nothing here is deleted: setups, series, tax codes,
   and customers are deactivated, and a draft is discarded and kept.
   """
 
@@ -39,6 +43,26 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
            )
 
     create index(:finance_receivables_setups, [:tenant_id, :company_id])
+
+    create table(:finance_receivables_setup_changes, primary_key: false) do
+      add :id, :bigserial, primary_key: true
+      add :tenant_id, :bigint, null: false
+      add :company_id, :bigint, null: false
+      add :field, :string, size: 32, null: false
+      add :old_value, :bigint
+      add :new_value, :bigint, null: false
+      add :changed_by_user_id, :bigint, null: false
+      add :changed_by_impersonator_id, :bigint
+      add :changed_at, :utc_datetime_usec, null: false
+    end
+
+    create index(:finance_receivables_setup_changes, [:tenant_id, :company_id])
+
+    create constraint(
+             :finance_receivables_setup_changes,
+             :finance_receivables_setup_changes_field,
+             check: "field IN ('receivable_account_id', 'income_account_id')"
+           )
 
     create table(:finance_receivables_series, primary_key: false) do
       add :id, :bigserial, primary_key: true
@@ -173,6 +197,7 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
           null: false
 
       add :credited_document_id, :bigint
+      add :receivable_account_id, :bigint
       add :currency_code, :string, size: 3, null: false
       add :issue_date, :date
       add :due_date, :date
@@ -266,7 +291,7 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
              AND (status <> 'issued' OR (
                document_number > 0 AND document_reference IS NOT NULL
                AND issue_date IS NOT NULL AND (kind <> 'invoice' OR due_date IS NOT NULL)
-               AND total > 0 AND party_name IS NOT NULL
+               AND total > 0 AND party_name IS NOT NULL AND receivable_account_id IS NOT NULL
                AND ledger_entry_id IS NOT NULL AND ledger_entry_number IS NOT NULL
                AND issued_by_user_id IS NOT NULL AND issued_at IS NOT NULL))
              """
@@ -552,6 +577,7 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
     end
 
     for table <- [
+          :finance_receivables_setup_changes,
           :finance_receivables_payments,
           :finance_receivables_allocations,
           :finance_receivables_payment_reversals
@@ -642,6 +668,11 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
           IF credited.kind <> 'invoice' OR credited.status <> 'issued'
             OR credited.customer_id <> NEW.customer_id THEN
             RAISE EXCEPTION 'a credit note credits an issued invoice of the same customer'
+              USING ERRCODE = 'check_violation';
+          END IF;
+
+          IF NEW.receivable_account_id IS DISTINCT FROM credited.receivable_account_id THEN
+            RAISE EXCEPTION 'a credit note posts to the receivable account of its invoice'
               USING ERRCODE = 'check_violation';
           END IF;
 
@@ -783,6 +814,22 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
     """)
 
     execute("""
+    CREATE FUNCTION finance_receivables_setup_change_stamp() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.changed_at := clock_timestamp() AT TIME ZONE 'UTC';
+      RETURN NEW;
+    END
+    $$
+    """)
+
+    execute("""
+    CREATE TRIGGER finance_receivables_setup_changes_stamp
+      BEFORE INSERT ON finance_receivables_setup_changes
+      FOR EACH ROW EXECUTE FUNCTION finance_receivables_setup_change_stamp()
+    """)
+
+    execute("""
     CREATE FUNCTION finance_receivables_reversal_stamp() RETURNS trigger
     LANGUAGE plpgsql AS $$
     BEGIN
@@ -849,6 +896,7 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
     for function <- [
           "finance_receivables_check_payment()",
           "finance_receivables_reversal_stamp()",
+          "finance_receivables_setup_change_stamp()",
           "finance_receivables_check_allocation()",
           "finance_receivables_number_payment()",
           "finance_receivables_guard_draft_line()",
@@ -865,6 +913,7 @@ defmodule Bilimbi.Finance.Receivables.Migrations.CreateReceivables do
   defp tables do
     [
       :finance_receivables_setups,
+      :finance_receivables_setup_changes,
       :finance_receivables_series,
       :finance_receivables_tax_codes,
       :finance_receivables_customers,

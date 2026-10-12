@@ -11,9 +11,14 @@ defmodule Bilimbi.Finance.Receivables.Setup do
     timestamps(type: :naive_datetime)
   end
 
+  @accounts [:receivable_account_id, :income_account_id]
+
+  @doc "The setup's account fields, each logged when set or changed."
+  def accounts, do: @accounts
+
   def changeset(setup, attributes) do
     setup
-    |> cast(attributes, [:receivable_account_id, :income_account_id])
+    |> cast(attributes, @accounts)
     |> validate_required([
       :tenant_id,
       :company_id,

@@ -205,6 +205,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
 
   @tables [
     "finance_receivables_setups",
+    "finance_receivables_setup_changes",
     "finance_receivables_series",
     "finance_receivables_tax_codes",
     "finance_receivables_customers",
@@ -232,6 +233,16 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
       """
       CREATE UNIQUE INDEX finance_receivables_setups_company_unique
         ON finance_receivables_setups (company_id)
+      """,
+      """
+      CREATE TEMPORARY TABLE finance_receivables_setup_changes (
+        id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
+        field varchar(32) NOT NULL, old_value bigint, new_value bigint NOT NULL,
+        changed_by_user_id bigint NOT NULL, changed_by_impersonator_id bigint,
+        changed_at timestamp(6) NOT NULL,
+        CONSTRAINT finance_receivables_setup_changes_field
+          CHECK (field IN ('receivable_account_id', 'income_account_id'))
+      ) ON COMMIT PRESERVE ROWS
       """,
       """
       CREATE TEMPORARY TABLE finance_receivables_series (
@@ -307,6 +318,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
         id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
         kind varchar(16) NOT NULL, status varchar(16) NOT NULL,
         series_id bigint NOT NULL, customer_id bigint NOT NULL, credited_document_id bigint,
+        receivable_account_id bigint,
         currency_code varchar(3) NOT NULL, issue_date date, due_date date,
         description varchar(500),
         subtotal numeric(20, 4) NOT NULL, tax_total numeric(20, 4) NOT NULL,
@@ -340,7 +352,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
           AND (status <> 'issued' OR (
             document_number > 0 AND document_reference IS NOT NULL
             AND issue_date IS NOT NULL AND (kind <> 'invoice' OR due_date IS NOT NULL)
-            AND total > 0 AND party_name IS NOT NULL
+            AND total > 0 AND party_name IS NOT NULL AND receivable_account_id IS NOT NULL
             AND ledger_entry_id IS NOT NULL AND ledger_entry_number IS NOT NULL
             AND issued_by_user_id IS NOT NULL AND issued_at IS NOT NULL))),
         CONSTRAINT finance_receivables_documents_discarded CHECK (
@@ -576,6 +588,11 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
                 USING ERRCODE = 'check_violation';
             END IF;
 
+            IF NEW.receivable_account_id IS DISTINCT FROM credited.receivable_account_id THEN
+              RAISE EXCEPTION 'a credit note posts to the receivable account of its invoice'
+                USING ERRCODE = 'check_violation';
+            END IF;
+
             IF pg_temp.finance_receivables_outstanding(credited.id) < NEW.total THEN
               RAISE EXCEPTION 'credit note % exceeds what invoice % still owes', NEW.id, credited.id
                 USING ERRCODE = 'check_violation';
@@ -674,6 +691,15 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
       $$
       """,
       """
+      CREATE FUNCTION pg_temp.finance_receivables_setup_change_stamp() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        NEW.changed_at := clock_timestamp() AT TIME ZONE 'UTC';
+        RETURN NEW;
+      END
+      $$
+      """,
+      """
       CREATE FUNCTION pg_temp.finance_receivables_reversal_stamp() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
@@ -739,6 +765,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
 
     append_only =
       for table <- [
+            "finance_receivables_setup_changes",
             "finance_receivables_payments",
             "finance_receivables_allocations",
             "finance_receivables_payment_reversals"
@@ -785,6 +812,8 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
           "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_receivables_number_payment()",
         "CREATE TRIGGER finance_receivables_allocations_invoice BEFORE INSERT ON finance_receivables_allocations " <>
           "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_receivables_check_allocation()",
+        "CREATE TRIGGER finance_receivables_setup_changes_stamp BEFORE INSERT ON finance_receivables_setup_changes " <>
+          "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_receivables_setup_change_stamp()",
         "CREATE TRIGGER finance_receivables_payment_reversals_stamp BEFORE INSERT ON finance_receivables_payment_reversals " <>
           "FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_receivables_reversal_stamp()"
       ]

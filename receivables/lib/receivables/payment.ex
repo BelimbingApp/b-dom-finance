@@ -3,7 +3,7 @@ defmodule Bilimbi.Finance.Receivables.Payment do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Bilimbi.Finance.Receivables.{Allocation, PaymentReversal}
+  alias Bilimbi.Finance.Receivables.{Allocation, PaymentReversal, Text}
 
   # The column is numeric(20, 4): sixteen digits before the point.
   @amount_limit Decimal.new("1E16")
@@ -42,8 +42,8 @@ defmodule Bilimbi.Finance.Receivables.Payment do
       :reference,
       :description
     ])
-    |> update_change(:reference, &String.trim/1)
-    |> update_change(:description, &String.trim/1)
+    |> update_change(:reference, &Text.trim/1)
+    |> update_change(:description, &Text.trim/1)
     |> validate_required([
       :tenant_id,
       :company_id,

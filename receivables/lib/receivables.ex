@@ -90,6 +90,13 @@ defmodule Bilimbi.Finance.Receivables do
   asset account, and `income_account_id`, the income account a document
   line posts to when it names none. Reads the chart through the ledger, so
   it also needs `finance.ledger.view`.
+
+  A new `receivable_account_id` reaches only documents issued after it: an
+  issued invoice records the account it was issued against, a credit note
+  the account of the invoice it credits, and every payment against an
+  invoice, and its reversal, posts to that recorded account. So the ledger's
+  balance of each receivable account stays the sum of what its documents
+  owe, however the setup changes. `list_setup_changes/3` keeps the history.
   """
   @spec configure(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | Changeset.t()}
@@ -97,6 +104,21 @@ defmodule Bilimbi.Finance.Receivables do
     write(scope, company_id, @manage_setup, fn ->
       Configuration.configure(scope, company_id, attributes)
     end)
+  end
+
+  @doc """
+  The history of the setup's accounts, oldest first, one entry per account
+  set or changed: `%{id, field, old_value, new_value, changed_by_user_id,
+  changed_by_impersonator_id, changed_at}` (`old_value` is nil when first
+  set; the database stamps `changed_at`). Options: `limit` (1 to 500,
+  default 100) and `after`, the last ID already read. A malformed option is
+  `{:error, :invalid_option}`.
+  """
+  @spec list_setup_changes(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def list_setup_changes(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         do: Configuration.list_setup_changes(scope, company_id, options)
   end
 
   @doc "The company's document and payment series, ordered by code."
@@ -276,10 +298,11 @@ defmodule Bilimbi.Finance.Receivables do
   the document next in its series, copies the customer's party fields onto
   it, and posts its entry through `Bilimbi.Finance.Ledger.post_entry/3`
   (so it also needs `finance.ledger.entries.post`): an invoice debits the
-  receivable account with its total and credits each income account and
-  each tax code's account; a credit note posts the reverse. The document
-  records the entry's ID and number and who issued it; the database stamps
-  when.
+  setup's receivable account with its total and credits each income account
+  and each tax code's account; a credit note posts the reverse, against the
+  receivable account its invoice recorded. The document records that
+  account (`receivable_account_id`), the entry's ID and number, and who
+  issued it; the database stamps when.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -347,8 +370,9 @@ defmodule Bilimbi.Finance.Receivables do
   it owes. The allocations add up to the amount; a payment may settle an
   invoice in part. It is numbered next in its series and posted through
   `Bilimbi.Finance.Ledger.post_entry/3` (so it also needs
-  `finance.ledger.entries.post`), debiting the deposit account and
-  crediting the receivable account.
+  `finance.ledger.entries.post`), debiting the deposit account and crediting
+  each allocated invoice's recorded receivable account with the amount
+  allocated to it.
   """
   @spec record_payment(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | context_refusal() | Changeset.t()}

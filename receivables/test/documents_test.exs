@@ -97,6 +97,9 @@ defmodule Bilimbi.Finance.Receivables.DocumentsTest do
       assert {:ok, %{description: "Changed", lines: [_, _]}} =
                Receivables.update_draft(operator, 73, draft.id, %{description: "Changed"})
 
+      assert {:ok, %{description: nil, lines: [_, _]}} =
+               Receivables.update_draft(operator, 73, draft.id, %{description: ""})
+
       assert {:ok, %{lines: [%{description: "Replaced"}], total: total}} =
                Receivables.update_draft(operator, 73, draft.id, %{
                  lines: [%{description: "Replaced", quantity: 1, unit_price: "7.5"}]

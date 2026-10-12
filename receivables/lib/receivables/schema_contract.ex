@@ -35,6 +35,32 @@ defmodule Bilimbi.Finance.Receivables.SchemaContract do
         checks: %{}
       },
       %{
+        name: "finance_receivables_setup_changes",
+        columns:
+          owned_columns("finance_receivables_setup_changes")
+          |> Map.merge(%{
+            "field" => column({:varchar, 32}, false),
+            "old_value" => column(:bigint, true),
+            "new_value" => column(:bigint, false),
+            "changed_by_user_id" => column(:bigint, false),
+            "changed_by_impersonator_id" => column(:bigint, true),
+            "changed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_receivables_setup_changes_pkey" => index(["id"], true),
+          "finance_receivables_setup_changes_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{},
+        checks: %{
+          "finance_receivables_setup_changes_field" =>
+            check(
+              "(field)::text = ANY ((ARRAY['receivable_account_id'::character varying, " <>
+                "'income_account_id'::character varying])::text[])"
+            )
+        }
+      },
+      %{
         name: "finance_receivables_series",
         columns:
           owned_columns("finance_receivables_series")
@@ -133,6 +159,7 @@ defmodule Bilimbi.Finance.Receivables.SchemaContract do
             "series_id" => column(:bigint, false),
             "customer_id" => column(:bigint, false),
             "credited_document_id" => column(:bigint, true),
+            "receivable_account_id" => column(:bigint, true),
             "currency_code" => column({:varchar, 3}, false),
             "issue_date" => column(:date, true),
             "due_date" => column(:date, true),
@@ -213,6 +240,7 @@ defmodule Bilimbi.Finance.Receivables.SchemaContract do
                 "document_reference IS NOT NULL AND issue_date IS NOT NULL AND " <>
                 "((kind)::text <> 'invoice'::text OR due_date IS NOT NULL) AND " <>
                 "total > (0)::numeric AND party_name IS NOT NULL AND " <>
+                "receivable_account_id IS NOT NULL AND " <>
                 "ledger_entry_id IS NOT NULL AND ledger_entry_number IS NOT NULL AND " <>
                 "issued_by_user_id IS NOT NULL AND issued_at IS NOT NULL))"
             ),

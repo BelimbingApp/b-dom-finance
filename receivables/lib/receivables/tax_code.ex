@@ -3,6 +3,8 @@ defmodule Bilimbi.Finance.Receivables.TaxCode do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Bilimbi.Finance.Receivables.Text
+
   # The column is numeric(9, 4): a percentage below 1000.
   @rate_limit Decimal.new(1000)
 
@@ -20,7 +22,7 @@ defmodule Bilimbi.Finance.Receivables.TaxCode do
   def create_changeset(tax_code, attributes) do
     tax_code
     |> cast(attributes, [:code, :name, :rate, :account_id, :active])
-    |> update_change(:code, &String.trim/1)
+    |> update_change(:code, &Text.trim/1)
     |> validate_required([:tenant_id, :company_id, :code, :rate])
     |> validate_length(:code, min: 1, max: 50)
     |> validate_number(:rate, greater_than_or_equal_to: 0, less_than: @rate_limit)
@@ -43,7 +45,7 @@ defmodule Bilimbi.Finance.Receivables.TaxCode do
 
   defp details(changeset) do
     changeset
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, &Text.trim/1)
     |> validate_required([:name, :account_id, :active])
     |> validate_length(:name, min: 1, max: 200)
   end

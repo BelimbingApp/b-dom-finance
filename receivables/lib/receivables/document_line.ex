@@ -3,6 +3,8 @@ defmodule Bilimbi.Finance.Receivables.DocumentLine do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Bilimbi.Finance.Receivables.Text
+
   # The columns are numeric(20, 4): sixteen digits before the point.
   @amount_limit Decimal.new("1E16")
 
@@ -29,7 +31,7 @@ defmodule Bilimbi.Finance.Receivables.DocumentLine do
   def changeset(line, attributes, default_account_id) do
     line
     |> cast(attributes, [:description, :quantity, :unit_price, :account_id, :tax_code_id])
-    |> update_change(:description, &String.trim/1)
+    |> update_change(:description, &Text.trim/1)
     |> put_default(:account_id, default_account_id)
     |> validate_required([:description, :quantity, :unit_price, :account_id])
     |> validate_length(:description, min: 1, max: 500)

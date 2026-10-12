@@ -3,7 +3,7 @@ defmodule Bilimbi.Finance.Receivables.Document do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Bilimbi.Finance.Receivables.{DocumentLine, TaxLine}
+  alias Bilimbi.Finance.Receivables.{DocumentLine, TaxLine, Text}
 
   @kinds ~w(invoice credit_note)
 
@@ -15,6 +15,7 @@ defmodule Bilimbi.Finance.Receivables.Document do
     field(:series_id, :integer)
     field(:customer_id, :integer)
     field(:credited_document_id, :integer)
+    field(:receivable_account_id, :integer)
     field(:currency_code, :string)
     field(:issue_date, :date)
     field(:due_date, :date)
@@ -55,7 +56,7 @@ defmodule Bilimbi.Finance.Receivables.Document do
   def create_changeset(document, attributes) do
     document
     |> cast(attributes, [:kind])
-    |> update_change(:kind, &String.trim/1)
+    |> update_change(:kind, &Text.trim/1)
     |> validate_required([:kind])
     |> validate_inclusion(:kind, @kinds)
     |> draft_changeset(attributes)
@@ -73,7 +74,7 @@ defmodule Bilimbi.Finance.Receivables.Document do
 
     changeset
     |> cast(attributes, fields)
-    |> update_change(:description, &String.trim/1)
+    |> update_change(:description, &Text.trim/1)
     |> validate_required([
       :tenant_id,
       :company_id,

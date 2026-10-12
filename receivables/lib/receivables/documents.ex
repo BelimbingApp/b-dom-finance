@@ -222,7 +222,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     with {:ok, context} <- Configuration.context(scope, company_id),
          {:ok, draft} <- draft(scope, company_id, document_id),
          {:ok, changeset} <- issue_changeset(scope, company_id, context, draft),
-         {:ok, entry} <- Ledger.post_entry(scope, company_id, entry(changeset, context)) do
+         {:ok, entry} <- Ledger.post_entry(scope, company_id, entry(changeset)) do
       changeset
       |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
       |> Repo.update()
@@ -242,6 +242,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
         status: "issued",
         document_number: number,
         document_reference: Series.reference(series, number),
+        receivable_account_id: receivable_account_id(scope, company_id, context, draft),
         issued_by_user_id: user_id,
         issued_by_impersonator_id: impersonator_id
       )
@@ -254,6 +255,16 @@ defmodule Bilimbi.Finance.Receivables.Documents do
 
     if changeset.valid?, do: {:ok, changeset}, else: {:error, changeset}
   end
+
+  # An invoice records the receivable account the setup names now; a credit
+  # note posts to the one its invoice recorded. Later postings against a
+  # document use its recorded account, whatever the setup becomes.
+  defp receivable_account_id(scope, company_id, _context, %Document{kind: "credit_note"} = draft) do
+    Records.get(Document, scope, company_id, draft.credited_document_id).receivable_account_id
+  end
+
+  defp receivable_account_id(_scope, _company_id, context, %Document{}),
+    do: context.setup.receivable_account_id
 
   defp next_number(scope, company_id, series_id) do
     Records.query(Document, scope, company_id)
@@ -304,11 +315,10 @@ defmodule Bilimbi.Finance.Receivables.Documents do
 
   # Accounts may have been deactivated since the draft was saved.
   defp validate_posting_accounts(changeset, context) do
-    %{accounts: accounts, setup: setup} = context
     draft = changeset.data
 
     checks =
-      [{"receivable account", setup.receivable_account_id, "asset"}] ++
+      [{"receivable account", Changeset.get_field(changeset, :receivable_account_id), "asset"}] ++
         Enum.map(draft.lines, &{"line #{&1.line_number} account", &1.account_id, "income"}) ++
         Enum.map(
           draft.tax_lines,
@@ -316,7 +326,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
         )
 
     Enum.reduce(checks, changeset, fn {label, id, type}, acc ->
-      case LedgerAccounts.problem(accounts, id, type) do
+      case LedgerAccounts.problem(context.accounts, id, type) do
         nil -> acc
         message -> Changeset.add_error(acc, :lines, "#{label} #{message}")
       end
@@ -351,7 +361,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
 
   # An invoice debits the receivable and credits income and tax; a credit
   # note posts the mirror image.
-  defp entry(changeset, %{setup: setup}) do
+  defp entry(changeset) do
     document = Changeset.apply_changes(changeset)
     {receivable_side, other_side} = sides(document.kind)
 
@@ -359,7 +369,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     tax = sum_by_account(document.tax_lines, :tax_amount)
 
     lines =
-      [%{receivable_side => document.total, account_id: setup.receivable_account_id}] ++
+      [%{receivable_side => document.total, account_id: document.receivable_account_id}] ++
         Enum.map(income ++ tax, fn {account_id, amount} ->
           %{other_side => amount, account_id: account_id}
         end)
@@ -494,6 +504,7 @@ defmodule Bilimbi.Finance.Receivables.Documents do
     :series_id,
     :customer_id,
     :credited_document_id,
+    :receivable_account_id,
     :currency_code,
     :issue_date,
     :due_date,

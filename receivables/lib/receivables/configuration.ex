@@ -8,7 +8,15 @@ defmodule Bilimbi.Finance.Receivables.Configuration do
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Finance.Ledger
-  alias Bilimbi.Finance.Receivables.{LedgerAccounts, Records, Series, Setup, TaxCode}
+
+  alias Bilimbi.Finance.Receivables.{
+    LedgerAccounts,
+    Records,
+    Series,
+    Setup,
+    SetupChange,
+    TaxCode
+  }
 
   @doc """
   What every document and payment write needs: the ledger book (its
@@ -36,15 +44,60 @@ defmodule Bilimbi.Finance.Receivables.Configuration do
     Repo.one(Records.query(Setup, scope, company_id))
   end
 
+  # Documents and payments post to the accounts they recorded, so a new
+  # setup account only reaches later documents; every account set or
+  # changed is logged with who changed it.
   def configure(scope, company_id, attributes) do
     with {:ok, accounts} <- LedgerAccounts.fetch(scope, company_id) do
-      (setup(scope, company_id) ||
-         %Setup{tenant_id: Scope.tenant_id(scope), company_id: company_id})
-      |> Setup.changeset(attributes)
-      |> LedgerAccounts.validate(accounts, :receivable_account_id, "asset")
-      |> LedgerAccounts.validate(accounts, :income_account_id, "income")
-      |> Repo.insert_or_update()
-      |> view(&setup_view/1)
+      changeset =
+        (setup(scope, company_id) ||
+           %Setup{tenant_id: Scope.tenant_id(scope), company_id: company_id})
+        |> Setup.changeset(attributes)
+        |> LedgerAccounts.validate(accounts, :receivable_account_id, "asset")
+        |> LedgerAccounts.validate(accounts, :income_account_id, "income")
+
+      with {:ok, setup} <- Repo.insert_or_update(changeset) do
+        log_changes(scope, changeset)
+        {:ok, setup_view(setup)}
+      end
+    end
+  end
+
+  defp log_changes(scope, changeset) do
+    {user_id, impersonator_id} = Records.actor_ids(scope)
+
+    for field <- Setup.accounts(), Map.has_key?(changeset.changes, field) do
+      Repo.insert!(%SetupChange{
+        tenant_id: changeset.data.tenant_id,
+        company_id: changeset.data.company_id,
+        field: Atom.to_string(field),
+        old_value: Map.fetch!(changeset.data, field),
+        new_value: Map.fetch!(changeset.changes, field),
+        changed_by_user_id: user_id,
+        changed_by_impersonator_id: impersonator_id
+      })
+    end
+  end
+
+  def list_setup_changes(scope, company_id, options) do
+    with {:ok, limit, cursor} <- Records.page_options(options) do
+      changes =
+        Records.query(SetupChange, scope, company_id)
+        |> Records.page(limit, cursor)
+        |> Repo.all()
+        |> Enum.map(
+          &Map.take(&1, [
+            :id,
+            :field,
+            :old_value,
+            :new_value,
+            :changed_by_user_id,
+            :changed_by_impersonator_id,
+            :changed_at
+          ])
+        )
+
+      {:ok, changes}
     end
   end
 

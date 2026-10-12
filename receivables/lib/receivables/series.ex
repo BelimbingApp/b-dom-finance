@@ -3,6 +3,8 @@ defmodule Bilimbi.Finance.Receivables.Series do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Bilimbi.Finance.Receivables.Text
+
   @kinds ~w(invoice credit_note payment)
 
   schema "finance_receivables_series" do
@@ -27,8 +29,8 @@ defmodule Bilimbi.Finance.Receivables.Series do
   def create_changeset(series, attributes) do
     series
     |> cast(attributes, [:code, :name, :kind, :prefix, :number_width, :active])
-    |> update_change(:code, &String.trim/1)
-    |> update_change(:kind, &String.trim/1)
+    |> update_change(:code, &Text.trim/1)
+    |> update_change(:kind, &Text.trim/1)
     |> put_blank_prefix(attributes)
     |> validate_required([:tenant_id, :company_id, :code, :kind, :number_width])
     |> validate_length(:code, min: 1, max: 50)
@@ -58,7 +60,7 @@ defmodule Bilimbi.Finance.Receivables.Series do
 
   defp details(changeset) do
     changeset
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, &Text.trim/1)
     |> validate_required([:name, :active])
     |> validate_length(:name, min: 1, max: 200)
   end

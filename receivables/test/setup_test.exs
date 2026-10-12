@@ -32,6 +32,47 @@ defmodule Bilimbi.Finance.Receivables.SetupTest do
       assert other_id == other.id
     end
 
+    test "keeps a history of every account set or changed", %{operator: operator} = context do
+      %{receivable: receivable, income: income, other_income: other} = context.accounts
+      assert {:ok, []} = Receivables.list_setup_changes(operator, 73)
+
+      attributes = %{receivable_account_id: receivable.id, income_account_id: income.id}
+      assert {:ok, _} = Receivables.configure(operator, 73, attributes)
+      assert {:ok, _} = Receivables.configure(operator, 73, attributes)
+      assert {:ok, _} = Receivables.configure(operator, 73, %{income_account_id: other.id})
+
+      assert {:ok, [first, second, third] = changes} =
+               Receivables.list_setup_changes(operator, 73)
+
+      assert [
+               {"receivable_account_id", nil, receivable.id},
+               {"income_account_id", nil, income.id},
+               {"income_account_id", income.id, other.id}
+             ] == Enum.map(changes, &{&1.field, &1.old_value, &1.new_value})
+
+      assert %{changed_by_user_id: 91, changed_by_impersonator_id: nil, changed_at: %DateTime{}} =
+               third
+
+      assert {:ok, [^third]} = Receivables.list_setup_changes(operator, 73, after: second.id)
+      assert {:ok, [^first]} = Receivables.list_setup_changes(operator, 73, limit: 1)
+      assert {:error, :invalid_option} = Receivables.list_setup_changes(operator, 73, limit: 0)
+
+      assert {:error, changeset} =
+               Receivables.configure(operator, 73, %{receivable_account_id: other.id})
+
+      assert %{receivable_account_id: [_]} = errors_on(changeset)
+      assert {:ok, ^changes} = Receivables.list_setup_changes(operator, 73)
+
+      for sql <- [
+            "UPDATE finance_receivables_setup_changes SET new_value = 1",
+            "DELETE FROM finance_receivables_setup_changes"
+          ] do
+        assert_raise Postgrex.Error, ~r/finance receivables keeps/, fn ->
+          SQL.query!(Repo, sql, [])
+        end
+      end
+    end
+
     test "refuses accounts of the wrong type, inactive, or of another company", context do
       %{operator: operator, first_scope: system, accounts: accounts} = context
 
@@ -106,6 +147,9 @@ defmodule Bilimbi.Finance.Receivables.SetupTest do
       assert {:error, :series_not_found} =
                Receivables.update_series(operator, 73, -1, %{name: "x"})
 
+      assert {:error, changeset} = Receivables.update_series(operator, 73, series.id, %{name: ""})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+
       assert_raise Postgrex.Error, ~r/finance receivables keeps prefix/, fn ->
         SQL.query!(Repo, "UPDATE finance_receivables_series SET prefix = 'Z-'", [])
       end
@@ -154,6 +198,11 @@ defmodule Bilimbi.Finance.Receivables.SetupTest do
                })
 
       assert %{account_id: ["must be a ledger liability account"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Receivables.update_tax_code(operator, 73, tax_code.id, %{name: ""})
+
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
 
       for rate <- ["-1", "1000", "1.00001"] do
         assert {:error, changeset} =
@@ -209,6 +258,28 @@ defmodule Bilimbi.Finance.Receivables.SetupTest do
       assert_raise Postgrex.Error, ~r/finance receivables keeps/, fn ->
         SQL.query!(Repo, "DELETE FROM finance_receivables_customers", [])
       end
+    end
+
+    test "clear an optional field, but not a required one", %{operator: operator} do
+      assert {:ok, customer} =
+               Receivables.create_customer(operator, 73, %{
+                 code: "C1",
+                 name: "A Customer",
+                 email: "a@example.test",
+                 country_iso: "XX"
+               })
+
+      assert {:ok, %{email: nil, country_iso: nil, name: "A Customer"}} =
+               Receivables.update_customer(operator, 73, customer.id, %{
+                 email: "",
+                 country_iso: nil
+               })
+
+      assert {:error, changeset} =
+               Receivables.update_customer(operator, 73, customer.id, %{name: ""})
+
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+      assert {:ok, %{name: "A Customer"}} = Receivables.get_customer(operator, 73, customer.id)
     end
   end
 

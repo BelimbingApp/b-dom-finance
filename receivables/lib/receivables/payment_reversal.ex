@@ -3,6 +3,8 @@ defmodule Bilimbi.Finance.Receivables.PaymentReversal do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Bilimbi.Finance.Receivables.Text
+
   schema "finance_receivables_payment_reversals" do
     field(:tenant_id, :integer)
     field(:company_id, :integer)
@@ -20,7 +22,7 @@ defmodule Bilimbi.Finance.Receivables.PaymentReversal do
   def changeset(reversal, attributes) do
     reversal
     |> cast(attributes, [:reversal_date, :reason])
-    |> update_change(:reason, &String.trim/1)
+    |> update_change(:reason, &Text.trim/1)
     |> validate_required([:reversal_date, :reason])
     |> validate_length(:reason, min: 1, max: 500)
     |> unique_constraint(:payment_id, name: :finance_receivables_payment_reversals_payment_unique)

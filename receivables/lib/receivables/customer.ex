@@ -3,6 +3,8 @@ defmodule Bilimbi.Finance.Receivables.Customer do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Bilimbi.Finance.Receivables.Text
+
   # The party fields a document snapshots when it is issued. The address
   # fields follow Core Address's names.
   @party_fields [
@@ -61,7 +63,7 @@ defmodule Bilimbi.Finance.Receivables.Customer do
   def create_changeset(customer, attributes) do
     customer
     |> cast(attributes, [:code | details_fields()])
-    |> update_change(:code, &String.trim/1)
+    |> update_change(:code, &Text.trim/1)
     |> validate_required([:tenant_id, :company_id, :code])
     |> validate_length(:code, min: 1, max: 50)
     |> details()
@@ -81,11 +83,11 @@ defmodule Bilimbi.Finance.Receivables.Customer do
   defp details(changeset) do
     changeset =
       Enum.reduce(@party_fields, changeset, fn field, acc ->
-        update_change(acc, field, &String.trim/1)
+        update_change(acc, field, &Text.trim/1)
       end)
 
     changeset
-    |> update_change(:country_iso, &String.upcase/1)
+    |> update_change(:country_iso, &Text.upcase/1)
     |> validate_required([:name, :payment_terms_days, :active])
     |> validate_length(:name, min: 1)
     |> validate_lengths()

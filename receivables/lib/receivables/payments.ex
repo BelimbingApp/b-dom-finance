@@ -29,7 +29,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
   """
   def record(scope, company_id, attributes) do
     with {:ok, context} <- Configuration.context(scope, company_id) do
-      %{book: book, setup: setup, accounts: accounts} = context
+      %{book: book, accounts: accounts} = context
       {user_id, impersonator_id} = Records.actor_ids(scope)
 
       changeset =
@@ -48,7 +48,7 @@ defmodule Bilimbi.Finance.Receivables.Payments do
 
       with {:ok, changeset} <- valid(changeset),
            {:ok, entry} <-
-             Ledger.post_entry(scope, company_id, entry(changeset, setup, scope, company_id)) do
+             Ledger.post_entry(scope, company_id, entry(changeset, scope, company_id)) do
         changeset
         |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
         |> Repo.insert()
@@ -216,18 +216,34 @@ defmodule Bilimbi.Finance.Receivables.Payments do
     do:
       Enum.reduce(allocations, Decimal.new(0), &Decimal.add(Changeset.get_field(&1, :amount), &2))
 
-  defp entry(changeset, setup, scope, company_id) do
+  # The deposit account is debited the whole amount; each invoice's
+  # allocation credits the receivable account that invoice recorded when it
+  # was issued, whatever the setup names now.
+  defp entry(changeset, scope, company_id) do
     payment = Changeset.apply_changes(changeset)
     customer = Records.get(Customer, scope, company_id, payment.customer_id)
+    document_ids = Enum.map(payment.allocations, & &1.document_id)
+
+    receivable_accounts =
+      Records.query(Document, scope, company_id)
+      |> where([d], d.id in ^document_ids)
+      |> select([d], {d.id, d.receivable_account_id})
+      |> Repo.all()
+      |> Map.new()
+
+    credits =
+      payment.allocations
+      |> Enum.group_by(&Map.fetch!(receivable_accounts, &1.document_id), & &1.amount)
+      |> Enum.map(fn {account_id, amounts} ->
+        %{account_id: account_id, credit: Enum.reduce(amounts, &Decimal.add/2)}
+      end)
+      |> Enum.sort_by(& &1.account_id)
 
     %{
       entry_date: payment.payment_date,
       description: "Payment #{payment.payment_reference} from #{customer.name}",
       reference: payment.payment_reference,
-      lines: [
-        %{account_id: payment.deposit_account_id, debit: payment.amount},
-        %{account_id: setup.receivable_account_id, credit: payment.amount}
-      ]
+      lines: [%{account_id: payment.deposit_account_id, debit: payment.amount} | credits]
     }
   end
 

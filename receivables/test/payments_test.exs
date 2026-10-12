@@ -232,6 +232,68 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
     end
   end
 
+  describe "after the setup's receivable account changes" do
+    test "a credit note, payment, and reversal post to each invoice's recorded account",
+         context do
+      %{operator: operator, accounts: accounts, first: first, second: second} = context
+      old = accounts.receivable.id
+
+      {:ok, new} =
+        Ledger.create_account(operator, 73, %{
+          code: "1150",
+          name: "Second receivable",
+          account_type: "asset"
+        })
+
+      assert {:ok, %{receivable_account_id: new_id}} =
+               Receivables.configure(operator, 73, %{receivable_account_id: new.id})
+
+      assert new_id == new.id
+      third = issue_invoice!(context, "70")
+      assert {first.receivable_account_id, third.receivable_account_id} == {old, new.id}
+
+      {:ok, draft} =
+        Receivables.create_draft(operator, 73, %{
+          kind: "credit_note",
+          series_id: context.credit_series.id,
+          customer_id: context.customer.id,
+          credited_document_id: first.id,
+          issue_date: ~D[2026-10-05],
+          lines: [%{description: "Credit", quantity: "1", unit_price: "10"}]
+        })
+
+      assert {:ok, %{receivable_account_id: ^old, ledger_entry_id: credit_entry_id}} =
+               Receivables.issue_document(operator, 73, draft.id)
+
+      assert [%{account_id: ^old}] = credited_lines(operator, credit_entry_id)
+
+      assert {:ok, payment} =
+               pay(context, "110", [
+                 %{document_id: first.id, amount: "90"},
+                 %{document_id: third.id, amount: "20"}
+               ])
+
+      credits = credited_lines(operator, payment.ledger_entry_id)
+      assert Enum.map(credits, & &1.account_id) == Enum.sort([old, new.id])
+      assert credited(credits, old) == "90.00"
+      assert credited(credits, new.id) == "20.00"
+      assert owed(context, first) == "0.00"
+      assert owed(context, third) == "50.00"
+
+      # What is owed on each account's invoices is that account's balance.
+      assert receivable_balances(context, [old, new.id]) == ["50.00", "50.00"]
+
+      assert {:ok, _} =
+               Receivables.reverse_payment(operator, 73, payment.id, %{
+                 reversal_date: ~D[2026-10-15],
+                 reason: "Returned by the bank"
+               })
+
+      assert receivable_balances(context, [old, new.id]) == ["140.00", "70.00"]
+      assert owed(context, second) == "50.00"
+    end
+  end
+
   test "lists payments by customer and pages by ID", context do
     %{operator: operator} = context
     {:ok, first} = pay(context, "10", [%{document_id: context.first.id, amount: "10"}])
@@ -274,6 +336,40 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
     {:ok, invoice} = Receivables.issue_document(context.operator, 73, draft.id)
     invoice
   end
+
+  defp credited_lines(operator, entry_id) do
+    {:ok, entry} = Ledger.get_entry(operator, 73, entry_id)
+    Enum.filter(entry.lines, &Decimal.gt?(&1.credit, 0))
+  end
+
+  defp credited(lines, account_id) do
+    lines |> Enum.find(&(&1.account_id == account_id)) |> Map.fetch!(:credit) |> money()
+  end
+
+  # The accounts' ledger balances, after checking that the aged receivables
+  # report adds up to them.
+  defp receivable_balances(context, account_ids) do
+    %{operator: operator} = context
+    {:ok, report} = Receivables.aged_receivables(operator, 73, ~D[2026-10-31])
+
+    {:ok, trial} =
+      Ledger.trial_balance(operator, 73, report.as_of,
+        through_entry_number: report.through_entry_number
+      )
+
+    balances =
+      for id <- account_ids do
+        case Enum.find(trial.rows, &(&1.id == id)) do
+          nil -> Decimal.new(0)
+          row -> Decimal.sub(row.debit_balance, row.credit_balance)
+        end
+      end
+
+    assert Decimal.equal?(Enum.reduce(balances, &Decimal.add/2), report.total)
+    Enum.map(balances, &money/1)
+  end
+
+  defp money(amount), do: amount |> Decimal.round(2) |> Decimal.to_string()
 
   defp owed(context, invoice) do
     {:ok, %{outstanding: outstanding}} =

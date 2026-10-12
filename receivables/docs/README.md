@@ -14,7 +14,8 @@ maps; the schemas are private.
 | Function | Capability | Does |
 | --- | --- | --- |
 | `get_setup/2` | `finance.receivables.view` | The receivable account and default income account |
-| `configure/3` | `finance.receivables.setup.manage` | Sets `receivable_account_id` (asset) and `income_account_id` (income) |
+| `configure/3` | `finance.receivables.setup.manage` | Sets `receivable_account_id` (asset) and `income_account_id` (income); each account set or changed is logged |
+| `list_setup_changes/3` | view | The setup's append-only history: field, old and new value, who, when |
 | `list_series/2`, `create_series/3`, `update_series/4` | view; `setup.manage` | Numbering series: `code`, `name`, `kind`, `prefix`, `number_width`, `active` |
 | `list_tax_codes/2`, `create_tax_code/3`, `update_tax_code/4` | view; `setup.manage` | Tax codes: `code`, `name`, `rate` (percent), `account_id` (liability), `active` |
 | `list_customers/2`, `get_customer/3`, `create_customer/3`, `update_customer/4` | view; `customers.manage` | Customers and their party fields |
@@ -53,7 +54,10 @@ Nothing about a company's tax regime, chart, numbering, or currency is in
 code; each is the company's data:
 
 - **Setup.** The receivable control account (an asset) and the income
-  account a line posts to when it names none.
+  account a line posts to when it names none. Changing either affects only
+  documents and lines made afterwards (see Payments), and every account set
+  or changed is kept in an append-only history with who changed it and when
+  (`list_setup_changes/3`).
 - **Series.** Each numbers one kind of record: `invoice`, `credit_note`, or
   `payment` (`series_kinds/0`). Its reference for a number is its `prefix`
   and the number zero-padded to `number_width` digits (`"INV-"` and 4 give
@@ -113,7 +117,17 @@ invoices. The allocations add up to the payment, each invoice appears once,
 each is dated on or before the payment, and none is allocated more than it
 owes, so an invoice can be settled in part and by several payments. The
 payment is numbered next in its payment series and posted through the
-ledger, debiting the deposit account and crediting the receivable account.
+ledger, debiting the deposit account the whole amount and crediting each
+allocated invoice's receivable account with the amount allocated to it.
+
+The receivable account is recorded, not looked up: an issued invoice
+records the setup's receivable account (`receivable_account_id`), a credit
+note the account of the invoice it credits, and a payment, its allocations,
+and its reversal post to the account of each invoice they settle. Changing
+the setup's account later therefore only affects new invoices, and each
+receivable account's ledger balance stays what its own documents owe. The
+line income accounts, tax line accounts, and a payment's deposit account are
+recorded on their own rows in the same way.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a
 mistaken or returned payment once, on a date not before it and for a stated
@@ -158,7 +172,7 @@ belongs to that module.
 ## Database
 
 The migration `20261012214517` is `:bilimbi_only` and creates
-`finance_receivables_setups`, `_series`, `_tax_codes`, `_customers`,
+`finance_receivables_setups`, `_setup_changes`, `_series`, `_tax_codes`, `_customers`,
 `_documents`, `_document_lines`, `_document_tax_lines`, `_payments`,
 `_allocations`, and `_payment_reversals`. Ledger accounts and entries are
 named by ID without a foreign key: those tables are the ledger's.
@@ -180,8 +194,10 @@ break them:
   of the payment's customer; a deferred constraint trigger refuses a commit
   in which a payment's allocations do not equal its amount or leave an
   invoice owing less than nothing;
-- payments, allocations, and reversals are append-only; one reversal per
-  payment;
+- an issued document records its receivable account, and a credit note's
+  is its invoice's;
+- setup changes (the stamped `changed_at` included), payments, allocations,
+  and reversals are append-only; one reversal per payment;
 - triggers refuse deleting any row (setups, series, tax codes, customers,
   documents) and TRUNCATE of every table, and keep a series' code, kind,
   prefix, and width, a tax code's code and rate, and a customer's code.
@@ -201,7 +217,10 @@ sales ledger is held to. What this slice covers:
   invoice, credit note, payment, and payment reversal posts one balanced
   ledger entry in the same transaction as the record itself, so the
   receivable account and the documents cannot drift apart through this
-  module, and the aged receivables reconcile to the trial balance.
+  module, and the aged receivables reconcile to the trial balance. Because
+  every document posts, and is settled, against the receivable account it
+  recorded, they still reconcile, per account, after the setup's account
+  changes.
 - **Sequential numbering.** Invoices, credit notes, and payments are
   numbered per series 1, 2, 3, ... in issue order; the database refuses a
   number that is not the next, a refused issue takes no number, and drafts
@@ -213,9 +232,11 @@ sales ledger is held to. What this slice covers:
 - **Audit trail.** Each issued document records who issued it (and any
   impersonator) and when, its ledger entry, and the party, tax codes, and
   rates as they were when issued; payments and reversals record who and
-  when as well, and a reversal records its reason. Drafts, setup, series,
-  tax codes, and customers change through Repo writes, which Base Audit
-  records with their actor in the composed host (ADR 0013).
+  when as well, and a reversal records its reason. A change to the setup's
+  accounts is logged append-only with who changed it, the old and new
+  value, and a database-stamped time. Drafts, setup, series, tax codes, and
+  customers change through Repo writes, which Base Audit records with their
+  actor in the composed host (ADR 0013).
 - **Reproducible reports.** Any past aged-receivables report reproduces
   exactly from its `as_of` and `through_entry_number`.
 - **Retention.** Nothing is deleted: the database refuses DELETE and
