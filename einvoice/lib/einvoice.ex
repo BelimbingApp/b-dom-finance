@@ -184,7 +184,7 @@ defmodule Bilimbi.Finance.Einvoice do
           "original_document_id" => view.original_document_id
         })
 
-        {:ok, view}
+        {:ok, Map.put(view, :submission_queued, false)}
       end
     end)
   end
