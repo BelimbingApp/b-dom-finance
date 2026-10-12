@@ -471,8 +471,10 @@ defmodule Bilimbi.Finance.Einvoice do
     %{
       "payment_means_code" => draft.payment_means_code,
       "payment_terms" => draft.payment_terms,
-      "billing_period_start" => draft.billing_period_start && Date.to_iso8601(draft.billing_period_start),
-      "billing_period_end" => draft.billing_period_end && Date.to_iso8601(draft.billing_period_end),
+      "billing_period_start" =>
+        draft.billing_period_start && Date.to_iso8601(draft.billing_period_start),
+      "billing_period_end" =>
+        draft.billing_period_end && Date.to_iso8601(draft.billing_period_end),
       "billing_period_description" => draft.billing_period_description
     }
     |> Map.reject(fn {_key, value} -> is_nil(value) end)

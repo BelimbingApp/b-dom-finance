@@ -71,8 +71,11 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
 
   @doc false
   def valid_url?(value) do
-    match?(%URI{scheme: "https", host: host, path: path} when is_binary(host) and path in [nil, "", "/"],
-           URI.parse(value))
+    match?(
+      %URI{scheme: "https", host: host, path: path}
+      when is_binary(host) and path in [nil, "", "/"],
+      URI.parse(value)
+    )
   end
 
   @doc """
@@ -101,7 +104,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
           %{
             format: document.format,
             document: Base.encode64(document.document),
-            documentHash: :sha256 |> :crypto.hash(document.document) |> Base.encode16(case: :lower),
+            documentHash:
+              :sha256 |> :crypto.hash(document.document) |> Base.encode16(case: :lower),
             codeNumber: document.code_number
           }
         end)
@@ -143,7 +147,14 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
   end
 
   @doc "Cancels an issued document with a reason of at most 300 characters."
-  @spec cancel_document(Scope.t(), pos_integer(), credentials(), String.t(), String.t(), keyword()) ::
+  @spec cancel_document(
+          Scope.t(),
+          pos_integer(),
+          credentials(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) ::
           result()
   def cancel_document(%Scope{} = scope, company_id, credentials, uuid, reason, options \\ []) do
     with {:ok, uuid} <- path_segment(uuid),

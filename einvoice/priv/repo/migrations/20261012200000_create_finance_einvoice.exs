@@ -138,9 +138,9 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
 
     create index(:finance_einvoice_document_lines, [:company_id])
 
-    create constraint(:finance_einvoice_document_lines, :finance_einvoice_document_lines_line_number,
-             check: "line_number > 0"
-           )
+    create constraint(
+             :finance_einvoice_document_lines,
+             :finance_einvoice_document_lines_line_number, check: "line_number > 0")
 
     create constraint(:finance_einvoice_document_lines, :finance_einvoice_document_lines_amounts,
              check: """
@@ -194,7 +194,8 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
 
     # The stored hash is the hash of the stored bytes, whoever wrote them.
     create constraint(:finance_einvoice_submissions, :finance_einvoice_submissions_payload_sha256,
-             check: "octet_length(payload) > 0 AND payload_sha256 = encode(sha256(payload), 'hex')"
+             check:
+               "octet_length(payload) > 0 AND payload_sha256 = encode(sha256(payload), 'hex')"
            )
 
     create constraint(:finance_einvoice_submissions, :finance_einvoice_submissions_actor,
@@ -249,7 +250,9 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice do
              check: "event ~ '^[a-z][a-z_]*$'"
            )
 
-    create constraint(:finance_einvoice_status_events, :finance_einvoice_status_events_http_status,
+    create constraint(
+             :finance_einvoice_status_events,
+             :finance_einvoice_status_events_http_status,
              check: "http_status IS NULL OR (http_status >= 100 AND http_status <= 599)"
            )
 

@@ -27,11 +27,13 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
   @environments ["sandbox", "production"]
 
   @supplier_fields [
-    name: {"Supplier name", "The registered name on documents. Blank uses the company's name.",
-           300, nil},
+    name:
+      {"Supplier name", "The registered name on documents. Blank uses the company's name.", 300,
+       nil},
     tax_id:
-      {"Supplier TIN", "The tax identification number the authority registered the company under.",
-       14, :valid_tax_id?},
+      {"Supplier TIN",
+       "The tax identification number the authority registered the company under.", 14,
+       :valid_tax_id?},
     registration_number:
       {"Supplier registration number",
        "The business registration number, as on the signing certificate.", 20, nil},
@@ -39,11 +41,10 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
       {"Sales and service tax registration",
        "Up to two registration numbers separated by a semicolon. Blank when not registered.", 35,
        nil},
-    tourism_tax_registration:
-      {"Tourism tax registration", "Blank when not registered.", 17, nil},
+    tourism_tax_registration: {"Tourism tax registration", "Blank when not registered.", 17, nil},
     industry_code:
-      {"Industry classification code", "The five-digit industry code the company registered.",
-       5, :valid_industry_code?},
+      {"Industry classification code", "The five-digit industry code the company registered.", 5,
+       :valid_industry_code?},
     business_activity:
       {"Business activity", "The description of the business activity that goes with the code.",
        300, nil},
@@ -79,12 +80,18 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
   def definitions do
     connection = %{
       "finance.einvoice.environment" =>
-        editable(:string, "sandbox", "Environment",
+        editable(
+          :string,
+          "sandbox",
+          "Environment",
           "Sandbox submits test documents; production submits documents the authority keeps.",
           validator: {__MODULE__, :valid_environment?, "must be sandbox or production"}
         ),
       "finance.einvoice.certificate_pem" =>
-        editable(:string, nil, "Signing certificate (PEM)",
+        editable(
+          :string,
+          nil,
+          "Signing certificate (PEM)",
           "The company's X.509 signing certificate in PEM form.",
           nullable: true,
           encrypted: true,
@@ -92,7 +99,10 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
             {Certificate, :valid_certificate_pem?, "must be one PEM-encoded X.509 certificate"}
         ),
       "finance.einvoice.private_key_pem" =>
-        editable(:string, nil, "Signing private key (PEM)",
+        editable(
+          :string,
+          nil,
+          "Signing private key (PEM)",
           "The certificate's RSA private key in unencrypted PEM form.",
           nullable: true,
           encrypted: true,
@@ -101,7 +111,10 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
              "must be one unencrypted PEM-encoded RSA private key"}
         ),
       "finance.einvoice.expiry_alert_days" =>
-        editable(:integer, 30, "Expiry alert (days)",
+        editable(
+          :integer,
+          30,
+          "Expiry alert (days)",
           "Warn this many days before the certificate or a client secret expires.",
           minimum: 1,
           maximum: 365
@@ -114,18 +127,25 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
         [
           {"finance.einvoice.#{environment}.client_id",
-           editable(:string, nil, "#{title} client ID",
-             "The client ID the authority issued for #{environment} ERP access.",
-             nullable: true
-           )},
+           editable(
+             :string,
+             nil,
+             "#{title} client ID",
+             "The client ID the authority issued for #{environment} ERP access.", nullable: true)},
           {"finance.einvoice.#{environment}.client_secret",
-           editable(:string, nil, "#{title} client secret",
+           editable(
+             :string,
+             nil,
+             "#{title} client secret",
              "The client secret issued with the #{environment} client ID.",
              nullable: true,
              encrypted: true
            )},
           {"finance.einvoice.#{environment}.secret_expires_on",
-           editable(:string, nil, "#{title} secret expiry date",
+           editable(
+             :string,
+             nil,
+             "#{title} secret expiry date",
              "The date the #{environment} client secret expires, as YYYY-MM-DD.",
              nullable: true,
              validator: {__MODULE__, :valid_date?, "must be a date as YYYY-MM-DD"}
@@ -149,7 +169,9 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
 
   defp supplier_validator(function, _max), do: {__MODULE__, function, validator_message(function)}
 
-  defp validator_message(:valid_tax_id?), do: "must be one or two capital letters and 8 to 12 digits"
+  defp validator_message(:valid_tax_id?),
+    do: "must be one or two capital letters and 8 to 12 digits"
+
   defp validator_message(:valid_industry_code?), do: "must be five digits"
   defp validator_message(:valid_phone?), do: "must be a plus sign and 8 to 20 digits"
   defp validator_message(:valid_state_code?), do: "must be two digits"

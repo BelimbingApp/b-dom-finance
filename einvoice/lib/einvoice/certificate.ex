@@ -163,7 +163,9 @@ defmodule Bilimbi.Finance.Einvoice.Certificate do
         {:AttributeTypeAndValue, oid, value} <- attributes,
         oid in [@organization_identifier, @serial_number],
         into: %{} do
-      key = if oid == @organization_identifier, do: "organization_identifier", else: "serial_number"
+      key =
+        if oid == @organization_identifier, do: "organization_identifier", else: "serial_number"
+
       {key, attribute_text(value)}
     end
   end
@@ -193,7 +195,10 @@ defmodule Bilimbi.Finance.Einvoice.Certificate do
   defp certificate_time({:utcTime, time}) do
     <<year::binary-size(2), rest::binary>> = List.to_string(time)
     year = String.to_integer(year)
-    certificate_time({:generalTime, ~c"#{if year >= 50, do: 1900 + year, else: 2000 + year}#{rest}"})
+
+    certificate_time(
+      {:generalTime, ~c"#{if year >= 50, do: 1900 + year, else: 2000 + year}#{rest}"}
+    )
   end
 
   defp certificate_time({:generalTime, time}) do

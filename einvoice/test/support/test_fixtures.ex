@@ -124,8 +124,7 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
       "supplier.tax_id" => "C29702635060",
       "supplier.registration_number" => "D12345678",
       "supplier.industry_code" => "46510",
-      "supplier.business_activity" =>
-        "Wholesale of computer hardware, software and peripherals",
+      "supplier.business_activity" => "Wholesale of computer hardware, software and peripherals",
       "supplier.phone" => "+60123456789",
       "supplier.email" => "supplier@email.com",
       "supplier.address_line1" => "Lot 66",

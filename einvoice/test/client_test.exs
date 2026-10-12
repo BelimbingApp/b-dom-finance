@@ -29,8 +29,12 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.ClientTest do
 
     Req.Test.stub(Client, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test, {:request, conn.method, conn.host, conn.request_path, conn.query_string, body,
-                  Plug.Conn.get_req_header(conn, "authorization")})
+
+      send(
+        test,
+        {:request, conn.method, conn.host, conn.request_path, conn.query_string, body,
+         Plug.Conn.get_req_header(conn, "authorization")}
+      )
 
       case Map.fetch(responses, {conn.method, conn.request_path}) do
         {:ok, respond} -> respond.(conn)
@@ -63,8 +67,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.ClientTest do
              "scope" => "InvoicingAPI"
            }
 
-    assert_received {:request, "GET", @host, "/api/v1.0/documents/F9D425P6DS7D8IU/details", _,
-                     _, ["Bearer stub-token"]}
+    assert_received {:request, "GET", @host, "/api/v1.0/documents/F9D425P6DS7D8IU/details", _, _,
+                     ["Bearer stub-token"]}
 
     assert_received {:request, "GET", _, "/api/v1.0/documents/F9D425P6DS7D8IU/details", _, _, _}
     refute_received {:request, "POST", _, "/connect/token", _, _, _}
@@ -133,7 +137,14 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.ClientTest do
     assert Jason.decode!(body) == %{"status" => "cancelled", "reason" => "Wrong buyer"}
 
     assert {:ok, %{status: 200}} =
-             Client.validate_tax_id(op, 73, context.credentials, "C29702635060", "BRN", "D12345678")
+             Client.validate_tax_id(
+               op,
+               73,
+               context.credentials,
+               "C29702635060",
+               "BRN",
+               "D12345678"
+             )
 
     assert_received {:request, "GET", _, "/api/v1.0/taxpayer/validate/C29702635060",
                      "idType=BRN&idValue=D12345678", _, _}
@@ -211,9 +222,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.ClientTest do
 
     assert [["myinvois", "token", @host, "/connect/token", 91, nil, nil]] = rows
 
-    refute inspect(
-             SQL.query!(Repo, "SELECT * FROM base_integration_outbound_exchanges", []).rows
-           ) =~ ~r/test-client-secret|stub-token/
+    refute inspect(SQL.query!(Repo, "SELECT * FROM base_integration_outbound_exchanges", []).rows) =~
+             ~r/test-client-secret|stub-token/
   end
 
   describe "test connection" do
@@ -221,14 +231,21 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.ClientTest do
       stub(%{{"POST", "/connect/token"} => &token/1})
       assert :ok = Einvoice.test_connection(op, 73)
 
-      Req.Test.stub(Client, &(&1 |> Plug.Conn.put_status(400) |> Req.Test.json(%{error: "invalid_client"})))
-      assert {:error, {:http, 400, %{"error" => "invalid_client"}}} = Einvoice.test_connection(op, 73)
+      Req.Test.stub(
+        Client,
+        &(&1 |> Plug.Conn.put_status(400) |> Req.Test.json(%{error: "invalid_client"}))
+      )
+
+      assert {:error, {:http, 400, %{"error" => "invalid_client"}}} =
+               Einvoice.test_connection(op, 73)
 
       assert [
                [%{"environment" => "sandbox", "outcome" => "succeeded"}],
                [%{"environment" => "sandbox", "outcome" => "refused_400"}]
              ] =
-               Bilimbi.Base.Audit.TestFixtures.action_payloads("finance.einvoice.connection.tested")
+               Bilimbi.Base.Audit.TestFixtures.action_payloads(
+                 "finance.einvoice.connection.tested"
+               )
     end
 
     test "needs the settings capability", %{first_scope: scope} do

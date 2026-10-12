@@ -129,29 +129,29 @@ defmodule Bilimbi.Finance.Einvoice.CodeLists do
   end
 
   defp upsert_override(scope, company_id, authority, list, code, attributes) do
-      existing =
-        scope
-        |> overrides_query(company_id, authority)
-        |> where([o], o.list == ^list and o.code == ^code)
-        |> Repo.one()
+    existing =
+      scope
+      |> overrides_query(company_id, authority)
+      |> where([o], o.list == ^list and o.code == ^code)
+      |> Repo.one()
 
-      (existing ||
-         %CodeOverride{
-           tenant_id: Scope.tenant_id(scope),
-           company_id: company_id,
-           authority: authority,
-           list: list,
-           code: code
-         })
-      |> CodeOverride.changeset(attributes)
-      |> Repo.insert_or_update()
-      |> case do
-        {:ok, override} ->
-          {:ok, Map.take(override, [:list, :code, :description, :active])}
+    (existing ||
+       %CodeOverride{
+         tenant_id: Scope.tenant_id(scope),
+         company_id: company_id,
+         authority: authority,
+         list: list,
+         code: code
+       })
+    |> CodeOverride.changeset(attributes)
+    |> Repo.insert_or_update()
+    |> case do
+      {:ok, override} ->
+        {:ok, Map.take(override, [:list, :code, :description, :active])}
 
-        error ->
-          error
-      end
+      error ->
+        error
+    end
   end
 
   defp overrides_query(scope, company_id, authority) do

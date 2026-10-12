@@ -129,7 +129,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Signer do
     update_invoice(document, &Json.drop(&1, ["UBLExtensions", "Signature"]))
   end
 
-  defp update_invoice(document, fun), do: Json.update!(document, "Invoice", fn [i] -> [fun.(i)] end)
+  defp update_invoice(document, fun),
+    do: Json.update!(document, "Invoice", fn [i] -> [fun.(i)] end)
 
   defp signed_properties(certificate, signing_time) do
     time = signing_time |> DateTime.truncate(:second) |> DateTime.to_iso8601()

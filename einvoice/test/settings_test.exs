@@ -12,7 +12,11 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
     context = TestFixtures.setup_einvoice!()
     on_exit(&ContributionRegistry.clear_for_test!/0)
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, TestFixtures.capabilities())
-    Map.merge(context, %{operator: operator, settings: TestFixtures.settings_scope(context.first_scope, 73)})
+
+    Map.merge(context, %{
+      operator: operator,
+      settings: TestFixtures.settings_scope(context.first_scope, 73)
+    })
   end
 
   describe "definitions" do
@@ -38,9 +42,17 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
 
     test "a stored secret never reaches the screen", %{first_scope: scope, settings: settings} do
       :ok = TestFixtures.put_credentials!(scope, 73)
-      field = Enum.find(Form.fields(["finance.einvoice"], settings), &(&1.key =~ "sandbox.client_secret"))
+
+      field =
+        Enum.find(
+          Form.fields(["finance.einvoice"], settings),
+          &(&1.key =~ "sandbox.client_secret")
+        )
+
       assert field.value == Form.secret_mask()
-      assert Settings.get("finance.einvoice.sandbox.client_secret", settings) == "test-client-secret"
+
+      assert Settings.get("finance.einvoice.sandbox.client_secret", settings) ==
+               "test-client-secret"
     end
 
     test "refuse malformed values", %{settings: scope} do
@@ -63,7 +75,8 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
       assert Settings.get("finance.einvoice.sandbox.api_url") ==
                "https://preprod-api.myinvois.hasil.gov.my"
 
-      assert {:error, _} = Settings.put("finance.einvoice.production.api_url", "http://example.com/x")
+      assert {:error, _} =
+               Settings.put("finance.einvoice.production.api_url", "http://example.com/x")
     end
   end
 
@@ -133,7 +146,8 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
     end
 
     test "names what is missing on a fresh company", %{operator: op} do
-      assert {:ok, %{certificate: nil, client_id?: false, expiring: [], supplier_missing: missing}} =
+      assert {:ok,
+              %{certificate: nil, client_id?: false, expiring: [], supplier_missing: missing}} =
                Einvoice.setup(op, 73)
 
       assert :tax_id in missing and :industry_code in missing

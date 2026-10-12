@@ -190,7 +190,11 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
       tax_currency_code: @tax_currency,
       tax_exchange_rate:
         if(document.currency_code != @tax_currency,
-          do: %{source: document.currency_code, target: @tax_currency, rate: document.exchange_rate}
+          do: %{
+            source: document.currency_code,
+            target: @tax_currency,
+            rate: document.exchange_rate
+          }
         ),
       invoice_period: invoice_period(details),
       payment_means:

@@ -102,8 +102,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Builder do
 
   defp billing_reference(%{uuid: uuid} = reference) when is_binary(uuid) do
     object([
-      {"InvoiceDocumentReference",
-       [object([{"ID", value(reference.id)}, {"UUID", value(uuid)}])]}
+      {"InvoiceDocumentReference", [object([{"ID", value(reference.id)}, {"UUID", value(uuid)}])]}
     ])
   end
 
@@ -212,8 +211,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Builder do
   defp payment_means(means) do
     object([
       {"PaymentMeansCode", value(means.code)},
-      {"PayeeFinancialAccount",
-       optional(means, :payee_account, &object([{"ID", value(&1)}]))}
+      {"PayeeFinancialAccount", optional(means, :payee_account, &object([{"ID", value(&1)}]))}
     ])
   end
 
@@ -259,7 +257,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Builder do
       {"TaxableAmount", money.(subtotal.taxable_amount)},
       {"TaxAmount", tax_money.(subtotal.tax_amount)},
       {"Percent", value(subtotal[:percent])},
-      {"BaseUnitMeasure", per_unit && value(per_unit.quantity, [{"unitCode", per_unit.unit_code}])},
+      {"BaseUnitMeasure",
+       per_unit && value(per_unit.quantity, [{"unitCode", per_unit.unit_code}])},
       {"PerUnitAmount", per_unit && tax_money.(per_unit.amount)},
       {"TaxCategory",
        [

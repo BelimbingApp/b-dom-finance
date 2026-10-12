@@ -168,12 +168,17 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
 
       assert {:error, changeset} = Einvoice.issue_document(op, 73, attributes)
       assert %{issued_at: ["cannot be in the future"]} = errors_on(changeset)
-      assert %{lines: [%{discount_amount: ["has more than 2 decimal places"]}]} = errors_on(changeset)
+
+      assert %{lines: [%{discount_amount: ["has more than 2 decimal places"]}]} =
+               errors_on(changeset)
     end
 
     test "names what the supplier profile lacks", %{first_scope: scope, operator: op} do
-      :ok = Bilimbi.Base.Settings.delete("finance.einvoice.supplier.industry_code",
-        TestFixtures.settings_scope(scope, 73))
+      :ok =
+        Bilimbi.Base.Settings.delete(
+          "finance.einvoice.supplier.industry_code",
+          TestFixtures.settings_scope(scope, 73)
+        )
 
       assert {:error, changeset} =
                Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
@@ -229,10 +234,15 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
     test "lists newest first and pages with before", %{operator: op} do
       for n <- 1..3 do
         {:ok, _} =
-          Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes(%{code_number: "INV-#{n}"}))
+          Einvoice.issue_document(
+            op,
+            73,
+            TestFixtures.invoice_attributes(%{code_number: "INV-#{n}"})
+          )
       end
 
-      assert {:ok, [%{code_number: "INV-3", status: "issued", buyer_name: "Buyer's Name"}, second]} =
+      assert {:ok,
+              [%{code_number: "INV-3", status: "issued", buyer_name: "Buyer's Name"}, second]} =
                Einvoice.list_documents(op, 73, limit: 2)
 
       assert {:ok, [%{code_number: "INV-1"}]} =

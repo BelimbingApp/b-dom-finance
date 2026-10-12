@@ -314,7 +314,13 @@ defmodule Bilimbi.Finance.Einvoice.SdkSamples do
       tax_currency_code: "MYR",
       supplier: supplier(false),
       buyer: %{
-        address: %{city: "", postcode: "", state_code: "", lines: ["NA", "", ""], country_code: ""},
+        address: %{
+          city: "",
+          postcode: "",
+          state_code: "",
+          lines: ["NA", "", ""],
+          country_code: ""
+        },
         name: "Consolidated Buyer's",
         identifications: [
           {"TIN", "EI00000000010"},

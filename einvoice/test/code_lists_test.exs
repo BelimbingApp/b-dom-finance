@@ -38,14 +38,22 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
            }
 
     assert :ok = CodeLists.seed!("myinvois")
-    assert {:ok, %{"E" => "Tax exemption (where applicable)"} = tax_types} = Einvoice.list_codes(op, 73, "tax_type")
+
+    assert {:ok, %{"E" => "Tax exemption (where applicable)"} = tax_types} =
+             Einvoice.list_codes(op, 73, "tax_type")
+
     assert map_size(tax_types) == 7
   end
 
-  test "a company renames, retires, and adds codes for itself only", %{first_scope: scope, operator: op} do
+  test "a company renames, retires, and adds codes for itself only", %{
+    first_scope: scope,
+    operator: op
+  } do
     assert {:ok, _} = Einvoice.override_code(op, 73, "tax_type", "06", %{description: "No tax"})
     assert {:ok, _} = Einvoice.override_code(op, 73, "payment_means", "01", %{active: false})
-    assert {:ok, _} = Einvoice.override_code(op, 73, "classification", "046", %{description: "New code"})
+
+    assert {:ok, _} =
+             Einvoice.override_code(op, 73, "classification", "046", %{description: "New code"})
 
     assert {:ok, %{"06" => "No tax"}} = Einvoice.list_codes(op, 73, "tax_type")
     assert {:ok, payment} = Einvoice.list_codes(op, 73, "payment_means")

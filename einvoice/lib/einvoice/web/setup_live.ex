@@ -46,7 +46,11 @@ defmodule Bilimbi.Finance.Einvoice.Web.SetupLive do
     socket =
       case Einvoice.test_connection(scope, socket.assigns.company_id) do
         :ok ->
-          put_flash(socket, :info, "Connected: the authority accepted the #{environment(socket)} credentials.")
+          put_flash(
+            socket,
+            :info,
+            "Connected: the authority accepted the #{environment(socket)} credentials."
+          )
 
         {:error, reason} ->
           put_flash(socket, :error, connection_message(reason))
