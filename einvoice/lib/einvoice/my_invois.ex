@@ -492,9 +492,16 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
              )}
 
           _none ->
-            if more_pages?(body, page),
-              do: search_sent(scope, company_id, credentials, wanted, window, page + 1),
-              else: {:not_found, answer(status, body)}
+            cond do
+              not more_pages?(body, page) ->
+                {:not_found, answer(status, body)}
+
+              page < @search_pages ->
+                search_sent(scope, company_id, credentials, wanted, window, page + 1)
+
+              true ->
+                {:refused, answer(status, body, reason: "search window too large to read")}
+            end
         end
 
       {:ok, %{status: status, body: body}} ->
@@ -506,7 +513,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   defp more_pages?(%{"metadata" => %{"totalPages" => total}}, page) when is_integer(total),
-    do: page < total and page < @search_pages
+    do: page < total
 
   defp more_pages?(_body, _page), do: false
 

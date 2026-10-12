@@ -101,8 +101,8 @@ to a minute past the moment of asking, ignoring any document whose UUID
 this document already recorded, and it also runs before any retry that
 finds such an attempt (a crash, an outage, or an earlier search that could
 not answer): the bytes go out again only on a clean not-found, and not at
-all while the search is rate limited, unavailable, or refused (recorded as
-`search_deferred`). A rate limit or outage retries under Base Queue's
+all while the search is rate limited, unavailable, refused, or too long to
+read within MyInvois' ten pages (recorded as `search_deferred`). A rate limit or outage retries under Base Queue's
 backoff (Base Queue has no snooze, so the authority's `Retry-After` is
 recorded on the event rather than honoured to the second); an outage that
 has lasted 72 hours records `overdue` and the audit action

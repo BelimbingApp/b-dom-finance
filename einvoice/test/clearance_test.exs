@@ -528,6 +528,37 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert [_, _, {"search_deferred", %{http_status: 403}}] = events(op, document)
     end
 
+    test "a retry after an outage does not send when the search window is longer than it can read",
+         %{operator: op, document: document} do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} =>
+          &Req.Test.json(&1, %{
+            result: [%{internalId: "OTHER-1", uuid: "OTHERUUID", submissionUid: "OTHERSUB"}],
+            metadata: %{totalPages: 99, totalCount: 9_900}
+          })
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      refute_received {:request, "POST", @submit_path, _}
+      assert [_, _, {"search_deferred", %{http_status: 200}}] = events(op, document)
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      refute_received {:request, "POST", @submit_path, _}
+    end
+
     test "a search never recovers an earlier cycle's document for a new attempt", %{
       operator: op,
       document: document
