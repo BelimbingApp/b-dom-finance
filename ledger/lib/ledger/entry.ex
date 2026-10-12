@@ -8,6 +8,8 @@ defmodule Bilimbi.Finance.Ledger.Entry do
   schema "finance_ledger_entries" do
     field(:tenant_id, :integer)
     field(:company_id, :integer)
+    # The database assigns both on insert (see the migration).
+    field(:entry_number, :integer, read_after_writes: true)
     field(:entry_date, :date)
     field(:description, :string)
     field(:reference, :string)
@@ -15,7 +17,7 @@ defmodule Bilimbi.Finance.Ledger.Entry do
     field(:reverses_entry_id, :integer)
     field(:posted_by_user_id, :integer)
     field(:posted_by_impersonator_id, :integer)
-    field(:posted_at, :utc_datetime_usec)
+    field(:posted_at, :utc_datetime_usec, read_after_writes: true)
     has_many(:lines, Line)
   end
 
@@ -30,8 +32,7 @@ defmodule Bilimbi.Finance.Ledger.Entry do
       :entry_date,
       :description,
       :currency_code,
-      :posted_by_user_id,
-      :posted_at
+      :posted_by_user_id
     ])
     |> validate_length(:description, min: 1, max: 500)
     |> validate_length(:reference, max: 100)

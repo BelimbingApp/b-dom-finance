@@ -134,15 +134,36 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
       """
       CREATE TEMPORARY TABLE finance_ledger_entries (
         id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, company_id bigint NOT NULL,
-        entry_date date NOT NULL, description varchar(500) NOT NULL, reference varchar(100),
+        entry_number bigint NOT NULL, entry_date date NOT NULL, description varchar(500) NOT NULL, reference varchar(100),
         currency_code varchar(3) NOT NULL, reverses_entry_id bigint,
         posted_by_user_id bigint NOT NULL, posted_by_impersonator_id bigint,
         posted_at timestamp(6) NOT NULL,
         CONSTRAINT finance_ledger_entries_book_fkey FOREIGN KEY (currency_code, company_id)
           REFERENCES finance_ledger_books (currency_code, company_id) ON DELETE RESTRICT,
         CONSTRAINT finance_ledger_entries_not_own_reversal
-          CHECK (reverses_entry_id IS NULL OR reverses_entry_id <> id)
+          CHECK (reverses_entry_id IS NULL OR reverses_entry_id <> id),
+        CONSTRAINT finance_ledger_entries_entry_number CHECK (entry_number > 0)
       ) ON COMMIT PRESERVE ROWS
+      """,
+      """
+      CREATE UNIQUE INDEX finance_ledger_entries_company_number_unique
+        ON finance_ledger_entries (company_id, entry_number)
+      """,
+      """
+      CREATE FUNCTION pg_temp.finance_ledger_number_entry() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        NEW.entry_number := COALESCE(
+          (SELECT max(entry_number) FROM finance_ledger_entries
+           WHERE company_id = NEW.company_id), 0) + 1;
+        NEW.posted_at := now() AT TIME ZONE 'UTC';
+        RETURN NEW;
+      END
+      $$
+      """,
+      """
+      CREATE TRIGGER finance_ledger_entries_number BEFORE INSERT ON finance_ledger_entries
+        FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_number_entry()
       """,
       """
       CREATE UNIQUE INDEX finance_ledger_entries_id_company_unique

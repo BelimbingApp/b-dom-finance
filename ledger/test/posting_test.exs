@@ -228,6 +228,57 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
     end
   end
 
+  describe "entry numbers" do
+    test "number each company's entries in posting order without gaps", context do
+      %{first_scope: system, operator: operator, cash: cash, income: income} = context
+      lines = [debit(cash, "1"), credit(income, "1")]
+
+      assert {:ok, %{entry_number: 1, posted_at: %DateTime{}}} = post(context, lines)
+
+      assert {:error, %Ecto.Changeset{}} =
+               post(context, [debit(cash, "1"), credit(income, "2")])
+
+      assert {:ok, %{entry_number: 2} = second} = post(context, lines)
+
+      assert {:ok, %{entry_number: 3}} =
+               Ledger.reverse_entry(operator, 73, second.id, %{
+                 entry_date: ~D[2026-10-01],
+                 description: "Reversal"
+               })
+
+      sibling = TestFixtures.sign_in!(system, 74, 93, [@manage, @post])
+      {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+      {:ok, debit_account} = Ledger.create_account(sibling, 74, account("1000", "asset"))
+      {:ok, credit_account} = Ledger.create_account(sibling, 74, account("4000", "income"))
+
+      assert {:ok, %{entry_number: 1}} =
+               Ledger.post_entry(
+                 sibling,
+                 74,
+                 entry([debit(debit_account, "1"), credit(credit_account, "1")])
+               )
+    end
+
+    test "are the database's, whatever a writer sends", context do
+      {:ok, _} = post(context, [debit(context.cash, "1"), credit(context.income, "1")])
+
+      %{rows: [[number, stamped?]]} =
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO finance_ledger_entries
+            (tenant_id, company_id, entry_number, entry_date, description, currency_code,
+             posted_by_user_id, posted_at)
+          VALUES (41, 73, 1, '2026-10-01', 'Raw', 'XTS', 91, '2000-01-01')
+          RETURNING entry_number, posted_at > '2026-01-01'
+          """,
+          []
+        )
+
+      assert {number, stamped?} == {2, true}
+    end
+  end
+
   describe "reversal" do
     setup context do
       {:ok, original} =

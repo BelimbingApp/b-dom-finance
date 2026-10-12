@@ -20,6 +20,10 @@ defmodule Bilimbi.Finance.Ledger do
   every posted amount is denominated in them. Amounts are decimals and are
   refused, not rounded, when they are finer than the book allows.
 
+  The database numbers each company's entries 1, 2, 3, ... in posting
+  order and stamps their posting time, so an entry's `entry_number` is never
+  skipped or reused.
+
   An entry is posted whole: it is stored only when its lines' debits equal
   their credits, every line names an active account of the company, and the
   book is open. A posted entry is never edited or deleted; `reverse_entry/4`
@@ -299,24 +303,43 @@ defmodule Bilimbi.Finance.Ledger do
   balance columns' totals are equal, because every posted entry balances.
   An account reports its own postings only; `parent_id` lets a reader group
   rows without counting a parent twice.
+
+  The result names `through_entry_number`, the last entry number it counts.
+  An entry posted later with an earlier date changes the figures for that
+  date, so passing the same `as_of` and `through_entry_number: n` reproduces
+  an earlier report exactly: entries are numbered in posting order and never
+  change. A malformed option is `{:error, :invalid_option}`.
   """
-  @spec trial_balance(Scope.t(), term(), Date.t()) ::
-          {:ok, map()} | {:error, refusal() | :book_not_open}
-  def trial_balance(%Scope{} = scope, company_id, %Date{} = as_of) do
-    with :ok <- authorize(scope, company_id, @view) do
+  @spec trial_balance(Scope.t(), term(), Date.t(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def trial_balance(%Scope{} = scope, company_id, %Date{} = as_of, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, through} <- through_option(options) do
       case book(scope, company_id) do
         nil -> {:error, :book_not_open}
-        book -> {:ok, build_trial_balance(scope, company_id, book, as_of)}
+        book -> {:ok, build_trial_balance(scope, company_id, book, as_of, through)}
       end
     end
   end
 
-  defp build_trial_balance(scope, company_id, book, as_of) do
+  defp through_option(options) do
+    case Keyword.get(options, :through_entry_number) do
+      nil -> {:ok, nil}
+      number when is_integer(number) and number >= 0 -> {:ok, number}
+      _other -> {:error, :invalid_option}
+    end
+  end
+
+  defp build_trial_balance(scope, company_id, book, as_of, through) do
+    through = through || last_entry_number(scope, company_id)
+
     totals =
       from(l in lines_query(scope),
         join: e in ^Tenancy.scope_query(Entry, scope),
         on: e.id == l.entry_id,
         where: l.company_id == ^company_id and e.entry_date <= ^as_of,
+        where: e.entry_number <= ^through,
         group_by: l.account_id,
         select: {l.account_id, {sum(l.debit), sum(l.credit)}}
       )
@@ -347,12 +370,20 @@ defmodule Bilimbi.Finance.Ledger do
     %{
       company_id: company_id,
       as_of: as_of,
+      through_entry_number: through,
       currency_code: book.currency_code,
       minor_units: book.minor_units,
       rows: rows,
       total_debit: sum(rows, :debit_balance),
       total_credit: sum(rows, :credit_balance)
     }
+  end
+
+  defp last_entry_number(scope, company_id) do
+    scope
+    |> entries_query(company_id)
+    |> select([e], coalesce(max(e.entry_number), 0))
+    |> Repo.one()
   end
 
   defp sum(rows, field),
@@ -413,8 +444,7 @@ defmodule Bilimbi.Finance.Ledger do
       company_id: book.company_id,
       currency_code: book.currency_code,
       posted_by_user_id: user_id,
-      posted_by_impersonator_id: impersonator_id,
-      posted_at: DateTime.utc_now()
+      posted_by_impersonator_id: impersonator_id
     }
     |> Entry.changeset(attributes)
     |> Changeset.put_assoc(:lines, line_changesets)
@@ -570,6 +600,7 @@ defmodule Bilimbi.Finance.Ledger do
     entry
     |> Map.take([
       :id,
+      :entry_number,
       :entry_date,
       :description,
       :reference,

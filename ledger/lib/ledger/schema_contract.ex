@@ -79,6 +79,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
         columns:
           owned_columns("finance_ledger_entries")
           |> Map.merge(%{
+            "entry_number" => column(:bigint, false),
             "entry_date" => column(:date, false),
             "description" => column({:varchar, 500}, false),
             "reference" => column({:varchar, 100}, true),
@@ -97,7 +98,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
             where: "(reverses_entry_id IS NOT NULL)"
           },
           "finance_ledger_entries_tenant_id_company_id_entry_date_index" =>
-            index(["tenant_id", "company_id", "entry_date"])
+            index(["tenant_id", "company_id", "entry_date"]),
+          "finance_ledger_entries_company_number_unique" =>
+            index(["company_id", "entry_number"], true)
         },
         foreign_keys: %{
           "finance_ledger_entries_book_fkey" => %{
@@ -110,7 +113,8 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
         },
         checks: %{
           "finance_ledger_entries_not_own_reversal" =>
-            check("reverses_entry_id IS NULL OR reverses_entry_id <> id")
+            check("reverses_entry_id IS NULL OR reverses_entry_id <> id"),
+          "finance_ledger_entries_entry_number" => check("entry_number > 0")
         }
       },
       %{

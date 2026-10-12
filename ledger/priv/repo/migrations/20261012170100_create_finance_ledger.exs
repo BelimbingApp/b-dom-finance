@@ -7,12 +7,13 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
   `(id, company_id)` foreign keys, so a line cannot name another company's
   account or entry. A book, an entry, and its lines are append-only: a
   trigger refuses UPDATE, DELETE, and TRUNCATE, so a posted entry is
-  corrected by a reversing entry. A line can only be inserted in the
-  transaction that inserts its entry, so a later transaction cannot add
-  lines to a posted entry. An account is never deleted and keeps its
-  code and type; its name, parent, and active flag may change. A deferred
-  constraint trigger refuses a commit in which an entry has no lines or its
-  debits and credits differ.
+  corrected by a reversing entry. The database numbers each company's
+  entries without gaps and stamps their posting time. A line can only be
+  inserted in the transaction that inserts its entry, so a later
+  transaction cannot add lines to a posted entry. An account is never
+  deleted and keeps its code and type; its name, parent, and active flag
+  may change. A deferred constraint trigger refuses a commit in which an
+  entry has no lines or its debits and credits differ.
   """
 
   use Ecto.Migration
@@ -85,6 +86,7 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
       add :id, :bigserial, primary_key: true
       add :tenant_id, :bigint, null: false
       add :company_id, :bigint, null: false
+      add :entry_number, :bigint, null: false
       add :entry_date, :date, null: false
       add :description, :string, size: 500, null: false
       add :reference, :string, size: 100
@@ -124,6 +126,14 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
            )
 
     create index(:finance_ledger_entries, [:tenant_id, :company_id, :entry_date])
+
+    create unique_index(:finance_ledger_entries, [:company_id, :entry_number],
+             name: :finance_ledger_entries_company_number_unique
+           )
+
+    create constraint(:finance_ledger_entries, :finance_ledger_entries_entry_number,
+             check: "entry_number > 0"
+           )
 
     create constraint(:finance_ledger_entries, :finance_ledger_entries_not_own_reversal,
              check: "reverses_entry_id IS NULL OR reverses_entry_id <> id"
@@ -233,6 +243,29 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
       FOR EACH ROW EXECUTE FUNCTION finance_ledger_accounts_keep_identity()
     """)
 
+    # The database numbers each company's entries 1, 2, 3, ... and stamps the
+    # posting time, whatever the inserting writer sent: with no sequence and
+    # no deletion, a number is never skipped or reused, and a concurrent
+    # writer that takes the same number fails on the unique index.
+    execute("""
+    CREATE FUNCTION finance_ledger_number_entry() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.entry_number := COALESCE(
+        (SELECT max(entry_number) FROM finance_ledger_entries
+         WHERE company_id = NEW.company_id), 0) + 1;
+      NEW.posted_at := now() AT TIME ZONE 'UTC';
+      RETURN NEW;
+    END
+    $$
+    """)
+
+    execute("""
+    CREATE TRIGGER finance_ledger_entries_number
+      BEFORE INSERT ON finance_ledger_entries
+      FOR EACH ROW EXECUTE FUNCTION finance_ledger_number_entry()
+    """)
+
     # An entry is "posted" once its inserting transaction is no longer in
     # progress. pg_xact_status is NULL for a transaction older than the
     # retained commit log, so IS DISTINCT FROM keeps old entries refused.
@@ -308,6 +341,7 @@ defmodule Bilimbi.Finance.Ledger.Migrations.CreateLedger do
     drop table(:finance_ledger_books)
     execute("DROP FUNCTION finance_ledger_check_balance()")
     execute("DROP FUNCTION finance_ledger_refuse_posted_line()")
+    execute("DROP FUNCTION finance_ledger_number_entry()")
     execute("DROP FUNCTION finance_ledger_accounts_keep_identity()")
     execute("DROP FUNCTION finance_ledger_refuse_change()")
   end

@@ -19,7 +19,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
 | `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, and `after` |
-| `trial_balance/3` | `finance.ledger.view` | Per-account totals and balances as of a date |
+| `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
 
 ## Authorization and company scope
 
@@ -37,9 +37,10 @@ reads need `finance.ledger.view`; the Tenant Owner role holds all three
 capabilities.
 
 An entry records who posted it: `posted_by_user_id` from `Scope.actor/1`, and
-`posted_by_impersonator_id` for an impersonated session. Posting therefore
-needs a signed-in person; a system principal posting for another module (for
-example payroll) is not supported yet and needs its own decision.
+`posted_by_impersonator_id` for an impersonated session; the database stamps
+`posted_at`. Posting therefore needs a signed-in person; a system principal
+posting for another module (for example payroll) is not supported yet and
+needs its own decision.
 
 ## Money
 
@@ -79,6 +80,10 @@ reversed at most once and a reversal is not itself reversed, so a correction
 is a reversal plus a new entry. `get_entry/3` shows `reversed_by_entry_id` on
 a reversed entry. There are no draft entries in this slice.
 
+Each entry has an `entry_number`, its book's sequence number: the database
+numbers a company's entries 1, 2, 3, ... in posting order, so a number is never
+skipped (a refused or rolled-back post takes none) or reused.
+
 `list_entries/3` orders entries by date and then ID. `limit` is a positive
 integer (default 100, at most 500). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
@@ -92,6 +97,12 @@ shape is `{:error, :invalid_option}`.
 one side (`debit_balance` or `credit_balance`). Each account reports its own
 postings only; `parent_id` lets a reader group rows without counting a parent
 twice. `total_debit` equals `total_credit` because every entry balances.
+
+The result names `through_entry_number`, the last entry it counts. An entry
+posted later with an earlier date changes the figures for that date, so a
+report is reproduced exactly by passing the same `as_of` and its
+`through_entry_number`: posted entries never change and are numbered in
+posting order. Closing a period against back-dated postings is later work.
 
 ## Database
 
@@ -108,7 +119,10 @@ checks, so no other writer can break them:
   and refuse deleting an account or changing its company, code, or type;
 - a trigger refuses a line whose entry was inserted in an earlier transaction,
   so a posted entry's lines stay fixed;
-- a partial unique index allows one reversal per entry.
+- a partial unique index allows one reversal per entry;
+- a trigger numbers each company's entries without gaps and stamps
+  `posted_at`, replacing whatever the inserting writer sent, and a unique
+  index refuses a reused number.
 
 `Bilimbi.Finance.Ledger.SchemaContract` describes the tables but is not
 registered in the descriptor: compatibility verification runs before pending
@@ -116,6 +130,31 @@ Bilimbi-only migrations, when these tables correctly do not exist.
 `test/schema_contract_test.exs` runs the migration in a fresh database,
 verifies the contract with `Bilimbi.Base.Database.SchemaVerifier.verify/2`, and
 proves the migration's own triggers outside the test sandbox.
+
+## Standards addressed
+
+The ledger is built to the bookkeeping and audit standards a company's
+accounts are held to. What this slice covers:
+
+- **Double-entry integrity.** Every entry balances, debits against credits,
+  in one currency per book; each line has one positive side; an entry and
+  its lines are fixed once posted. The facade and PostgreSQL both enforce
+  this (see Database).
+- **Audit trail.** Every entry records who posted it (and any impersonator),
+  when the database committed it, and its gapless book sequence number. A
+  correction is a reversing entry that names the original, and the original
+  reports the entry that reversed it, so the trail runs both ways and nothing
+  is overwritten. Opening a book and every account change are Repo writes,
+  which Base Audit records with their actor in the composed host (ADR 0013).
+  Any past trial balance reproduces exactly from its `through_entry_number`.
+- **Retention.** Nothing posted is ever deleted: the database refuses DELETE
+  and TRUNCATE on books, entries, and lines, refuses deleting an account, and
+  unmounting Finance keeps every row. Records therefore outlive any statutory
+  retention period, such as the seven years Malaysia's Companies Act 2016
+  requires; how long a company must keep them is law, not code.
+
+Financial reporting under MFRS or IFRS (statements, period close, tax) is
+later work in sibling modules.
 
 ## Tests
 

@@ -12,7 +12,9 @@ The ledger is the first module. Later Finance modules, such as receivables,
 payables, tax, and bank reconciliation, sit beside it as sibling module
 folders and post through its public API; other Domains post through the same
 API. This slice exposes that API with no pages, menu entries, or agent
-operations.
+operations. The ledger's "Standards addressed" section says which
+bookkeeping and audit standards it meets: double-entry integrity, an audit
+trail, and retention.
 
 ## Mount
 

@@ -96,6 +96,26 @@ defmodule Bilimbi.Finance.Ledger.TrialBalanceTest do
     assert Decimal.equal?(after_reversal.total_debit, "1120.25")
   end
 
+  test "reproduces an earlier report after a back-dated posting", context do
+    %{operator: operator, accounts: accounts} = context
+
+    assert {:ok, %{through_entry_number: 3} = earlier} =
+             Ledger.trial_balance(operator, 73, ~D[2026-10-02])
+
+    post!(operator, accounts, ~D[2026-10-01], [{"5000", :debit, "10"}, {"2000", :credit, "10"}])
+
+    assert {:ok, %{through_entry_number: 4} = now} =
+             Ledger.trial_balance(operator, 73, ~D[2026-10-02])
+
+    assert Decimal.equal?(now.total_debit, "1130.25")
+
+    assert {:ok, ^earlier} =
+             Ledger.trial_balance(operator, 73, ~D[2026-10-02], through_entry_number: 3)
+
+    assert {:error, :invalid_option} =
+             Ledger.trial_balance(operator, 73, ~D[2026-10-02], through_entry_number: "3")
+  end
+
   test "is empty before the first posting", %{operator: operator} do
     assert {:ok, %{rows: [], total_debit: debit, total_credit: credit}} =
              Ledger.trial_balance(operator, 73, ~D[2026-09-30])

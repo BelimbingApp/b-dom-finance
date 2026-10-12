@@ -47,7 +47,8 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   # where the deferred balance check runs at commit. A refused commit
   # disconnects, which Postgrex logs; the log is expected.
   @tag :capture_log
-  test "the migration's triggers keep entries balanced, append-only, and closed", %{repo: repo} do
+  test "the migration's triggers keep entries balanced, numbered, append-only, and closed",
+       %{repo: repo} do
     Repo.put_dynamic_repo(repo)
     query! = fn sql -> SQL.query!(repo, sql, []) end
 
@@ -61,8 +62,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
         "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
       ])
 
+    # The writer's own number and posting time are replaced by the database's.
     entry = fn id ->
-      "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_date, description, currency_code, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, '2026-10-01', 'Entry', 'XTS', 1, now())"
+      "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 99, '2026-10-01', 'Entry', 'XTS', 1, '2000-01-01')"
     end
 
     line = fn entry_id, number, account_id, debit, credit ->
@@ -104,5 +106,11 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
     end
 
     assert %{rows: [[5]]} = query!.("SELECT count(*) FROM finance_ledger_entry_lines")
+
+    # Refused transactions consumed no number: the two posted entries are 1 and 2.
+    assert %{rows: [[1, 1, true], [4, 2, true]]} =
+             query!.(
+               "SELECT id, entry_number, posted_at > '2026-01-01' FROM finance_ledger_entries ORDER BY id"
+             )
   end
 end
