@@ -395,8 +395,10 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       assert {:ok, posted} = Payables.post_document(operator, 73, note.id)
       assert %{document_number: 1, status: "posted"} = posted
 
-      assert {:ok, %{outstanding: owed}} = Payables.get_document(operator, 73, bill.id)
-      assert decimal?(owed, "81.00")
+      assert {:ok, %{outstanding: owed, debit_note_ids: [note_id]}} =
+               Payables.get_document(operator, 73, bill.id)
+
+      assert decimal?(owed, "81.00") and note_id == note.id
 
       {:ok, entry} = Ledger.get_entry(operator, 73, posted.entry_id)
 

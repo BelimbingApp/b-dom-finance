@@ -267,6 +267,11 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
                Payables.list_payments(operator, 73, party_key: "P-1")
 
       assert {:ok, [%{payment_number: 2}]} = Payables.list_payments(operator, 73, limit: 1)
+
+      assert {:ok, [%{payment_number: 2}]} =
+               Payables.list_payments(operator, 73, document_id: other.id)
+
+      assert {:error, :invalid_option} = Payables.list_payments(operator, 73, document_id: "1")
       assert {:error, :invalid_option} = Payables.list_payments(operator, 73, party_key: 1)
       assert {:error, :invalid_option} = Payables.list_payments(operator, 73, limit: 0)
     end

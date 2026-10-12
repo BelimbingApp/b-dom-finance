@@ -354,15 +354,17 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   @doc """
-  One document with its lines and tax lines. A posted bill also shows
-  `outstanding`, what is still owed on it now.
+  One document with its lines and tax lines, and `debit_note_ids`, the
+  debit notes recorded against it. A posted bill also shows `outstanding`,
+  what is still owed on it now; `list_payments/3` with `document_id` lists
+  the payments allocated to it.
   """
   @spec get_document(Scope.t(), term(), term()) ::
           {:ok, map()} | {:error, refusal() | :document_not_found}
   def get_document(%Scope{} = scope, company_id, document_id) do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, document} <- fetch_document(scope, company_id, document_id) do
-      {:ok, document_view(document, Balances.outstanding(scope, company_id, [document]))}
+      {:ok, hd(document_views(scope, company_id, [document]))}
     end
   end
 
@@ -390,8 +392,7 @@ defmodule Bilimbi.Finance.Payables do
         |> preload(^document_preloads(scope))
         |> Repo.all()
 
-      outstanding = Balances.outstanding(scope, company_id, documents)
-      {:ok, Enum.map(documents, &document_view(&1, outstanding))}
+      {:ok, document_views(scope, company_id, documents)}
     end
   end
 
@@ -527,19 +528,22 @@ defmodule Bilimbi.Finance.Payables do
 
   @doc """
   Payments with their allocations, ordered by payment date and then ID.
-  Options: `party_key`, `from`, `to`, `limit`, and `after` (`{payment_date,
-  id}`), as `list_documents/3` takes them.
+  Options: `party_key`; `document_id`, for the payments allocated to that
+  document; and `from`, `to`, `limit`, and `after` (`{payment_date, id}`),
+  as `list_documents/3` takes them.
   """
   @spec list_payments(Scope.t(), term(), keyword()) ::
           {:ok, [map()]} | {:error, refusal() | :invalid_option}
   def list_payments(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, page} <- page_options(options),
-         {:ok, party_key} <- party_option(options) do
+         {:ok, party_key} <- party_option(options),
+         {:ok, document_id} <- document_option(options) do
       payments =
         scope
         |> payments_query(company_id)
         |> then(&if(party_key, do: where(&1, [p], p.party_key == ^party_key), else: &1))
+        |> allocated_to(scope, document_id)
         |> date_bound(:payment_date, page)
         |> after_cursor(:payment_date, page.after)
         |> order_by([p], asc: p.payment_date, asc: p.id)
@@ -550,6 +554,26 @@ defmodule Bilimbi.Finance.Payables do
       reversals = reversed_by(scope, company_id, Enum.map(payments, & &1.id))
       {:ok, Enum.map(payments, &payment_view(&1, reversals))}
     end
+  end
+
+  defp document_option(options) do
+    case Keyword.get(options, :document_id) do
+      nil -> {:ok, nil}
+      id when is_integer(id) and id in 1..@max_bigint -> {:ok, id}
+      _other -> {:error, :invalid_option}
+    end
+  end
+
+  defp allocated_to(query, _scope, nil), do: query
+
+  defp allocated_to(query, scope, document_id) do
+    paid =
+      from(a in Tenancy.scope_query(Allocation, scope),
+        where: a.document_id == ^document_id,
+        select: a.payment_id
+      )
+
+    where(query, [p], p.id in subquery(paid))
   end
 
   defp party_option(options) do
@@ -845,14 +869,14 @@ defmodule Bilimbi.Finance.Payables do
   defp insert_document(changeset, scope) do
     with {:ok, document} <- Repo.insert(changeset) do
       {:ok, document} = fetch_document(scope, document.company_id, document.id)
-      {:ok, document_view(document, %{})}
+      {:ok, hd(document_views(scope, document.company_id, [document]))}
     end
   end
 
   defp update_document(changeset, scope) do
     with {:ok, document} <- Repo.update(changeset) do
       {:ok, document} = fetch_document(scope, document.company_id, document.id)
-      {:ok, document_view(document, Balances.outstanding(scope, document.company_id, [document]))}
+      {:ok, hd(document_views(scope, document.company_id, [document]))}
     end
   end
 
@@ -967,7 +991,8 @@ defmodule Bilimbi.Finance.Payables do
       |> Enum.map(&Changeset.get_field(&1, :document_id))
       |> Enum.filter(&is_integer/1)
 
-    bills = scope |> documents_query(company_id) |> where([d], d.id in ^document_ids) |> Repo.all()
+    bills =
+      scope |> documents_query(company_id) |> where([d], d.id in ^document_ids) |> Repo.all()
 
     owed = Balances.outstanding(scope, company_id, bills)
     bills = Map.new(bills, &{&1.id, &1})
@@ -1244,6 +1269,28 @@ defmodule Bilimbi.Finance.Payables do
 
   defp tax_code_view(tax_code),
     do: Map.take(tax_code, [:id, :code, :name, :rate, :account_id, :active])
+
+  # A posted bill's outstanding, and every document's debit notes, so the
+  # trail runs from a bill to its corrections as well as back.
+  defp document_views(scope, company_id, documents) do
+    outstanding = Balances.outstanding(scope, company_id, documents)
+    ids = Enum.map(documents, & &1.id)
+
+    debit_notes =
+      scope
+      |> documents_query(company_id)
+      |> where([d], d.corrects_document_id in ^ids)
+      |> order_by([d], asc: d.id)
+      |> select([d], {d.corrects_document_id, d.id})
+      |> Repo.all()
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    Enum.map(documents, fn document ->
+      document
+      |> document_view(outstanding)
+      |> Map.put(:debit_note_ids, Map.get(debit_notes, document.id, []))
+    end)
+  end
 
   defp document_view(document, outstanding) do
     document

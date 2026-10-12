@@ -22,10 +22,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `approve_document/3` | `finance.payables.documents.approve` | Approves a draft |
 | `void_document/4` | `finance.payables.documents.approve` | Voids a draft or approved document with a `void_reason` |
 | `post_document/3` | `finance.payables.documents.post` | Posts an approved document to the ledger and numbers it |
-| `get_document/3`, `list_documents/3` | `finance.payables.view` | Documents with lines and tax lines; a posted bill shows `outstanding` |
+| `get_document/3`, `list_documents/3` | `finance.payables.view` | Documents with lines, tax lines, and `debit_note_ids`; a posted bill shows `outstanding` |
 | `post_payment/3` | `finance.payables.payments.post` | Posts a payment allocated to one party's posted bills |
 | `reverse_payment/4` | `finance.payables.payments.post` | Posts a payment's reversal |
-| `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations |
+| `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
 
 ## Authorization and company scope
@@ -119,6 +119,11 @@ A posted payment is corrected by `reverse_payment/4`: the ledger reverses its
 entry, and its bills are owed again from the reversal's date. A payment is
 reversed at most once, and a reversal is not itself reversed.
 
+Correct a payables posting through this module, never by reversing its
+ledger entry with `Ledger.reverse_entry/4` directly: the ledger does not yet
+know which module owns an entry, so it cannot refuse that, and the two
+records would then disagree. A ledger-level owner guard is later work.
+
 ## Aged payables
 
 `aged_payables/4` lists, per party, every posted bill dated on or before
@@ -203,8 +208,9 @@ payables are held to:
 - **Audit trail.** Every document records who recorded, approved, posted,
   or voided it and when, as the database stamped it; every payment who posted
   it and when. Corrections are new records that name what they correct (a
-  debit note its bill, a reversal its payment), and nothing recorded is
-  overwritten. Settings and tax code changes are Repo writes, which Base Audit
+  debit note its bill, a reversal its payment), and the corrected record
+  reports them (`debit_note_ids`, `reversed_by_payment_id`), so the trail
+  runs both ways; nothing recorded is overwritten. Settings and tax code changes are Repo writes, which Base Audit
   records with their actor (ADR 0013).
 - **Completeness and numbering.** Posted documents and payments carry
   gapless per-company numbers assigned by the database, and a party's
