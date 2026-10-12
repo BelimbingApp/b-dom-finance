@@ -5,8 +5,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
   consolidated document), the ones the authority's limits keep out and
   why, their totals, the window in which it may be issued, and a form
   that issues it. The month lives in the URL (`?month=YYYY-MM`) and
-  defaults to the latest month that has ended. Issuing is a facade call
-  that re-asks its capability; `can_issue?` only decides whether the form
+  defaults to the latest month that has ended. Issuing covers the
+  documents the page shows and no others, and is a facade call that
+  re-asks its capability; `can_issue?` only decides whether the form
   shows.
   """
 
@@ -29,7 +30,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
      |> assign(:active_nav, "finance.einvoice.consolidation")
      |> assign(:company_id, Scope.actor(scope).company_id)
      |> assign(:can_issue?, Authz.can(scope, Einvoice.issue_capability()).allowed)
-     |> assign(:issue_form, to_form(%{"code_number" => "", "grouping" => "document"}, as: :issue))}
+     |> assign(:issue_form, to_form(%{"code_number" => ""}, as: :issue))}
   end
 
   @impl true
@@ -52,11 +53,15 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
     {:noreply, assign(socket, :issue_form, to_form(params, as: :issue))}
   end
 
-  def handle_event("issue", %{"issue" => params}, socket) do
+  def handle_event(
+        "issue",
+        %{"issue" => params},
+        %{assigns: %{candidates: %{documents: [_ | _] = documents}}} = socket
+      ) do
     attributes = %{
       month: month_param(socket.assigns.month),
       code_number: params["code_number"],
-      grouping: params["grouping"]
+      document_ids: Enum.map(documents, & &1.id)
     }
 
     case Einvoice.issue_consolidated_document(
@@ -78,6 +83,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
          |> load()}
     end
   end
+
+  def handle_event("issue", _params, socket),
+    do: {:noreply, put_flash(socket, :error, issue_message(:nothing_to_consolidate))}
 
   # The latest month whose consolidation window has opened, in the
   # authority's calendar: on its first days a month still counts as the
@@ -224,16 +232,6 @@ defmodule Bilimbi.Finance.Einvoice.Web.ConsolidationLive do
                 label="Number of the consolidated document"
                 maxlength="50"
                 required
-              />
-              <.input
-                type="select"
-                field={@issue_form[:grouping]}
-                id="einvoice-consolidation-grouping"
-                label="Lines"
-                options={[
-                  {"One line per document and tax", "document"},
-                  {"One line per tax, summarising every document", "summary"}
-                ]}
               />
               <.button
                 type="submit"

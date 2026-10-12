@@ -4,8 +4,10 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
   A document the authority validated posts one balanced entry through
   `Bilimbi.Finance.Ledger.post_entry/3`, as the user the work runs for,
-  dated the document's issue date, with the document's code number and
-  authority UUID in the entry's `reference`. The accounts come from the
+  dated the document's issue date (a consolidated document's, the last day
+  of the month it reports, so the month's revenue stays in that month),
+  with the document's code number and authority UUID in the entry's
+  `reference`. The accounts come from the
   company's `finance.einvoice.posting.*` settings, by account code in its
   own chart; nothing here names an account, and the authority's
   `posting_rule/1` says which settings each document type posts to. An
@@ -28,7 +30,8 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   connection, a timeout, lock contention) is tried a second time, as a
   fresh transaction once the first has ended, and recorded as one failure
   that says it was tried twice; a ledger refusal (an
-  inactive account, a closed period) or a configuration failure is final.
+  inactive account, a closed period, which is never reopened to post) or a
+  configuration failure is final.
   A document posts once: asking again after a `posted` event is `:noop`.
   A rejected document is still valid at the authority, so it posts too.
 
@@ -45,6 +48,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Consolidation
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Ledger
 
@@ -157,7 +161,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
          {:ok, lines} <- lines(document, accounts, book),
          {:ok, entry} <-
            Ledger.post_entry(scope, company_id, %{
-             entry_date: DateTime.to_date(document.issued_at),
+             entry_date: entry_date(document),
              description: description(document),
              reference: reference(document),
              lines: lines
@@ -207,6 +211,12 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
       {:ok, entry}
     end
+  end
+
+  defp entry_date(document) do
+    if Consolidation.consolidated?(document),
+      do: Date.from_iso8601!(document.details["billing_period_end"]),
+      else: DateTime.to_date(document.issued_at)
   end
 
   defp postable(%{status: status, document_uuid: uuid}) when is_binary(uuid) do

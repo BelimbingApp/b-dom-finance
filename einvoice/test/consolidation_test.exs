@@ -33,7 +33,12 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
     :ok = TestFixtures.put_credentials!(context.first_scope, 73)
     :ok = TestFixtures.put_settings!(context.first_scope, 73, %{"document_version" => "1.0"})
     TokenCache.delete({73, "sandbox", "test-client-id"})
-    on_exit(fn -> TokenCache.delete({73, "sandbox", "test-client-id"}) end)
+
+    on_exit(fn ->
+      TokenCache.delete({73, "sandbox", "test-client-id"})
+      Application.delete_env(:bilimbi_finance_einvoice, :clock)
+    end)
+
     Map.put(context, :operator, operator)
   end
 
@@ -68,11 +73,12 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
   end
 
   defp consolidate(op, attributes, now \\ @now) do
+    Application.put_env(:bilimbi_finance_einvoice, :clock, fn -> now end)
+
     Einvoice.issue_consolidated_document(
       op,
       73,
-      Map.merge(%{month: "2026-09", code_number: "CON-2026-09"}, attributes),
-      now
+      Map.merge(%{month: "2026-09", code_number: "CON-2026-09"}, attributes)
     )
   end
 
@@ -187,27 +193,6 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
                Enum.find(actions, &(&1.event == "finance.einvoice.document.consolidated"))
     end
 
-    test "a summary groups every source into a line per tax", %{operator: op} do
-      source!(op, "R-001", ~U[2026-09-02 04:00:00Z])
-      source!(op, "R-002", ~U[2026-09-03 04:00:00Z])
-
-      source!(op, "R-003", ~U[2026-09-04 04:00:00Z], [
-        line("10.00"),
-        line("5.00", %{tax_type: "06", tax_rate: "0"})
-      ])
-
-      assert {:ok, document} = consolidate(op, %{grouping: "summary"})
-
-      assert [
-               %{description: "3 documents, R-001 to R-003", tax_type: "01"} = taxed,
-               %{description: "R-003", tax_type: "06"}
-             ] = document.lines
-
-      assert money(taxed.line_extension_amount) == "210.00"
-      assert money(taxed.tax_amount) == "12.60"
-      assert money(document.payable_amount) == "227.60"
-    end
-
     test "a line's tax is its sources' tax, not the rate applied again to their sum",
          %{operator: op} do
       # 0.25 at 6% rounds half up to 0.02 on each line; 0.50 at 6% to 0.03.
@@ -260,7 +245,6 @@ defmodule Bilimbi.Finance.Einvoice.ConsolidationTest do
       source!(op, "R-001", ~U[2026-09-02 04:00:00Z])
 
       assert {:error, :invalid_month} = consolidate(op, %{month: "2026/09"})
-      assert {:error, :invalid_option} = consolidate(op, %{grouping: "branch"})
       assert {:error, :invalid_option} = consolidate(op, %{document_ids: []})
       assert {:error, :invalid_option} = consolidate(op, %{document_ids: ["1"]})
 

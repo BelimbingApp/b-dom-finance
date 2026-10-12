@@ -101,11 +101,11 @@ takes only ringgit invoices of at most RM10,000). `consolidation_candidates/3`
 lists them, the ones kept out with the reason, and their totals.
 
 `issue_consolidated_document/3` takes the `month`, a `code_number`,
-optionally the `document_ids` to cover (default all), and a `grouping`:
-`"document"` (a line per source and tax, described by the source's code
-number) or `"summary"` (a line per tax over every source, described by
-their count and first and last code numbers). It is issued at the moment
-of asking, which must fall inside the window the authority sets
+optionally the `document_ids` to cover (default all); its lines are one
+per source and tax, described by the source's code number. The
+consolidation page sends the ids of the documents it shows, so a document
+recorded after the page loaded is never swept in unseen. It is issued at
+the moment of asking, which must fall inside the window the authority sets
 (`Authority.consolidation_window/1`; MyInvois: from the end of the month
 in Malaysian time to seven days later, else `:period_not_ended` or
 `:consolidation_window_closed`). The authority shapes the document
@@ -216,7 +216,8 @@ identifiers.
 
 `Bilimbi.Finance.Einvoice.Posting` posts one balanced entry through
 `Bilimbi.Finance.Ledger.post_entry/3` when a document is validated, dated
-the issue date, with the code number and authority UUID in the entry's
+the issue date (a consolidated document's, the last day of the month it
+reports, so that month's revenue stays in it), with the code number and authority UUID in the entry's
 `reference`, and records the entry's ID on a `posted` status event; a
 cancellation reverses it with `Ledger.reverse_entry/4` and records
 `posting_reversed`. The accounts are the company's
@@ -229,7 +230,9 @@ invoice or debit note is a purchase: it credits the payable account and
 debits expense and purchase tax; a self-billed credit note posts the
 mirror image, and a self-billed refund note debits the settlement account
 and credits expense and purchase tax. A tax of zero posts no tax line.
-A consolidated document posts as one invoice; its sources never post. A posting that cannot happen (accounts unset or
+A consolidated document posts as one invoice; its sources never post. If
+its month is closed in the ledger the posting is refused and the document
+goes to the reconciliation list; a period is never reopened to post. A posting that cannot happen (accounts unset or
 unknown, book not open or in another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who

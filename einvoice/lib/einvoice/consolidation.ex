@@ -8,11 +8,9 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   current environment that were never submitted on their own, are not held
   by another consolidated document, are not waiting in a submit job, and
   pass the authority's own limits (`Authority.consolidation_refusal/1`).
-  They are grouped into lines either one source at a time (`"document"`:
-  a line per source and tax) or as a summary (`"summary"`: a line per tax
-  over every source), each line's amount and tax being the exact sums of
-  its sources' lines, so the consolidated totals equal the sources'
-  totals. The authority shapes the document itself
+  They are grouped into a line per source and tax, each line's amount and
+  tax being the exact sums of that source's lines of the tax, so the
+  consolidated totals equal the sources' totals. The authority shapes the document itself
   (`Authority.consolidated_document/1`).
 
   Recording one writes a row per source and line it covers and a
@@ -35,16 +33,12 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Finance.Einvoice.{ConsolidatedSource, Configuration, Documents, Line, Submission}
 
-  @groupings ["document", "summary"]
   # A source's status before it is consolidated: recorded, or released by a
   # consolidated document that was cancelled or found invalid.
   @open_statuses ["issued", "released"]
   # The events after which a consolidated document no longer holds its
   # sources (see the consolidation migration).
   @releasing ["refused", "invalid", "cancelled"]
-
-  @doc "How sources may be grouped into lines."
-  def groupings, do: @groupings
 
   @doc "The details key that marks a consolidated document and names its month."
   def month_key, do: "consolidation_month"
@@ -137,24 +131,13 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
   `description`, `amount`, `tax_amount`, `tax_type`, `tax_rate`,
   `tax_exemption_reason`, and `source_ids`.
   """
-  def group(sources, "document") do
+  def group(sources) do
     Enum.flat_map(sources, fn source ->
       source.lines
       |> by_tax()
       |> Enum.map(fn {key, lines} ->
         line(key, Enum.map(lines, &{source, &1}), source.code_number)
       end)
-    end)
-  end
-
-  def group(sources, "summary") do
-    sources
-    |> Enum.flat_map(fn source -> Enum.map(source.lines, &{source, &1}) end)
-    |> Enum.group_by(fn {_source, line} -> tax_key(line) end)
-    |> Enum.sort_by(fn {{type, rate, reason}, _} -> {type, Decimal.to_float(rate), reason} end)
-    |> Enum.map(fn {key, pairs} ->
-      codes = pairs |> Enum.map(fn {source, _} -> source.code_number end) |> Enum.uniq()
-      line(key, pairs, summary_description(codes))
     end)
   end
 
@@ -178,11 +161,6 @@ defmodule Bilimbi.Finance.Einvoice.Consolidation do
       source_ids: pairs |> Enum.map(fn {source, _} -> source.id end) |> Enum.uniq()
     }
   end
-
-  defp summary_description([code]), do: code
-
-  defp summary_description(codes),
-    do: "#{length(codes)} documents, #{List.first(codes)} to #{List.last(codes)}"
 
   defp sum(pairs, field),
     do:

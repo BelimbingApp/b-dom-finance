@@ -248,7 +248,7 @@ defmodule Bilimbi.Finance.Einvoice do
          from: window.from,
          until: window.until,
          closes_at: window.closes_at,
-         open?: Consolidation.open(window, DateTime.utc_now()) == :ok,
+         open?: Consolidation.open(window, consolidation_clock()) == :ok,
          documents: Enum.map(eligible, &Documents.summary_view(&1, statuses[&1.id])),
          refused:
            Enum.map(refused, fn {document, reason} ->
@@ -265,9 +265,8 @@ defmodule Bilimbi.Finance.Einvoice do
   Issues the consolidated document for a month's sales no buyer asked an
   individual document for, from plain attributes: `month` (`"YYYY-MM"`),
   `code_number`, optionally `document_ids` (the eligible documents to
-  cover; default every one `consolidation_candidates/3` lists), and
-  `grouping`: `"document"` (default, a line per covered document and tax)
-  or `"summary"` (a line per tax over all of them).
+  cover; default every one `consolidation_candidates/3` lists). Its lines
+  are one per covered document and tax.
 
   It is issued now, which must fall inside the authority's window after
   the month ends (`{:error, :period_not_ended}`,
@@ -290,21 +289,17 @@ defmodule Bilimbi.Finance.Einvoice do
   @spec issue_consolidated_document(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, term()}
   def issue_consolidated_document(%Scope{} = scope, company_id, attributes)
-      when is_map(attributes),
-      do: issue_consolidated_document(scope, company_id, attributes, DateTime.utc_now())
-
-  @doc false
-  # The clock is an argument only so tests can stand inside the window.
-  def issue_consolidated_document(%Scope{} = scope, company_id, attributes, %DateTime{} = now)
       when is_map(attributes) do
     write(scope, company_id, @issue, fn company ->
+      now = consolidation_clock()
+
       with {:ok, request} <- consolidation_request(attributes),
            window = authority().consolidation_window(request.month),
            :ok <- Consolidation.open(window, now),
            environment = environment(scope, company_id),
            {eligible, _refused} = Consolidation.candidates(scope, company_id, environment, window),
            {:ok, sources} <- chosen_sources(eligible, request.document_ids) do
-        groups = Consolidation.group(sources, request.grouping)
+        groups = Consolidation.group(sources)
         profile = Configuration.supplier(scope, company_id, company.display_name)
 
         attributes =
@@ -350,6 +345,16 @@ defmodule Bilimbi.Finance.Einvoice do
     end)
   end
 
+  # The instant a consolidated document is issued and its window judged at.
+  # Only tests set `:clock` (a function of no arguments), to stand inside a
+  # window that a real clock reaches only after a month's end.
+  defp consolidation_clock do
+    case Application.get_env(:bilimbi_finance_einvoice, :clock) do
+      nil -> DateTime.utc_now()
+      clock when is_function(clock, 0) -> clock.()
+    end
+  end
+
   defp month(month) do
     case Consolidation.parse_month(month) do
       {:ok, date} -> {:ok, date}
@@ -359,11 +364,9 @@ defmodule Bilimbi.Finance.Einvoice do
 
   defp consolidation_request(attributes) do
     get = fn key -> Map.get(attributes, key, Map.get(attributes, Atom.to_string(key))) end
-    grouping = get.(:grouping) || "document"
     ids = get.(:document_ids)
 
     with {:ok, month} <- month(get.(:month)),
-         true <- grouping in Consolidation.groupings() || {:error, :invalid_option},
          true <-
            (is_nil(ids) or
               (is_list(ids) and ids != [] and Enum.all?(ids, &(is_integer(&1) and &1 > 0)))) ||
@@ -372,7 +375,6 @@ defmodule Bilimbi.Finance.Einvoice do
        %{
          month: month,
          code_number: get.(:code_number),
-         grouping: grouping,
          document_ids: ids && Enum.uniq(ids)
        }}
     end
