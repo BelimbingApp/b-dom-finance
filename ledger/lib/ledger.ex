@@ -50,6 +50,7 @@ defmodule Bilimbi.Finance.Ledger do
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+
   alias Bilimbi.Finance.Ledger.{
     Account,
     Book,
@@ -60,6 +61,7 @@ defmodule Bilimbi.Finance.Ledger do
     Period,
     Postings
   }
+
   alias Ecto.Changeset
 
   @view "finance.ledger.view"
@@ -303,10 +305,11 @@ defmodule Bilimbi.Finance.Ledger do
   `after`, the `{entry_date, id}` of the last entry already read, which
   returns only the entries after it, so a caller pages by passing the last
   returned entry's date and ID until fewer than `limit` entries come back.
-  `account_id` keeps the entries with a line on that account, and
-  `through_entry_number` the entries numbered up to it, so the entries
-  behind an `account_totals/3` figure are listed with the same options.
-  A malformed option is `{:error, :invalid_option}`.
+  `account_id` keeps the entries with a line on that account,
+  `through_entry_number` the entries numbered up to it, and
+  `exclude_closing: true` leaves out year-end closing entries and their
+  reversals, so the entries behind an `account_totals/3` figure are listed
+  with the same options. A malformed option is `{:error, :invalid_option}`.
   """
   @spec list_entries(Scope.t(), term(), keyword()) ::
           {:ok, [map()]} | {:error, refusal() | :invalid_option}
@@ -314,7 +317,8 @@ defmodule Bilimbi.Finance.Ledger do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, limit, from, to, cursor} <- entry_options(options),
          {:ok, account_id} <- account_option(options),
-         {:ok, through} <- through_option(options) do
+         {:ok, through} <- through_option(options),
+         {:ok, exclude_closing} <- exclude_closing_option(options) do
       entries =
         scope
         |> entries_query(company_id)
@@ -322,6 +326,7 @@ defmodule Bilimbi.Finance.Ledger do
         |> date_bound(:to, to)
         |> through_bound(through)
         |> account_bound(scope, company_id, account_id)
+        |> closing_bound(scope, company_id, exclude_closing)
         |> after_cursor(cursor)
         |> order_by([e], asc: e.entry_date, asc: e.id)
         |> limit(^limit)
@@ -343,6 +348,13 @@ defmodule Bilimbi.Finance.Ledger do
          optional_date?(to) and valid_cursor?(cursor),
        do: {:ok, limit, from, to, cursor},
        else: {:error, :invalid_option}
+  end
+
+  defp exclude_closing_option(options) do
+    case Keyword.get(options, :exclude_closing, false) do
+      flag when is_boolean(flag) -> {:ok, flag}
+      _other -> {:error, :invalid_option}
+    end
   end
 
   defp account_option(options) do
@@ -995,15 +1007,22 @@ defmodule Bilimbi.Finance.Ledger do
   entry it counts, and passing it back reproduces the same figures exactly.
   Several windows read with the same `through_entry_number` describe one
   state of the ledger, which is how a report keeps its columns consistent.
-  Account names, parents, and active flags are read as they are now. A
-  malformed option, or a `from` after `to`, is `{:error, :invalid_option}`.
+  Account names, parents, and active flags are read as they are now.
+
+  `exclude_closing: true` leaves out every year-end closing entry
+  (`close_fiscal_year/4`) and every reversal of one (`reopen_fiscal_year/4`),
+  so income and expense over a window that ends a closed year show the
+  year's activity rather than zero; a profit and loss reads this way, while
+  a balance sheet counts them. A malformed option, or a `from` after `to`, is
+  `{:error, :invalid_option}`.
   """
   @spec account_totals(Scope.t(), term(), keyword()) ::
           {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
   def account_totals(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, from, to} <- window_option(options),
-         {:ok, through} <- through_option(options) do
+         {:ok, through} <- through_option(options),
+         {:ok, exclude_closing} <- exclude_closing_option(options) do
       case book(scope, company_id) do
         nil ->
           {:error, :book_not_open}
@@ -1019,7 +1038,7 @@ defmodule Bilimbi.Finance.Ledger do
              through_entry_number: through,
              currency_code: book.currency_code,
              minor_units: book.minor_units,
-             rows: totals_by_account(scope, company_id, from, to, through)
+             rows: totals_by_account(scope, company_id, from, to, through, exclude_closing)
            }}
       end
     end
@@ -1039,13 +1058,14 @@ defmodule Bilimbi.Finance.Ledger do
   # Sums per account in the database, joined through the entries' date and
   # number; the lines' (company_id, account_id) and (entry_id, line_number)
   # indexes and the entries' date index serve it.
-  defp totals_by_account(scope, company_id, from, to, through) do
+  defp totals_by_account(scope, company_id, from, to, through, exclude_closing \\ false) do
     entries =
       scope
       |> entries_query(company_id)
       |> date_bound(:from, from)
       |> date_bound(:to, to)
       |> through_bound(through)
+      |> closing_bound(scope, company_id, exclude_closing)
 
     totals =
       from(l in lines_query(scope),
@@ -1313,6 +1333,26 @@ defmodule Bilimbi.Finance.Ledger do
       |> select([l], l.entry_id)
 
     where(query, [e], e.id in subquery(entry_ids))
+  end
+
+  defp closing_bound(query, _scope, _company_id, false), do: query
+
+  # A year's close event names its closing entry in the same transaction that
+  # posts it, so the set is the same at any `through_entry_number`; a reopen
+  # posts the entry's reversal, which names it in `reverses_entry_id`.
+  defp closing_bound(query, scope, company_id, true) do
+    closing_ids =
+      from(c in Tenancy.scope_query(ClosingEvent, scope),
+        where: c.company_id == ^company_id and not is_nil(c.entry_id),
+        select: c.entry_id
+      )
+
+    where(
+      query,
+      [e],
+      e.id not in subquery(closing_ids) and
+        (is_nil(e.reverses_entry_id) or e.reverses_entry_id not in subquery(closing_ids))
+    )
   end
 
   defp after_cursor(query, nil), do: query

@@ -187,6 +187,48 @@ defmodule Bilimbi.Finance.Reports.StatementsTest do
     end
   end
 
+  test "a closed year's profit and loss still shows its activity, its result now in equity",
+       %{first_scope: system} do
+    closer =
+      LedgerFixtures.sign_in!(system, 73, 94, [
+        "finance.ledger.view",
+        "finance.ledger.accounts.manage",
+        "finance.ledger.entries.post",
+        "finance.ledger.periods.manage"
+      ])
+
+    {:ok, retained} =
+      Bilimbi.Finance.Ledger.create_account(closer, 73, %{
+        code: "3900",
+        name: "Account 3900",
+        account_type: "equity",
+        retained_earnings: true
+      })
+
+    {:ok, year} =
+      Bilimbi.Finance.Ledger.open_fiscal_year(closer, 73, %{start_date: ~D[2026-01-01]})
+
+    {:ok, %{closing_entry_id: closing}} =
+      Bilimbi.Finance.Ledger.close_fiscal_year(closer, 73, year.id)
+
+    assert closing
+
+    assert {:ok, %{groups: [income, expense], net_income: net_income}} =
+             Reports.profit_and_loss(closer, 73, [{~D[2026-01-01], ~D[2026-12-31]}])
+
+    assert amounts(income.totals) == [420]
+    assert amounts(expense.totals) == [160]
+    assert amounts(net_income) == [260]
+
+    assert {:ok, sheet} = Reports.balance_sheet(closer, 73, [~D[2026-12-31]])
+    assert amounts(sheet.earnings) == [0]
+    assert [_assets, _liabilities, equity] = sheet.groups
+    assert {nil, [{"3000", [1000]}, {"3900", [260]}]} = hd(sections(equity))
+    assert amounts(sheet.total_assets) == [1380]
+    assert sheet.total_liabilities_and_equity == sheet.total_assets
+    assert retained.retained_earnings
+  end
+
   # A value stored before validation, or adopted, is never trusted.
   test "a malformed layout groups nothing rather than wrongly", %{operator: operator} do
     scope = Settings.Scope.company(73, 41)

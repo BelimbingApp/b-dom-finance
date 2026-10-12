@@ -123,6 +123,7 @@ defmodule BilimbiWeb.FinanceReportsLiveTest do
 
       assert has_element?(view, "#profit-and-loss th", "2026-09-01 – 2026-09-30")
       assert has_element?(view, "#profit-and-loss-net-income", "180.00")
+      assert has_element?(view, "#profit-and-loss a[href*='closing=excluded']")
 
       view
       |> form("#report-compare", report: %{compare: "false"})

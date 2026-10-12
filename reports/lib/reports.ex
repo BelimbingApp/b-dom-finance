@@ -185,7 +185,9 @@ defmodule Bilimbi.Finance.Reports do
   `credits` over the entries dated from `from` through `to` (both optional
   and inclusive), and those entries in date order with all their lines and
   the account's own `debit` and `credit` in each. Pass the report's
-  `through_entry_number` to list exactly the entries its figure counted.
+  `through_entry_number` to list exactly the entries its figure counted, and
+  `exclude_closing: true` for a profit and loss figure, which leaves out
+  year-end closing entries.
   Entries come `limit` at a time (1 to 500, default #{@default_entry_limit});
   `more?` is true when the page came back full, and the next page, which may
   be empty, is read by passing the last entry's `{entry_date, id}` as
@@ -196,7 +198,7 @@ defmodule Bilimbi.Finance.Reports do
           {:ok, map()} | {:error, refusal() | :account_not_found}
   def account_activity(%Scope{} = scope, company_id, account_id, options \\ [])
       when is_list(options) do
-    window = Keyword.take(options, [:from, :to])
+    window = Keyword.take(options, [:from, :to, :exclude_closing])
     limit = Keyword.get(options, :limit, @default_entry_limit)
 
     with :ok <- authorize(scope, company_id),
@@ -324,7 +326,9 @@ defmodule Bilimbi.Finance.Reports do
 
   ## Options
 
-  defp window({from, to}), do: [from: from, to: to]
+  # Income and expense over a period leave out year-end closing entries, or a
+  # period ending a closed year would show the year's result as zero.
+  defp window({from, to}), do: [from: from, to: to, exclude_closing: true]
 
   defp periods(periods) when is_list(periods) and length(periods) in 1..@max_columns do
     if Enum.all?(periods, &period?/1), do: {:ok, periods}, else: {:error, :invalid_option}

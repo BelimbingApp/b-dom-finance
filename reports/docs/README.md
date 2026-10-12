@@ -62,12 +62,14 @@ columns.
 
 Amounts are on the type's natural side: assets and expenses as debits less
 credits, liabilities, equity and income as credits less debits. Net income
-is income less expense. The balance sheet's `earnings` is income less
-expense from the first entry to the date that has not been closed into an
-equity account; it is part of equity, so `total_assets` always equals
-`total_liabilities_and_equity`. Closing a period is later work in a sibling
-module; once closing entries move income and expense into equity, this line
-shows only what is still open.
+is income less expense. A profit and loss, the overview's income and
+expense, and their drill-downs leave out the ledger's year-end closing
+entries and their reversals (`exclude_closing` on the ledger's reads), so a
+closed year still shows its activity rather than zero. The balance sheet
+counts them: a closed year's result sits in the retained-earnings account,
+and `earnings` is the income less expense not yet closed into it. That line
+is part of equity, so `total_assets` always equals
+`total_liabilities_and_equity`.
 
 The cash position lists every account its sections cover, whatever its type
 and whether or not it has postings, as debits less credits, so an overdrawn
@@ -161,8 +163,8 @@ accounts are held to. What this slice covers:
   (MFRS, IFRS, or another) by configuring sections.
 
 Gapless document numbering does not apply: reports issue no numbered
-documents. Not covered yet: a cash flow statement, period close, notes, and
-export to a file.
+documents. Not covered yet: a cash flow statement, notes, and export to a
+file.
 
 ## Tests
 

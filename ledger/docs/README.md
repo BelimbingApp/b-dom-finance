@@ -19,9 +19,9 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
 | `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
-| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, and `through_entry_number` |
+| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, `through_entry_number`, and `exclude_closing` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
-| `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` |
+| `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` and `exclude_closing` |
 | `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
 | `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods |
 | `list_fiscal_years/2`, `get_fiscal_year/3` | `finance.ledger.view` | Fiscal years with their status, closing entry, and periods |
@@ -214,7 +214,11 @@ over any number of entries reads one row per account; the lines'
 `(company_id, account_id)` and `(entry_id, line_number)` indexes and the
 entries' date index serve it. It names `through_entry_number` like the
 trial balance, and reading several windows at one number gives a report's
-columns one state of the ledger. Financial statements are built on it in
+columns one state of the ledger. `exclude_closing: true`, on it and on
+`list_entries/3`, leaves out every year-end closing entry and every
+reversal of one, so income and expense over a closed year show its
+activity; the set is fixed at any entry number, because a close event and
+its entry are written in one transaction. Financial statements are built on it in
 the sibling `finance/reports` module.
 
 ## Posting notices

@@ -170,6 +170,80 @@ defmodule Bilimbi.Finance.Ledger.AccountTotalsTest do
     end
   end
 
+  describe "year-end closing entries" do
+    setup %{first_scope: system, accounts: accounts} do
+      closer =
+        TestFixtures.sign_in!(system, 73, 94, [
+          @view,
+          @manage,
+          @post,
+          "finance.ledger.periods.manage",
+          "finance.ledger.periods.reopen"
+        ])
+
+      {:ok, retained} =
+        Ledger.create_account(closer, 73, %{
+          code: "3900",
+          name: "3900",
+          account_type: "equity",
+          retained_earnings: true
+        })
+
+      {:ok, year} = Ledger.open_fiscal_year(closer, 73, %{start_date: ~D[2026-01-01]})
+      {:ok, closed} = Ledger.close_fiscal_year(closer, 73, year.id)
+      %{closer: closer, year: closed, accounts: Map.put(accounts, "3900", retained)}
+    end
+
+    test "are left out of totals and entries when asked", context do
+      %{closer: closer, year: year, accounts: accounts} = context
+      window = [from: ~D[2026-01-01], to: ~D[2026-12-31]]
+
+      assert {:ok, %{rows: counted}} = Ledger.account_totals(closer, 73, window)
+      assert net(counted, "4000") == 0
+
+      assert {:ok, %{rows: activity}} =
+               Ledger.account_totals(closer, 73, window ++ [exclude_closing: true])
+
+      assert net(activity, "4000") == -200
+      refute Enum.any?(activity, &(&1.code == "3900"))
+
+      assert {:ok, listed} = Ledger.list_entries(closer, 73, account_id: accounts["4000"].id)
+      assert year.closing_entry_id in Enum.map(listed, & &1.id)
+
+      assert {:ok, without} =
+               Ledger.list_entries(closer, 73,
+                 account_id: accounts["4000"].id,
+                 exclude_closing: true
+               )
+
+      refute year.closing_entry_id in Enum.map(without, & &1.id)
+      assert length(without) == length(listed) - 1
+    end
+
+    test "leave out a reopened year's reversal of its closing entry too", context do
+      %{closer: closer, year: year} = context
+
+      {:ok, _reopened} =
+        Ledger.reopen_fiscal_year(closer, 73, year.id, %{reason: "Late adjustment"})
+
+      window = [from: ~D[2026-01-01], to: ~D[2026-12-31], exclude_closing: true]
+      assert {:ok, %{rows: rows}} = Ledger.account_totals(closer, 73, window)
+      assert net(rows, "4000") == -200
+      refute Enum.any?(rows, &(&1.code == "3900"))
+    end
+
+    test "refuses a flag that is not a boolean", %{closer: closer} do
+      assert {:error, :invalid_option} = Ledger.account_totals(closer, 73, exclude_closing: "yes")
+      assert {:error, :invalid_option} = Ledger.list_entries(closer, 73, exclude_closing: 1)
+    end
+  end
+
+  # Debits less credits, as a whole number for comparison.
+  defp net(rows, code) do
+    row = Enum.find(rows, &(&1.code == code))
+    row.debits |> Decimal.sub(row.credits) |> Decimal.to_integer()
+  end
+
   defp post!(operator, accounts, date, lines) do
     {:ok, entry} =
       Ledger.post_entry(operator, 73, %{

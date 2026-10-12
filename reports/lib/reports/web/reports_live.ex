@@ -149,8 +149,11 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
   defp drill_path(report, row, column) do
     window =
       case column do
-        %{from: from, to: to} -> %{"from" => Date.to_iso8601(from), "to" => Date.to_iso8601(to)}
-        %{as_of: as_of} -> %{"to" => Date.to_iso8601(as_of)}
+        %{from: from, to: to} ->
+          %{"from" => Date.to_iso8601(from), "to" => Date.to_iso8601(to), "closing" => "excluded"}
+
+        %{as_of: as_of} ->
+          %{"to" => Date.to_iso8601(as_of)}
       end
 
     query = Map.put(window, "through", report.through_entry_number)

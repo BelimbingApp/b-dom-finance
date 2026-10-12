@@ -28,7 +28,12 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    window = %{from: date(params["from"]), to: date(params["to"])}
+    window = %{
+      from: date(params["from"]),
+      to: date(params["to"]),
+      exclude_closing: params["closing"] == "excluded"
+    }
+
     through = Params.positive_integer(params["through"])
 
     result =
@@ -39,6 +44,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
           account_id,
           from: window.from,
           to: window.to,
+          exclude_closing: window.exclude_closing,
           through_entry_number: through,
           limit: @page_size,
           after: cursor(params["after_date"], params["after_id"])
@@ -50,6 +56,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
         {:noreply,
          socket
          |> assign(:activity, activity)
+         |> assign(:exclude_closing, window.exclude_closing)
          |> assign(:refusal, nil)
          |> assign(:page_title, "#{activity.account.code} #{activity.account.name}")}
 
@@ -79,7 +86,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
     end
   end
 
-  defp next_path(activity) do
+  defp next_path(activity, exclude_closing) do
     last = List.last(activity.entries)
 
     query =
@@ -87,6 +94,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
         "from" => activity.from && Date.to_iso8601(activity.from),
         "to" => activity.to && Date.to_iso8601(activity.to),
         "through" => activity.through_entry_number,
+        "closing" => if(exclude_closing, do: "excluded"),
         "after_date" => Date.to_iso8601(last.entry_date),
         "after_id" => last.id
       }
@@ -114,6 +122,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
             <:subtitle>
               {type_label(@activity.account.account_type)} · {window_label(@activity)} ·
               <span id="activity-through">through entry {@activity.through_entry_number}</span>
+              <span :if={@exclude_closing} id="activity-closing">· year-end closing entries left out</span>
             </:subtitle>
           </.header>
 
@@ -173,7 +182,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
           </.card>
 
           <div :if={@activity.more?} class="mt-3">
-            <.button id="activity-next" navigate={next_path(@activity)}>Next entries</.button>
+            <.button id="activity-next" navigate={next_path(@activity, @exclude_closing)}>Next entries</.button>
           </div>
         <% else %>
           <.empty_state
