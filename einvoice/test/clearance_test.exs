@@ -9,6 +9,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
   alias Bilimbi.Finance.Einvoice
   alias Bilimbi.Finance.Einvoice.{Clearance, PollWorker, Submission, SubmitWorker, TestFixtures}
   alias Bilimbi.Finance.Einvoice.MyInvois.TokenCache
+  alias Bilimbi.Finance.Ledger
 
   @submit_path "/api/v1.0/documentsubmissions/"
   @progress_path "/api/v1.0/documentsubmissions/HJSD135P2S7D8IU"
@@ -579,6 +580,49 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                Einvoice.get_document(op, 73, document.id)
     end
 
+    test "a ledger refusal leaves the valid event committed and the failure recorded", %{
+      operator: op,
+      document: document
+    } do
+      accounts = TestFixtures.open_posting_book!(op, 73)
+
+      {:ok, _account} =
+        Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: false})
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"GET", @progress_path} => &TestFixtures.progress_response(&1, "valid"),
+        {"GET", @details_path} => &TestFixtures.details_response(&1, "Valid")
+      })
+
+      assert :ok = PollWorker.handle_job(args(document), execution(op))
+
+      assert [
+               {"issued", _},
+               {"submitted", _},
+               {"valid", _},
+               {"posting_failed", failed},
+               {"posting_failed", _tried_again}
+             ] = events(op, document)
+
+      assert is_binary(failed.reason) and failed.response == %{"retryable" => true}
+      assert "finance.einvoice.validated" in action_events(op)
+
+      assert {:ok, %{status: "valid", attention: [:posting_failed]}} =
+               Einvoice.get_document(op, 73, document.id)
+
+      assert {:error, {:failed, _reason}} = Einvoice.retry_posting(op, 73, document.id)
+      assert "finance.einvoice.posting.retried" in action_events(op)
+
+      {:ok, _account} =
+        Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: true})
+
+      assert {:ok, %{ledger_entry_id: entry_id, attention: []}} =
+               Einvoice.retry_posting(op, 73, document.id)
+
+      assert is_integer(entry_id)
+    end
+
     test "a refresh that lands during the poll is not recorded twice", %{
       operator: op,
       document: document
@@ -735,6 +779,29 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                Einvoice.refresh_status(op, 73, document.id)
 
       assert is_integer(entry_id)
+    end
+
+    test "a rejected document is still valid at the authority and posts like one", %{
+      operator: op,
+      document: document
+    } do
+      Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+        event: "rejected",
+        authority_status: "Valid",
+        reason: "Wrong quantity"
+      })
+
+      assert {:ok, %{unposted: [row], unreversed: []}} = Einvoice.reconciliation(op, 73)
+      assert row.id == document.id and row.status == "rejected"
+
+      assert {:ok, %{status: "rejected", attention: [:rejection_requested, :unposted]}} =
+               Einvoice.get_document(op, 73, document.id)
+
+      assert {:ok, %{ledger_entry_id: entry_id, attention: [:rejection_requested]}} =
+               Einvoice.retry_posting(op, 73, document.id)
+
+      assert is_integer(entry_id)
+      assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
     end
 
     test "retry_posting posts a failed document once, audits each try, and is idempotent",

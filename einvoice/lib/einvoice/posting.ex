@@ -22,6 +22,11 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   `posting_failed` event also says whether the failure may pass on its own
   (`retry_due?/1`): configuration and authorization failures do not.
   A document posts once: asking again after a `posted` event is `:noop`.
+  A rejected document is still valid at the authority, so it posts too.
+
+  The ledger rolls back its own transaction when it refuses an entry, so
+  `post/3` and `reverse/4` must not run inside one of ours; each records
+  its event in a transaction of its own, afterwards.
   """
 
   alias Bilimbi.Base.Tenancy.Scope
@@ -46,18 +51,24 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   end
 
   @doc """
-  Whether a validated document without an entry failed its last posting
+  Whether a valid (or rejected) document without an entry failed its last posting
   for a reason that may pass on its own, so a status read tries it again.
   """
   @spec retry_due?(map()) :: boolean()
-  def retry_due?(%{status: "valid", ledger_entry_id: nil, events: events}) do
+  def retry_due?(%{status: status, ledger_entry_id: nil, events: events}) do
     case events |> Enum.filter(&(&1.event == "posting_failed")) |> List.last() do
-      %{response: %{"retryable" => true}} -> true
+      %{response: %{"retryable" => true}} -> status in Documents.valid_statuses()
       _none -> false
     end
   end
 
   def retry_due?(_document), do: false
+
+  defp record!(scope, company_id, document_id, attributes) do
+    Documents.write!(scope, company_id, fn ->
+      Documents.record_event!(scope, company_id, document_id, attributes)
+    end)
+  end
 
   defp posted?(scope, company_id, document_id) do
     scope
@@ -81,7 +92,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
     case result do
       {:ok, entry} ->
-        Documents.record_event!(scope, company_id, document.id, %{
+        record!(scope, company_id, document.id, %{
           event: "posted",
           ledger_entry_id: entry.id,
           reason: "entry #{entry.entry_number}"
@@ -92,7 +103,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
       {:error, reason} ->
         message = failure_message(reason)
 
-        Documents.record_event!(scope, company_id, document.id, %{
+        record!(scope, company_id, document.id, %{
           event: "posting_failed",
           reason: message,
           response: %{"retryable" => transient?(reason)}
@@ -120,7 +131,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
                reference: reference(document)
              }) do
           {:ok, entry} ->
-            Documents.record_event!(scope, company_id, document.id, %{
+            record!(scope, company_id, document.id, %{
               event: "posting_reversed",
               ledger_entry_id: entry.id,
               reason: "entry #{entry.entry_number}"
@@ -131,7 +142,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
           {:error, reason} ->
             message = failure_message(reason)
 
-            Documents.record_event!(scope, company_id, document.id, %{
+            record!(scope, company_id, document.id, %{
               event: "reversal_failed",
               reason: message
             })
@@ -150,7 +161,12 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
   defp transient?(_reason), do: true
 
-  defp postable(%{status: "valid", document_uuid: uuid}) when is_binary(uuid), do: :ok
+  defp postable(%{status: status, document_uuid: uuid}) when is_binary(uuid) do
+    if status in Documents.valid_statuses(),
+      do: :ok,
+      else: {:error, "the document is not validated"}
+  end
+
   defp postable(_document), do: {:error, "the document is not validated"}
 
   defp accounts(scope, company_id, document_type) do

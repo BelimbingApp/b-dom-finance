@@ -369,7 +369,7 @@ defmodule Bilimbi.Finance.Einvoice do
   failed event behind. A document that already has its entry comes back
   unchanged. `{:error, {:failed, reason}}` when the posting fails again
   (recorded as a `posting_failed` event), `{:error, :not_postable}` for a
-  document that is not valid. Each try is the audit action
+  document that is neither valid nor rejected. Each try is the audit action
   `finance.einvoice.posting.retried`.
   """
   @spec retry_posting(Scope.t(), term(), term()) ::
@@ -418,7 +418,7 @@ defmodule Bilimbi.Finance.Einvoice do
 
   @doc """
   The documents whose ledger side does not match their status: `unposted`,
-  valid documents without a ledger entry (with the reason the last
+  valid (or buyer-rejected) documents without a ledger entry (with the reason the last
   posting failed, if one did), and `unreversed`, cancelled documents
   whose entry stands. Each row is a
   document summary with `ledger_entry_id`, `reversal_entry_id`, and

@@ -69,7 +69,6 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
-  alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.{Certificate, Configuration, Document, Documents, Posting}
   alias Bilimbi.Finance.Einvoice.{PollWorker, Submission}
 
@@ -461,11 +460,14 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   defp read_status(scope, company_id, document, credentials, now) do
     case authority().document_status(scope, company_id, credentials, document.document_uuid) do
       {:ok, answer} ->
-        {:ok,
-         write!(scope, company_id, fn ->
-           current = Documents.document_view(Documents.fetch(scope, company_id, document.id))
-           apply_status(scope, company_id, current, answer, now)
-         end)}
+        {status, follow_up} =
+          write!(scope, company_id, fn ->
+            current = Documents.document_view(Documents.fetch(scope, company_id, document.id))
+            apply_status(scope, company_id, current, answer)
+          end)
+
+        settle(scope, company_id, document.id, follow_up, now)
+        {:ok, status}
 
       {:rate_limited, _answer} ->
         {:error, {:retry, :rate_limited}}
@@ -488,7 +490,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     end
   end
 
-  defp apply_status(scope, company_id, document, answer, now) do
+  # Records the status event and returns the status with the ledger work it
+  # leaves for after the transaction commits: `:post`, `:reverse`, `:retry`,
+  # or `nil`.
+  defp apply_status(scope, company_id, document, answer) do
     base = %{
       "document_id" => document.id,
       "code_number" => document.code_number,
@@ -521,11 +526,11 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         )
 
         action(scope, company_id, "finance.einvoice.rejected", base, answer)
-        "rejected"
+        {"rejected", if(document.status == "valid", do: :retry, else: :post)}
 
       answer.status == :valid and document.status not in ["valid", "rejected", "cancelled"] ->
         record_valid_if_new(scope, company_id, document, answer, common, base)
-        "valid"
+        {"valid", :post}
 
       answer.status == :invalid and document.status != "invalid" ->
         record(
@@ -540,7 +545,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         )
 
         action(scope, company_id, "finance.einvoice.invalid", base, answer)
-        "invalid"
+        {"invalid", nil}
 
       answer.status == :cancelled and document.status != "cancelled" ->
         record(
@@ -555,11 +560,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         )
 
         action(scope, company_id, "finance.einvoice.cancelled", base, answer)
-        reverse_posting(scope, company_id, document.id, now)
-        "cancelled"
+        {"cancelled", :reverse}
 
       answer.status == :submitted ->
-        "submitted"
+        {"submitted", nil}
 
       true ->
         record(
@@ -573,8 +577,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           })
         )
 
-        retry_transient_posting(scope, company_id, document.id)
-        document.status
+        {document.status, :retry}
     end
   end
 
@@ -588,26 +591,35 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       )
 
       action(scope, company_id, "finance.einvoice.validated", base, answer)
-
-      validated = Documents.document_view(Documents.fetch(scope, company_id, document.id))
-      Posting.post(scope, company_id, validated)
-      retry_transient_posting(scope, company_id, document.id)
     end
 
     :ok
   end
 
-  # One more attempt at a posting that failed for a reason that may pass.
-  defp retry_transient_posting(scope, company_id, document_id) do
-    document = Documents.document_view(Documents.fetch(scope, company_id, document_id))
+  # The ledger work a status change leaves, run once the status is
+  # committed and outside any transaction of ours: the ledger rolls back
+  # its own on a refusal, which would take ours with it. A posting is tried
+  # once more when it failed for a reason that may pass.
+  defp settle(scope, company_id, document_id, :post, now) do
+    Posting.post(scope, company_id, fresh_view(scope, company_id, document_id))
+    settle(scope, company_id, document_id, :retry, now)
+  end
+
+  defp settle(scope, company_id, document_id, :reverse, now) do
+    Posting.reverse(scope, company_id, fresh_view(scope, company_id, document_id), now)
+    :ok
+  end
+
+  defp settle(scope, company_id, document_id, :retry, _now) do
+    document = fresh_view(scope, company_id, document_id)
     if Posting.retry_due?(document), do: Posting.post(scope, company_id, document)
     :ok
   end
 
-  defp reverse_posting(scope, company_id, document_id, now) do
-    document = Documents.document_view(Documents.fetch(scope, company_id, document_id))
-    Posting.reverse(scope, company_id, document, now)
-  end
+  defp settle(_scope, _company_id, _document_id, nil, _now), do: :ok
+
+  defp fresh_view(scope, company_id, document_id),
+    do: Documents.document_view(Documents.fetch(scope, company_id, document_id))
 
   ## Ledger follow-up
 
@@ -624,11 +636,20 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   """
   @spec retry_posting(Scope.t(), pos_integer(), term()) :: retry_result()
   def retry_posting(%Scope{} = scope, company_id, document_id) do
-    retry(scope, company_id, document_id, "posting", fn
-      %{ledger_entry_id: entry_id} when not is_nil(entry_id) -> :noop
-      %{status: "valid"} = document -> {:run, Posting.post(scope, company_id, document)}
-      _document -> {:error, :not_postable}
-    end)
+    retry(
+      scope,
+      company_id,
+      document_id,
+      "posting",
+      fn document ->
+        cond do
+          not is_nil(document.ledger_entry_id) -> :noop
+          document.status in Documents.valid_statuses() -> :run
+          true -> {:error, :not_postable}
+        end
+      end,
+      &Posting.post(scope, company_id, &1)
+    )
   end
 
   @doc """
@@ -638,45 +659,39 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   """
   @spec retry_reversal(Scope.t(), pos_integer(), term(), DateTime.t()) :: retry_result()
   def retry_reversal(%Scope{} = scope, company_id, document_id, %DateTime{} = now) do
-    retry(scope, company_id, document_id, "reversal", fn
-      %{ledger_entry_id: nil} ->
-        :noop
-
-      %{reversal_entry_id: entry_id} when not is_nil(entry_id) ->
-        :noop
-
-      %{status: "cancelled"} = document ->
-        {:run, Posting.reverse(scope, company_id, document, now)}
-
-      _document ->
-        {:error, :not_reversible}
-    end)
+    retry(
+      scope,
+      company_id,
+      document_id,
+      "reversal",
+      fn document ->
+        cond do
+          is_nil(document.ledger_entry_id) -> :noop
+          not is_nil(document.reversal_entry_id) -> :noop
+          document.status == "cancelled" -> :run
+          true -> {:error, :not_reversible}
+        end
+      end,
+      &Posting.reverse(scope, company_id, &1, now)
+    )
   end
 
-  # The document is read under the company's lock, so two tries cannot both
-  # see it unposted. A failed try still commits: its event and the audit
-  # action are the record.
-  defp retry(scope, company_id, document_id, operation, decide) do
-    write!(scope, company_id, fn ->
-      case Documents.fetch(scope, company_id, document_id) do
-        nil ->
-          {:error, :document_not_found}
+  # The ledger call runs outside any transaction of ours. A failed try
+  # still records its event and the audit action.
+  defp retry(scope, company_id, document_id, operation, decide, run) do
+    case Documents.fetch(scope, company_id, document_id) do
+      nil ->
+        {:error, :document_not_found}
 
-        fetched ->
-          document = Documents.document_view(fetched)
+      fetched ->
+        document = Documents.document_view(fetched)
 
-          case decide.(document) do
-            :noop ->
-              {:ok, document}
-
-            {:error, reason} ->
-              {:error, reason}
-
-            {:run, result} ->
-              retried(scope, company_id, document, operation, result)
-          end
-      end
-    end)
+        case decide.(document) do
+          :noop -> {:ok, document}
+          {:error, reason} -> {:error, reason}
+          :run -> retried(scope, company_id, document, operation, run.(document))
+        end
+    end
   end
 
   defp retried(scope, company_id, document, operation, result) do
@@ -687,10 +702,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         :noop -> {"unchanged", nil}
       end
 
-    Documents.record_action!(
-      scope,
-      company_id,
-      "finance.einvoice.posting.retried",
+    payload =
       Map.reject(
         %{
           "document_id" => document.id,
@@ -702,7 +714,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
         },
         fn {_key, value} -> is_nil(value) end
       )
-    )
+
+    write!(scope, company_id, fn ->
+      Documents.record_action!(scope, company_id, "finance.einvoice.posting.retried", payload)
+    end)
 
     case result do
       {:error, message} ->
@@ -756,8 +771,9 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
             })
 
             action(scope, company_id, "finance.einvoice.cancelled", base, answer)
-            reverse_posting(scope, company_id, document.id, now)
           end)
+
+          settle(scope, company_id, document.id, :reverse, now)
 
           {:ok, Documents.document_view(Documents.fetch(scope, company_id, document_id))}
 
@@ -912,15 +928,5 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   end
 
   # Every write holds the company's writable lock, as the facade does.
-  defp write!(scope, company_id, fun) do
-    {:ok, result} =
-      Repo.transact(fn ->
-        case Company.lock_writable_company(scope, company_id) do
-          {:ok, _proof} -> {:ok, fun.()}
-          {:error, reason} -> raise "company #{company_id} is not writable: #{inspect(reason)}"
-        end
-      end)
-
-    result
-  end
+  defp write!(scope, company_id, fun), do: Documents.write!(scope, company_id, fun)
 end

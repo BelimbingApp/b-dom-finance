@@ -45,7 +45,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `submit_document/3` | `finance.einvoice.documents.submit` | Queues the submission as the signed-in user, after checking credentials and the signing key |
 | `refresh_status/3` | `finance.einvoice.documents.submit` | Reads the status at the authority and records what changed |
 | `cancel_document/4` | `finance.einvoice.documents.cancel` | Cancels a validated document inside its 72-hour window, then reverses its entry |
-| `reconciliation/2` | `finance.einvoice.view` | Valid documents without an entry, and cancelled documents whose entry was not reversed |
+| `reconciliation/2` | `finance.einvoice.view` | Valid (or rejected) documents without an entry, and cancelled documents whose entry was not reversed |
 | `retry_posting/3`, `retry_reversal/3` | `finance.einvoice.documents.submit` and `finance.ledger.entries.post` | Posts or reverses the entry of a listed document once its cause is fixed; idempotent, and an audit action names each try |
 | `generate_pdf/3`, `read_pdf/3` | `finance.einvoice.view` | Renders and reads the printable document through Base Artifacts |
 | `list_codes/3` | `finance.einvoice.view` | The company's active codes in one of the authority's lists |
@@ -106,7 +106,10 @@ apart (`:poll_interval_ms`, 4 seconds), a bounded number of reads per job,
 and records `valid` (with the long ID that completes the validation link)
 or `invalid` (with the validation results), then posts the ledger entry.
 A status change is decided from the document as read under the company's
-lock, so a refresh and a poll cannot both record it.
+lock, so a refresh and a poll cannot both record it. The ledger work it
+leaves (posting, reversing, one more try at a transient failure) runs
+after that transaction commits, never inside it: the ledger rolls back
+its own transaction on a refusal, which would take the status with it.
 
 A refresh (`refresh_status/3`) reads the document at the authority and
 records a buyer's rejection request as `rejected`, a cancellation made on

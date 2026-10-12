@@ -11,6 +11,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
+  alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.{Document, Line, StatusEvent}
 
@@ -24,8 +25,15 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   # a document (Guideline §2.4.5); afterwards only a note corrects it.
   @cancellation_window_hours 72
 
+  # Statuses in which the authority still holds the document as valid: a
+  # buyer's rejection request leaves it so until it is cancelled.
+  @valid_statuses ~w(valid rejected)
+
   @doc "The events that move a document's status, in no particular order."
   def status_events, do: @status_events
+
+  @doc "The statuses in which the authority still holds the document as valid."
+  def valid_statuses, do: @valid_statuses
 
   @doc "The window after validation in which a document can be cancelled."
   def cancellation_window_hours, do: @cancellation_window_hours
@@ -154,10 +162,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   defp escape_like(text), do: Regex.replace(~r/[\\%_]/, text, "\\\\\\0")
 
   @doc """
-  Valid documents without a ledger entry, and cancelled documents whose
-  entry was not reversed, each as a summary with the entry IDs and the
-  reason the last posting or reversal failed. A rejected document is
-  still valid at the authority, so its entry stands.
+  Valid (or rejected, which the authority still holds as valid) documents
+  without a ledger entry, and cancelled documents whose entry was not
+  reversed, each as a summary with the entry IDs and the reason the last
+  posting or reversal failed.
   """
   def reconciliation(%Scope{} = scope, company_id) do
     postings =
@@ -181,7 +189,8 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
       |> Repo.all()
 
     unposted_ids =
-      for {id, "valid"} <- valid_ids,
+      for {id, status} <- valid_ids,
+          status in @valid_statuses,
           is_nil(find_entry(postings[id], "posted")),
           do: id
 
@@ -270,6 +279,23 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
         )
       )
     )
+  end
+
+  @doc """
+  Runs `fun` in a transaction holding the company's writable lock, as the
+  facade's writes do, and returns what it returns. Never call the ledger
+  inside it: a ledger refusal rolls back the transaction it joins.
+  """
+  def write!(%Scope{} = scope, company_id, fun) do
+    {:ok, result} =
+      Repo.transact(fn ->
+        case Company.lock_writable_company(scope, company_id) do
+          {:ok, _proof} -> {:ok, fun.()}
+          {:error, reason} -> raise "company #{company_id} is not writable: #{inspect(reason)}"
+        end
+      end)
+
+    result
   end
 
   @doc """
@@ -429,8 +455,8 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
     flags = [
       {Enum.any?(since_status, &(&1.event == "overdue")), :overdue},
       {name == "rejected", :rejection_requested},
-      {name == "valid" and is_nil(posted) and posting_failed?, :posting_failed},
-      {name == "valid" and is_nil(posted) and not posting_failed?, :unposted},
+      {name in @valid_statuses and is_nil(posted) and posting_failed?, :posting_failed},
+      {name in @valid_statuses and is_nil(posted) and not posting_failed?, :unposted},
       {name == "cancelled" and not is_nil(posted) and is_nil(reversed) and reversal_failed?,
        :reversal_failed},
       {name == "cancelled" and not is_nil(posted) and is_nil(reversed) and not reversal_failed?,
