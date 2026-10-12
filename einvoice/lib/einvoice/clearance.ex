@@ -23,7 +23,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   when the outage has outlasted the authority's allowance an `overdue` event and the audit
   action `finance.einvoice.submission.overdue` give the operator notice).
   A document whose status is already `submitted`, `valid`, or `cancelled`
-  is never submitted again, whatever the job says.
+  is never submitted again, whatever the job says. An outcome is recorded
+  under the company lock only while the document is still submittable, so
+  of two overlapping jobs only the first leaves an event, an audit action,
+  and a poll job.
 
   A duplicate, or an outage that may have hidden an accepted request,
   never resubmits blindly: the authority is asked for the document by its
