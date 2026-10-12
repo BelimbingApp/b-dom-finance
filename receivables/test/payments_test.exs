@@ -280,8 +280,9 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
       assert owed(context, first) == "0.00"
       assert owed(context, third) == "50.00"
 
-      # What is owed on each account's invoices is that account's balance.
-      assert receivable_balances(context, [old, new.id]) == ["50.00", "50.00"]
+      # The aged receivables total equals the accounts' ledger balances, and each
+      # account's balance is what its own invoices owe.
+      assert reconciled_receivable_balances(context, [old, new.id]) == ["50.00", "50.00"]
 
       assert {:ok, _} =
                Receivables.reverse_payment(operator, 73, payment.id, %{
@@ -289,7 +290,7 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
                  reason: "Returned by the bank"
                })
 
-      assert receivable_balances(context, [old, new.id]) == ["140.00", "70.00"]
+      assert reconciled_receivable_balances(context, [old, new.id]) == ["140.00", "70.00"]
       assert owed(context, second) == "50.00"
     end
   end
@@ -348,7 +349,7 @@ defmodule Bilimbi.Finance.Receivables.PaymentsTest do
 
   # The accounts' ledger balances, after checking that the aged receivables
   # report adds up to them.
-  defp receivable_balances(context, account_ids) do
+  defp reconciled_receivable_balances(context, account_ids) do
     %{operator: operator} = context
     {:ok, report} = Receivables.aged_receivables(operator, 73, ~D[2026-10-31])
 
