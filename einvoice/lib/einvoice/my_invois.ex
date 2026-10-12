@@ -10,9 +10,19 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   validation; version 1.0 is submitted unsigned, which is how a company
   tests the sandbox before its certificate arrives. Invoices (`01`) and the
   credit, debit, and refund notes that reference a validated original
-  (`02` to `04`), in ringgit, are issued in this release; foreign
-  currencies, consolidated, and self-billed documents come later. The
+  (`02` to `04`), their self-billed counterparts (`11` to `14`), which the
+  company issues as the buyer, and the monthly consolidated invoice, in
+  ringgit, are issued in this release; foreign currencies come later. The
   builder already writes every element the SDK's samples use.
+
+  The consolidated invoice follows the Specific Guideline v4.9 (§3.6,
+  §3.7): it reports a calendar month (Malaysian time) of sales no buyer
+  asked an individual e-invoice for, to the general public buyer
+  (`EI00000000010`) with classification `004`, issued within seven days
+  after the month ends, and never covers a sale over RM10,000. A
+  self-billed document (§8.3) names the supplier as the counterparty; a
+  foreign supplier without a Malaysian TIN takes the general TIN
+  `EI00000000030`.
 
   The API callbacks translate the authority's answers into the meta-terms
   the facade and workers record, keeping each raw response beside them:
@@ -36,6 +46,30 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   @versions [%{version: "1.1", signed: true}, %{version: "1.0", signed: false}]
   @invoice "01"
   @notes ["02", "03", "04"]
+  @self_billed_invoice "11"
+  @self_billed_notes ["12", "13", "14"]
+  # The invoice type each note type corrects.
+  @invoice_of %{
+    "02" => @invoice,
+    "03" => @invoice,
+    "04" => @invoice,
+    "12" => @self_billed_invoice,
+    "13" => @self_billed_invoice,
+    "14" => @self_billed_invoice
+  }
+  # The authority's general TINs (Specific Guideline §3.7 and §8.3): the
+  # general public buyer of a consolidated invoice, and a foreign supplier
+  # without a Malaysian TIN on a self-billed document.
+  @general_public_tin "EI00000000010"
+  @foreign_supplier_tin "EI00000000030"
+  @home_country "MYS"
+  @consolidated_classification "004"
+  # A consolidated invoice is issued within seven days after its month ends,
+  # in Malaysian time (UTC+8, no daylight saving), and covers no sale above
+  # RM10,000, which needs an individual e-invoice.
+  @local_offset_seconds 8 * 3600
+  @consolidation_days 7
+  @consolidation_limit Decimal.new("10000")
   @referable ["valid", "rejected"]
   @search_days 30
   @search_pages 10
@@ -67,16 +101,29 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   def id, do: "myinvois"
 
   @impl true
-  def issuable_document_types, do: [@invoice | @notes]
+  def issuable_document_types, do: [@invoice | @notes] ++ [@self_billed_invoice | @self_billed_notes]
 
   @impl true
-  def note_document_types, do: @notes
+  def note_document_types, do: @notes ++ @self_billed_notes
 
   @impl true
-  def posting_rule("01"), do: {:debit, :receivable_account}
-  def posting_rule("02"), do: {:credit, :receivable_account}
-  def posting_rule("03"), do: {:debit, :receivable_account}
-  def posting_rule("04"), do: {:credit, :settlement_account}
+  def self_billed_document_types, do: [@self_billed_invoice | @self_billed_notes]
+
+  # A sale debits the receivable and credits revenue and tax; a self-billed
+  # purchase credits the payable and debits expense and purchase tax. A
+  # credit note posts the mirror image, and a refund note settles in cash.
+  @sale %{net: :revenue_account, tax: :tax_account}
+  @purchase %{net: :expense_account, tax: :purchase_tax_account}
+
+  @impl true
+  def posting_rule("01"), do: Map.merge(@sale, %{side: :debit, counter: :receivable_account})
+  def posting_rule("02"), do: Map.merge(@sale, %{side: :credit, counter: :receivable_account})
+  def posting_rule("03"), do: Map.merge(@sale, %{side: :debit, counter: :receivable_account})
+  def posting_rule("04"), do: Map.merge(@sale, %{side: :credit, counter: :settlement_account})
+  def posting_rule("11"), do: Map.merge(@purchase, %{side: :credit, counter: :payable_account})
+  def posting_rule("12"), do: Map.merge(@purchase, %{side: :debit, counter: :payable_account})
+  def posting_rule("13"), do: Map.merge(@purchase, %{side: :credit, counter: :payable_account})
+  def posting_rule("14"), do: Map.merge(@purchase, %{side: :debit, counter: :settlement_account})
   def posting_rule(_type), do: nil
 
   @impl true
@@ -84,6 +131,10 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   def document_type_name("02"), do: "Credit note"
   def document_type_name("03"), do: "Debit note"
   def document_type_name("04"), do: "Refund note"
+  def document_type_name("11"), do: "Self-billed invoice"
+  def document_type_name("12"), do: "Self-billed credit note"
+  def document_type_name("13"), do: "Self-billed debit note"
+  def document_type_name("14"), do: "Self-billed refund note"
   def document_type_name(type), do: "Document type #{type}"
 
   @impl true
@@ -91,6 +142,82 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
 
   @impl true
   def outage_notice_hours, do: 72
+
+  ## Consolidated invoices
+
+  # The general public buyer as the Specific Guideline (§3.7) writes it:
+  # registration, contact, and address "NA", state "Not Applicable".
+  @general_public_buyer %{
+    name: "General Public",
+    tax_id: @general_public_tin,
+    registration_type: "BRN",
+    registration_number: "NA",
+    phone: "NA",
+    address: %{lines: ["NA"], city: "NA", state_code: "17", country_code: @home_country}
+  }
+
+  @impl true
+  def consolidation_window(%Date{} = month) do
+    first = Date.beginning_of_month(month)
+    until = first |> Date.end_of_month() |> Date.add(1) |> local_midnight()
+
+    %{
+      from: local_midnight(first),
+      until: until,
+      closes_at: DateTime.add(until, @consolidation_days * 86_400, :second)
+    }
+  end
+
+  defp local_midnight(date) do
+    date
+    |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+    |> DateTime.add(-@local_offset_seconds, :second)
+  end
+
+  @impl true
+  def consolidation_refusal(document) do
+    cond do
+      document.document_type != @invoice ->
+        "is not an invoice"
+
+      document.currency_code != @tax_currency ->
+        "is not in #{@tax_currency}"
+
+      Decimal.gt?(document.payable_amount, @consolidation_limit) ->
+        "is above RM#{Decimal.to_string(@consolidation_limit)}, which needs an individual e-invoice"
+
+      true ->
+        nil
+    end
+  end
+
+  @impl true
+  def consolidated_document(%{code_number: code, issued_at: issued_at, month: month, lines: lines}) do
+    %{
+      document_type: @invoice,
+      code_number: code,
+      issued_at: issued_at,
+      currency_code: @tax_currency,
+      billing_period_start: Date.beginning_of_month(month),
+      billing_period_end: Date.end_of_month(month),
+      billing_period_description: "Monthly",
+      buyer: @general_public_buyer,
+      lines:
+        Enum.map(lines, fn line ->
+          %{
+            description: line.description,
+            classification_code: @consolidated_classification,
+            quantity: "1",
+            unit_code: "C62",
+            unit_price: line.amount,
+            tax_type: line.tax_type,
+            tax_rate: line.tax_rate,
+            tax_exemption_reason: line.tax_exemption_reason,
+            tax_amount: line.tax_amount
+          }
+        end)
+    }
+  end
 
   @impl true
   def document_versions, do: @versions
@@ -178,7 +305,16 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   @impl true
-  def validate(changeset, %{supplier: supplier, codes: codes} = context) do
+  def validate(changeset, %{supplier: profile, codes: codes} = context) do
+    consolidated? = Map.get(context, :consolidated, false)
+
+    # The company's profile is the supplier, or the buyer on a self-billed
+    # document; either way it must carry what every document needs.
+    profile_field =
+      if get_field(changeset, :document_type) in self_billed_document_types(),
+        do: :buyer,
+        else: :supplier
+
     changeset
     |> validate_inclusion(:document_type, issuable_document_types(),
       message: "is not a document type this release issues"
@@ -188,9 +324,30 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     |> validate_code(:payment_means_code, codes.("payment_means"))
     |> validate_tax_currency()
     |> validate_original(Map.get(context, :original))
-    |> validate_supplier(supplier, codes)
-    |> update_embed(:buyer, &validate_buyer(&1, codes))
-    |> update_embeds(:lines, &validate_line(&1, codes))
+    |> validate_profile(profile_field, profile, codes)
+    |> update_embed(:buyer, &validate_party(&1, codes))
+    |> update_embed(:supplier, &validate_supplier_party(&1, codes))
+    |> update_embeds(:lines, &validate_line(&1, codes, consolidated?))
+    |> validate_consolidated(consolidated?)
+  end
+
+  # A consolidated invoice goes to the general public buyer, whose contact
+  # the authority writes as "NA"; only `Consolidation` builds one.
+  defp validate_consolidated(changeset, false), do: changeset
+
+  defp validate_consolidated(changeset, true) do
+    buyer = get_field(changeset, :buyer)
+
+    cond do
+      get_field(changeset, :document_type) != @invoice ->
+        add_error(changeset, :document_type, "must be an invoice for a consolidated document")
+
+      is_nil(buyer) or buyer.tax_id != @general_public_tin ->
+        add_error(changeset, :buyer, "must be the general public for a consolidated document")
+
+      true ->
+        changeset
+    end
   end
 
   # A note references the validated original it corrects (Guideline
@@ -201,27 +358,36 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   defp validate_original(changeset, original) do
     type = get_field(changeset, :document_type)
     original_id = get_field(changeset, :original_document_id)
+    notes = note_document_types()
 
     cond do
-      type in @notes and is_nil(original_id) ->
+      type in notes and is_nil(original_id) ->
         add_error(changeset, :original_document_id, "is required for a note")
 
-      type in @notes and is_nil(original) ->
+      type in notes and is_nil(original) ->
         add_error(changeset, :original_document_id, "is not a document of this company")
 
-      type in @notes and original.status not in @referable ->
+      type in notes and original.status not in @referable ->
         add_error(changeset, :original_document_id, "is not a validated document")
 
-      type in @notes and is_nil(original.document_uuid) ->
+      type in notes and is_nil(original.document_uuid) ->
         add_error(changeset, :original_document_id, "has no document UUID from the authority")
 
-      type in @notes and original.document_type in @notes ->
+      type in notes and original.document_type in notes ->
         add_error(changeset, :original_document_id, "is itself a note; reference the invoice")
 
-      type in @notes and original.currency_code != get_field(changeset, :currency_code) ->
+      # A self-billed note corrects a self-billed invoice, and a note a sale.
+      type in notes and original.document_type != @invoice_of[type] ->
+        add_error(
+          changeset,
+          :original_document_id,
+          "must be the #{String.downcase(document_type_name(@invoice_of[type]))} it corrects"
+        )
+
+      type in notes and original.currency_code != get_field(changeset, :currency_code) ->
         add_error(changeset, :currency_code, "must match the original document's currency")
 
-      type not in @notes and not is_nil(original_id) ->
+      type not in notes and not is_nil(original_id) ->
         add_error(changeset, :original_document_id, "is only given for a note")
 
       true ->
@@ -240,41 +406,65 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     end)
   end
 
-  defp validate_supplier(changeset, supplier, codes) do
-    missing = for field <- supplier_missing(supplier), do: @supplier_required[field]
+  defp validate_profile(changeset, field, profile, codes) do
+    missing = for key <- supplier_missing(profile), do: @supplier_required[key]
 
     cond do
       missing != [] ->
         add_error(
           changeset,
-          :supplier,
+          field,
           "is incomplete: set #{Enum.join(missing, ", ")} in the e-invoice settings"
         )
 
-      not Map.has_key?(codes.("industry"), supplier.industry_code) ->
-        add_error(changeset, :supplier, "industry classification code is not a known code")
+      not Map.has_key?(codes.("industry"), profile.industry_code) ->
+        add_error(changeset, field, "industry classification code is not a known code")
 
-      not Map.has_key?(codes.("state"), supplier.state_code) ->
-        add_error(changeset, :supplier, "state code is not a known code")
+      not Map.has_key?(codes.("state"), profile.state_code) ->
+        add_error(changeset, field, "state code is not a known code")
 
-      not Map.has_key?(codes.("country"), supplier.country_code) ->
-        add_error(changeset, :supplier, "country code is not a known code")
+      not Map.has_key?(codes.("country"), profile.country_code) ->
+        add_error(changeset, field, "country code is not a known code")
 
       true ->
         changeset
     end
   end
 
-  defp validate_buyer(party, codes) do
+  # The general public buyer's contact is "NA" (Specific Guideline §3.7).
+  defp validate_party(party, codes) do
+    general_public? = get_field(party, :tax_id) == @general_public_tin
+
     party
     |> validate_shape(:tax_id, :tax_id)
     |> validate_inclusion(:registration_type, @registration_types)
     |> validate_required([:phone])
-    |> validate_shape(:phone, :phone)
+    |> then(fn party ->
+      if general_public? and get_field(party, :phone) == "NA",
+        do: party,
+        else: validate_shape(party, :phone, :phone)
+    end)
     |> update_embed(:address, fn address ->
       address
       |> validate_code(:state_code, codes.("state"))
       |> validate_code(:country_code, codes.("country"))
+    end)
+  end
+
+  # A self-billed document's supplier carries what a supplier profile does:
+  # its industry code and activity (`00000`, "NOT APPLICABLE", for one
+  # abroad). The foreign-supplier TIN is for a supplier outside Malaysia.
+  defp validate_supplier_party(party, codes) do
+    country = party |> get_field(:address) |> then(&(&1 && &1.country_code))
+
+    party
+    |> validate_party(codes)
+    |> validate_required([:industry_code, :business_activity])
+    |> validate_code(:industry_code, codes.("industry"))
+    |> validate_change(:tax_id, fn :tax_id, tax_id ->
+      if tax_id == @foreign_supplier_tin and country == @home_country,
+        do: [tax_id: "is the general TIN for a supplier outside Malaysia"],
+        else: []
     end)
   end
 
@@ -284,10 +474,22 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     end)
   end
 
-  defp validate_line(line, codes) do
+  defp validate_line(line, codes, consolidated?) do
     line
     |> validate_rate()
     |> validate_code(:classification_code, codes.("classification"))
+    |> validate_change(:classification_code, fn :classification_code, code ->
+      cond do
+        consolidated? and code != @consolidated_classification ->
+          [classification_code: "must be #{@consolidated_classification} on a consolidated document"]
+
+        not consolidated? and code == @consolidated_classification ->
+          [classification_code: "is for a consolidated document; consolidate the month instead"]
+
+        true ->
+          []
+      end
+    end)
     |> validate_code(:tax_type, codes.("tax_type"))
     |> validate_code(:unit_code, codes.("unit"))
     |> validate_code(:origin_country_code, codes.("country"))
@@ -731,12 +933,14 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
     }
   end
 
+  # On a self-billed document the buyer is the company's own profile, whose
+  # registration type may be blank (a business, BRN).
   defp buyer(buyer) do
     %{
       name: buyer["name"],
       identifications: [
         {"TIN", buyer["tax_id"]},
-        {buyer["registration_type"], buyer["registration_number"]},
+        {buyer["registration_type"] || "BRN", buyer["registration_number"]},
         {"SST", buyer["sales_tax_registration"] || "NA"},
         {"TTX", "NA"}
       ],

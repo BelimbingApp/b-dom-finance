@@ -4,12 +4,16 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
   recorded.
 
   The draft owns the shape every authority shares: the document's type and
-  code number, its issue instant, currency and exchange rate, the buyer,
-  optional payment and billing-period details, the original document a
-  note corrects, and the lines. It derives
-  each line's amounts and the document's totals, so a caller sends
-  quantities, prices, discounts, and tax rates and never a total. The
-  authority then checks codes and its own rules (`Authority.validate/3`).
+  code number, its issue instant, currency and exchange rate, the
+  counterparty (the buyer, or on a self-billed document the supplier, the
+  company's own profile taking the other side), optional payment and
+  billing-period details, the original document a note corrects, and the
+  lines. It derives each line's amounts and the document's totals, so a
+  caller sends quantities, prices, discounts, and tax rates and never a
+  total. The one exception is a consolidated document's line, whose tax is
+  the sum of its sources' tax (`Bilimbi.Finance.Einvoice.Consolidation`).
+  The authority then checks codes and its own rules
+  (`Authority.validate/3`).
   """
 
   use Ecto.Schema
@@ -31,6 +35,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     field(:billing_period_description, :string)
     field(:original_document_id, :integer)
     embeds_one(:buyer, Party, on_replace: :update)
+    embeds_one(:supplier, Party, on_replace: :update)
     embeds_many(:lines, Line, on_replace: :delete)
     # Derived from the lines.
     field(:line_extension_amount, :decimal)
@@ -41,10 +46,15 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
 
   @doc """
   Casts and checks `attributes`. `now` is the issue instant when the caller
-  gives none, and an issue instant later than `now` is refused.
+  gives none, and an issue instant later than `now` is refused. Options:
+  `self_billed_types`, the document types whose counterparty is the
+  `supplier` rather than the `buyer`; and `source_tax`, true only for a
+  consolidated document, whose lines carry their `tax_amount`.
   """
-  @spec changeset(map(), DateTime.t()) :: Ecto.Changeset.t()
-  def changeset(attributes, %DateTime{} = now) when is_map(attributes) do
+  @spec changeset(map(), DateTime.t(), keyword()) :: Ecto.Changeset.t()
+  def changeset(attributes, %DateTime{} = now, options \\ []) when is_map(attributes) do
+    source_tax? = Keyword.get(options, :source_tax, false)
+
     %__MODULE__{}
     |> cast(attributes, [
       :document_type,
@@ -61,8 +71,8 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     ])
     |> update_change(:code_number, &String.trim/1)
     |> put_default_issued_at(now)
-    |> cast_embed(:buyer, required: true)
-    |> cast_embed(:lines, required: true)
+    |> cast_counterparty(attributes, Keyword.get(options, :self_billed_types, []))
+    |> cast_embed(:lines, required: true, with: &Line.changeset(&1, &2, source_tax?))
     |> validate_required([:document_type, :code_number, :issued_at, :currency_code])
     |> validate_length(:code_number, min: 1, max: 50)
     |> validate_format(:currency_code, ~r/\A[A-Z]{3}\z/)
@@ -78,6 +88,23 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     end)
     |> validate_period()
     |> derive_totals()
+  end
+
+  # The counterparty is the buyer, or the supplier on a self-billed
+  # document; the company's own profile is the other party, never given.
+  defp cast_counterparty(changeset, attributes, self_billed_types) do
+    {party, other, message} =
+      if get_field(changeset, :document_type) in self_billed_types,
+        do: {:supplier, :buyer, "is the company on a self-billed document; give the supplier"},
+        else: {:buyer, :supplier, "is the company; give the buyer"}
+
+    changeset
+    |> cast_embed(party, required: true)
+    |> then(fn changeset ->
+      if is_nil(Map.get(attributes, other, Map.get(attributes, Atom.to_string(other)))),
+        do: changeset,
+        else: add_error(changeset, other, message)
+    end)
   end
 
   defp put_default_issued_at(changeset, now) do

@@ -41,13 +41,22 @@ defmodule Bilimbi.Finance.Einvoice.Contributions do
           order: 8
         },
         %{
+          id: "finance.einvoice.consolidation",
+          label: "E-invoice Consolidation",
+          icon: "squares-2x2",
+          parent: "finance",
+          route: "/finance/einvoice/consolidation",
+          capability: @view,
+          order: 9
+        },
+        %{
           id: "finance.einvoice.reconciliation",
           label: "E-invoice Reconciliation",
           icon: "chart-bar",
           parent: "finance",
           route: "/finance/einvoice/reconciliation",
           capability: @view,
-          order: 9
+          order: 10
         },
         %{
           id: "finance.einvoice.setup",
@@ -56,7 +65,7 @@ defmodule Bilimbi.Finance.Einvoice.Contributions do
           parent: "finance",
           route: "/finance/einvoice/setup",
           capability: @settings,
-          order: 10
+          order: 11
         }
       ]
     }

@@ -130,7 +130,7 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
     test "requires the authority's rules", %{operator: op} do
       attributes =
         TestFixtures.invoice_attributes(%{
-          document_type: "11",
+          document_type: "99",
           currency_code: "USD",
           lines: [
             %{
@@ -147,7 +147,7 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
 
       assert {:error, changeset} = Einvoice.issue_document(op, 73, attributes)
       errors = errors_on(changeset)
-      assert %{document_type: ["is not a document type this release issues"]} = errors
+      assert "is not a document type this release issues" in errors.document_type
       assert %{currency_code: ["must be MYR in this release"]} = errors
 
       assert %{buyer: %{tax_id: ["must be one or two capital letters and 8 to 12 digits"]}} =

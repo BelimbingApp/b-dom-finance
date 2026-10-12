@@ -14,6 +14,9 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Party do
     field(:sales_tax_registration, :string)
     field(:email, :string)
     field(:phone, :string)
+    # A supplier's (on a self-billed document) industry and activity.
+    field(:industry_code, :string)
+    field(:business_activity, :string)
     embeds_one(:address, Address, on_replace: :update)
   end
 
@@ -26,7 +29,9 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Party do
       :registration_number,
       :sales_tax_registration,
       :email,
-      :phone
+      :phone,
+      :industry_code,
+      :business_activity
     ])
     |> cast_embed(:address, required: true)
     |> validate_required([:name, :tax_id, :registration_type, :registration_number])
@@ -36,5 +41,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Party do
     |> validate_length(:sales_tax_registration, max: 35)
     |> validate_length(:email, max: 320)
     |> validate_length(:phone, max: 20)
+    |> validate_length(:industry_code, max: 10)
+    |> validate_length(:business_activity, max: 300)
   end
 end

@@ -7,10 +7,15 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   dated the document's issue date, with the document's code number and
   authority UUID in the entry's `reference`. The accounts come from the
   company's `finance.einvoice.posting.*` settings, by account code in its
-  own chart; nothing here names an account. An invoice or debit note
-  debits the receivable account and credits revenue and tax; a credit note
-  posts the mirror image; a refund note debits revenue and tax and credits
-  the settlement account. A tax of zero posts no tax line.
+  own chart; nothing here names an account, and the authority's
+  `posting_rule/1` says which settings each document type posts to. An
+  invoice or debit note debits the receivable account and credits revenue
+  and tax; a credit note posts the mirror image; a refund note debits
+  revenue and tax and credits the settlement account. A self-billed
+  document is a purchase: its invoice or debit note credits the payable
+  account and debits expense and purchase tax, its credit note posts the
+  mirror image, and its refund note debits the settlement account. A tax
+  of zero posts no tax line.
 
   The entry's ID is recorded on a `posted` status event, and a cancelled
   document's entry is reversed with `Ledger.reverse_entry/4` and recorded
@@ -217,7 +222,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
     needed =
       case Configuration.authority().posting_rule(document_type) do
-        {_side, account} -> [account, :revenue_account, :tax_account]
+        %{counter: counter, net: net, tax: tax} -> [counter, net, tax]
         nil -> []
       end
 
@@ -262,23 +267,22 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     end
   end
 
-  # The entry's lines by document type. `other` is the side the receivable
-  # or settlement account takes; revenue and tax take the opposite side.
+  # The entry's lines by document type. The counter-account (receivable,
+  # payable, or settlement) takes the rule's side; the net (revenue or
+  # expense) and tax accounts take the opposite side.
   defp lines(document, accounts, _book) do
-    type = document.document_type
     net = document.tax_exclusive_amount
     tax = document.tax_amount
     gross = document.payable_amount
 
-    {other_side, other_field} = Configuration.authority().posting_rule(type)
-    other_account = Map.fetch!(accounts, other_field)
-    revenue_side = if other_side == :debit, do: :credit, else: :debit
+    rule = Configuration.authority().posting_rule(document.document_type)
+    opposite = if rule.side == :debit, do: :credit, else: :debit
 
     lines =
       [
-        {other_account, other_side, gross, nil},
-        {accounts.revenue_account, revenue_side, net, "Tax-exclusive amount"},
-        {accounts.tax_account, revenue_side, tax, "Tax"}
+        {Map.fetch!(accounts, rule.counter), rule.side, gross, nil},
+        {Map.fetch!(accounts, rule.net), opposite, net, "Tax-exclusive amount"},
+        {Map.fetch!(accounts, rule.tax), opposite, tax, "Tax"}
       ]
       |> Enum.reject(fn {_account, _side, amount, _description} -> Decimal.eq?(amount, 0) end)
       |> Enum.map(fn {account, side, amount, description} ->
