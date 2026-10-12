@@ -19,8 +19,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
 | `post_entry/3,4` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines`; option `settlement_account_ids` lists accounts that may be inactive in this entry |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
-| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, and `after` |
+| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, `through_entry_number`, and `exclude_closing` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
+| `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` and `exclude_closing` |
+| `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
 | `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods |
 | `list_fiscal_years/2`, `get_fiscal_year/3` | `finance.ledger.view` | Fiscal years with their status, closing entry, and periods |
 | `list_closing_events/3` | `finance.ledger.view` | A fiscal year's closing log, oldest first |
@@ -127,9 +129,11 @@ skipped (a refused or rolled-back post takes none) or reused.
 `list_entries/3` orders entries by date and then ID. `limit` is an integer
 from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
-`limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
-shape or range, including an `after` ID beyond PostgreSQL's `bigint`, is
-`{:error, :invalid_option}`.
+`limit` entries come back. `account_id` keeps the entries with a line on
+that account and `through_entry_number` those numbered up to it, so the
+entries behind an `account_totals/3` figure are listed with the same
+options. An option of the wrong shape or range, including an ID beyond
+PostgreSQL's `bigint`, is `{:error, :invalid_option}`.
 
 ## Trial balance
 
@@ -218,6 +222,38 @@ ledger. `trial_balance/4` as of the closed year's last day shows every income
 and expense account at zero and the year's result in retained earnings,
 alongside the balance-sheet accounts the new year carries forward.
 
+## Account totals
+
+`account_totals/3` returns, for every account with a posting dated from
+`from` through `to` (both optional and inclusive), its debit and credit
+totals, ordered by code. PostgreSQL sums the lines per account, so a report
+over any number of entries reads one row per account; the lines'
+`(company_id, account_id)` and `(entry_id, line_number)` indexes and the
+entries' date index serve it. It names `through_entry_number` like the
+trial balance, and reading several windows at one number gives a report's
+columns one state of the ledger. `exclude_closing: true`, on it and on
+`list_entries/3`, leaves out every year-end closing entry and every
+reversal of one, so income and expense over a closed year show its
+activity; the set is fixed at any entry number, because a close event and
+its entry are written in one transaction. Financial statements are built on it
+in the sibling `finance/reports` module.
+
+## Posting notices
+
+`subscribe_postings/2` registers the calling process for one company's
+postings. A trigger on `finance_ledger_entries` (migration
+`20261012214100`) calls `pg_notify` on the `finance_ledger_postings`
+channel with `tenant_id:company_id:entry_number`, and PostgreSQL delivers
+a notification only when the posting transaction commits: a refused or
+rolled-back post sends nothing, and a post inside a caller's own
+transaction is announced at that transaction's commit, when a reader can
+already see it. The ledger's application runs one relay per node
+(`Bilimbi.Finance.Ledger.Postings`), which opens its listening connection
+with the first subscription on that node and sends each subscriber
+`{:finance_ledger_posted, %{company_id: company_id, entry_number: number}}`.
+A notice carries no figures, so a subscriber reads them through the facade,
+which authorizes the read again.
+
 ## Database
 
 The migration `20261012170100` is `:bilimbi_only` and creates
@@ -255,12 +291,16 @@ them:
 - a check keeps the retained-earnings designation to equity accounts and a
   partial unique index to one per company.
 
+The migration `20261012214100`, also `:bilimbi_only`, adds the trigger that
+announces each posted entry (see Posting notices).
+
 `Bilimbi.Finance.Ledger.SchemaContract` describes the tables but is not
 registered in the descriptor: compatibility verification runs before pending
 Bilimbi-only migrations, when these tables correctly do not exist.
 `test/schema_contract_test.exs` runs the migrations in a fresh database,
 verifies the contract with `Bilimbi.Base.Database.SchemaVerifier.verify/2`, and
-proves the migrations' own triggers outside the test sandbox.
+proves the migrations' own triggers outside the test sandbox, including that
+a committed entry is announced and a refused one is not.
 
 ## Standards addressed
 
@@ -300,8 +340,10 @@ accounts are held to. What this slice covers:
   row. Records therefore outlive any statutory retention period, such as the seven years Malaysia's Companies Act 2016
   requires; how long a company must keep them is law, not code.
 
-Financial reporting under MFRS or IFRS (statements, tax) is later work in
-sibling modules.
+Financial statements (profit and loss, balance sheet, cash position) are
+the sibling `finance/reports` module, read through `account_totals/3` and
+`list_entries/3`. Statement layouts specific to MFRS or IFRS, and tax, are
+later work in sibling modules.
 
 ## Tests
 
@@ -312,5 +354,10 @@ migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0`
 there builds two tenants' companies and an Authz snapshot, and `sign_in!/4`
 signs a user in with direct grants.
 
-This slice has no pages, menu entries, or agent operations; callers use the
+The posting-notice trigger is not copied: a sandboxed post never commits, so
+it could never deliver. `test/schema_contract_test.exs` proves the real
+trigger, and `test/postings_test.exs` proves who hears a notice by sending
+one committed outside the sandbox.
+
+The ledger has no pages, menu entries, or agent operations; callers use the
 facade.

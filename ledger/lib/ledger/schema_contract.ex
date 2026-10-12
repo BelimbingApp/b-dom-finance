@@ -12,7 +12,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
   # verifier compares after removing whitespace and parentheses.
 
   @doc "The migrations that build the schema, oldest first; the contract is their result."
-  def migration_versions, do: [20_261_012_170_100, 20_261_013_101_700]
+  def migration_versions, do: [20_261_012_170_100, 20_261_012_214_100, 20_261_013_101_700]
 
   @impl true
   def tables do

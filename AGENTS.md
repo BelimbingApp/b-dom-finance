@@ -46,6 +46,18 @@ here; they govern this code and are not copied here.
   events with actor, reason, and a database-stamped time, the latest deciding
   the state, as the ledger's closing log does; an updatable status column
   loses the history an auditor asks for.
+- Read ledger figures with `Ledger.account_totals/3`, which sums in
+  PostgreSQL, not by adding up `list_entries/3` lines in memory; read every
+  column of one report at the first read's `through_entry_number`, as
+  `reports/lib/reports.ex` does, so the figures reproduce.
+- React to postings with `Ledger.subscribe_postings/2`, never a broadcast
+  sent after a facade write: the ledger's trigger notifies at commit, while
+  a broadcast inside a caller's transaction announces uncommitted entries.
+  A sandboxed test cannot commit; deliver the notice itself
+  (`ledger/test/postings_test.exs`).
+- Base Menu already declares the `finance` menu root; a module contributes
+  its items with `parent: "finance"` and never declares the root, or boot
+  fails on a duplicate id.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's

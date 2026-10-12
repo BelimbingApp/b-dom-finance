@@ -15,7 +15,9 @@ defmodule Bilimbi.Finance.Ledger.MixProject do
   end
 
   def application do
-    Bilimbi.Base.ModuleRegistry.MixDiscovery.module_application(__DIR__)
+    Bilimbi.Base.ModuleRegistry.MixDiscovery.module_application(__DIR__,
+      mod: {Bilimbi.Finance.Ledger.Application, []}
+    )
   end
 
   defp deps do

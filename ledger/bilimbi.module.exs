@@ -15,6 +15,7 @@
   migrations: "priv/repo/migrations",
   migration_dispositions: %{
     20_261_012_170_100 => :bilimbi_only,
+    20_261_012_214_100 => :bilimbi_only,
     20_261_013_101_700 => :bilimbi_only
   },
   web: nil,
