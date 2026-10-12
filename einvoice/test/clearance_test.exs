@@ -395,11 +395,22 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
             validationResults: %{
               status: "Invalid",
               validationSteps: [
-                %{name: "Structure", status: "Valid"},
+                %{name: "Step04-Code Field Validator", status: "Valid"},
                 %{
-                  name: "TIN check",
+                  name: "Step05-Taxpayer Profile Validator",
                   status: "Invalid",
-                  error: %{code: "CF401", message: "Supplier TIN not found"}
+                  error: %{
+                    error: "Step05-Invalid Taxpayer Profile Validator",
+                    errorCode: "Error05",
+                    innerError: [
+                      %{
+                        error:
+                          "Where specific TIN provided, NA is not allowed for NRIC/ARMY Please refer to https://sdk.example/ERR203",
+                        errorCode: "ERR203",
+                        propertyName: "SupplierIdentity"
+                      }
+                    ]
+                  }
                 }
               ]
             }
@@ -408,7 +419,11 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       assert :ok = PollWorker.handle_job(args(document), execution(op))
       assert [{"issued", _}, {"submitted", _}, {"invalid", invalid}] = events(op, document)
-      assert invalid.reason == "TIN check: Supplier TIN not found"
+
+      assert invalid.reason ==
+               "Step05-Taxpayer Profile Validator: Error05 Step05-Invalid Taxpayer Profile Validator: " <>
+                 "ERR203 Where specific TIN provided, NA is not allowed for NRIC/ARMY"
+
       assert "finance.einvoice.invalid" in action_events(op)
       assert {:ok, %{status: "invalid"}} = Einvoice.get_document(op, 73, document.id)
       # An invalid document can be corrected through settings and submitted again.

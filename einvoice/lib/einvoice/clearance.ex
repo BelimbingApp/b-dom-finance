@@ -395,7 +395,10 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   end
 
   # The authority's current view of the document, recorded as the event it
-  # implies. Returns the status the document now has.
+  # implies. Returns the status the document now has. A 404 right after a
+  # submission is the authority not having indexed the document yet (the
+  # sandbox answers "not authorized to get document details" for a few
+  # seconds), so it is retried rather than recorded as unreadable.
   defp read_status(scope, company_id, document, credentials, now) do
     case authority().document_status(scope, company_id, credentials, document.document_uuid) do
       {:ok, answer} ->
@@ -409,6 +412,9 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
       {:unavailable, _answer} ->
         {:error, {:retry, :authority_unavailable}}
+
+      {:refused, %{http_status: 404}} ->
+        {:error, {:retry, :not_yet_available}}
 
       {:refused, answer} ->
         record(scope, company_id, document.id, %{
@@ -681,18 +687,21 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
   defp retry_after_reason(_answer), do: "rate limited"
 
+  # The authority's validation steps, each with an error whose text and
+  # code sit under `error`/`message` and `errorCode`/`code`, and whose
+  # `innerError` list carries the specific rules broken; the summary keeps
+  # the failed steps' codes and texts, in the first 300 characters.
   defp invalid_reason(%{response: %{"validationResults" => %{"validationSteps" => steps}}})
        when is_list(steps) do
     steps
     |> Enum.reject(&(&1["status"] in ["Valid", "valid"]))
     |> Enum.map(fn step ->
       error = step["error"] || %{}
-
-      [step["name"], error["message"] || error["code"]]
-      |> Enum.filter(&is_binary/1)
-      |> Enum.join(": ")
+      inner = error |> Map.get("innerError") |> List.wrap() |> Enum.map(&error_text/1)
+      texts = Enum.reject([error_text(error) | inner], &(&1 in [nil, ""]))
+      Enum.join([step["name"] | texts], ": ")
     end)
-    |> Enum.reject(&(&1 == ""))
+    |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("; ")
     |> String.slice(0, 300)
     |> case do
@@ -702,6 +711,18 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   end
 
   defp invalid_reason(answer), do: answer[:reason]
+
+  defp error_text(%{} = error) do
+    code = error["errorCode"] || error["code"]
+    text = error["error"] || error["message"]
+
+    [code, text]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(" ")
+    |> String.replace(~r/\s*Please refer to \S+/, "")
+  end
+
+  defp error_text(_error), do: nil
 
   defp authority_status(:valid), do: "Valid"
   defp authority_status(:invalid), do: "Invalid"
