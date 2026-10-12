@@ -269,7 +269,8 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
           |> Plug.Conn.put_status(422)
           |> Plug.Conn.put_resp_header("retry-after", "300")
           |> Req.Test.json(%{error: %{code: "DuplicateSubmission", message: "Duplicate"}})
-        end
+        end,
+        {"GET", @recent_path} => &recent_response(&1, [])
       })
 
       assert {:cancel, :duplicate_submission} =
@@ -559,13 +560,6 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
         uuid: "OLDUUID1",
         submissionUid: "OLDSUB",
         dateTimeReceived: "2026-12-01T00:00:00Z"
-      }
-
-      new = %{
-        internalId: "JSON-INV12345",
-        uuid: "NEWUUID2",
-        submissionUid: "NEWSUB",
-        dateTimeReceived: "2026-10-02T00:00:00Z"
       }
 
       stub = fn results ->
