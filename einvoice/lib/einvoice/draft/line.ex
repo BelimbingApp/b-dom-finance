@@ -25,22 +25,27 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
 
   @max_amount Decimal.new("999999999999999999.99")
 
-  def changeset(line, attributes) do
+  # `source_tax?`: the line carries its tax, the sum of a consolidated
+  # document's sources' tax, instead of deriving it from the rate.
+  def changeset(line, attributes, source_tax? \\ false) do
     line
-    |> cast(attributes, [
-      :description,
-      :classification_code,
-      :tariff_code,
-      :origin_country_code,
-      :quantity,
-      :unit_code,
-      :unit_price,
-      :discount_amount,
-      :charge_amount,
-      :tax_type,
-      :tax_rate,
-      :tax_exemption_reason
-    ])
+    |> cast(
+      attributes,
+      [
+        :description,
+        :classification_code,
+        :tariff_code,
+        :origin_country_code,
+        :quantity,
+        :unit_code,
+        :unit_price,
+        :discount_amount,
+        :charge_amount,
+        :tax_type,
+        :tax_rate,
+        :tax_exemption_reason
+      ] ++ if(source_tax?, do: [:tax_amount], else: [])
+    )
     |> blank_is_zero(:discount_amount)
     |> blank_is_zero(:charge_amount)
     |> validate_required([
@@ -64,7 +69,17 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
     |> validate_scale(:discount_amount, 2)
     |> validate_scale(:charge_amount, 2)
     |> validate_scale(:tax_rate, 4)
-    |> derive_amounts()
+    |> validate_source_tax(source_tax?)
+    |> derive_amounts(source_tax?)
+  end
+
+  defp validate_source_tax(changeset, false), do: changeset
+
+  defp validate_source_tax(changeset, true) do
+    changeset
+    |> validate_required([:tax_amount])
+    |> validate_number(:tax_amount, greater_than_or_equal_to: 0, less_than: @max_amount)
+    |> validate_scale(:tax_amount, 2)
   end
 
   # A blank discount or charge is none; a blank tax rate is refused, never zero.
@@ -85,9 +100,9 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
 
   # subtotal = quantity x unit price; line amount = subtotal - discount +
   # charge; tax = line amount x rate. Each rounds half up to two places.
-  defp derive_amounts(%{valid?: false} = changeset), do: changeset
+  defp derive_amounts(%{valid?: false} = changeset, _source_tax?), do: changeset
 
-  defp derive_amounts(changeset) do
+  defp derive_amounts(changeset, source_tax?) do
     quantity = get_field(changeset, :quantity)
     subtotal = money(Decimal.mult(quantity, get_field(changeset, :unit_price)))
 
@@ -96,7 +111,10 @@ defmodule Bilimbi.Finance.Einvoice.Draft.Line do
       |> Decimal.sub(get_field(changeset, :discount_amount))
       |> Decimal.add(get_field(changeset, :charge_amount))
 
-    tax = money(Decimal.div(Decimal.mult(line_amount, get_field(changeset, :tax_rate)), 100))
+    tax =
+      if source_tax?,
+        do: get_field(changeset, :tax_amount),
+        else: money(Decimal.div(Decimal.mult(line_amount, get_field(changeset, :tax_rate)), 100))
 
     changeset =
       changeset

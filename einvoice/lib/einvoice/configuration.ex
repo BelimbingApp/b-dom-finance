@@ -40,7 +40,16 @@ defmodule Bilimbi.Finance.Einvoice.Configuration do
       {"Tax account", "Account code credited with the tax of a validated invoice or debit note."},
     settlement_account:
       {"Settlement account",
-       "Account code credited by a validated refund note, in place of the receivable account."}
+       "Account code credited by a validated refund note, in place of the receivable account, and debited by a self-billed refund note."},
+    payable_account:
+      {"Payable account",
+       "Account code credited by a validated self-billed invoice or debit note and debited by a self-billed credit note."},
+    expense_account:
+      {"Expense account",
+       "Account code debited with the tax-exclusive amount of a validated self-billed invoice or debit note."},
+    purchase_tax_account:
+      {"Purchase tax account",
+       "Account code debited with the tax of a validated self-billed invoice or debit note."}
   ]
 
   # The one authority this release clears documents with; see `Authority`.

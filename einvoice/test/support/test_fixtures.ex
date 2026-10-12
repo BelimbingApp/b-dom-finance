@@ -5,8 +5,10 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
 
   The tables are temporary copies of the migration's, constraints and
   triggers included, so a test that makes PostgreSQL refuse proves the
-  migration's rule. Keep them in step with `priv/repo/migrations/`;
-  `test/schema_contract_test.exs` checks the real migration itself.
+  migration's rule. The first migration's are a copy: keep them in step
+  with `priv/repo/migrations/`; the consolidation migration's are its own
+  SQL (`statements(temporary: true)`). `test/schema_contract_test.exs`
+  checks the real migrations themselves.
 
   Party data is the authority's SDK sample data ("Supplier's Name", the
   SDK's dummy TIN, the general-public buyer TIN), never a real taxpayer.
@@ -365,6 +367,86 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
     )
   end
 
+  @doc """
+  A self-billed invoice's attributes: one line of 2 units at 50.00 with no
+  tax, from a foreign supplier without a Malaysian TIN (the authority's
+  general foreign-supplier TIN and placeholder details).
+  """
+  def self_billed_attributes(overrides \\ %{}) do
+    Map.merge(
+      %{
+        document_type: "11",
+        code_number: "SB-0001",
+        issued_at: ~U[2026-10-01 00:30:00Z],
+        currency_code: "MYR",
+        supplier: %{
+          name: "Foreign Supplier's Name",
+          tax_id: "EI00000000030",
+          registration_type: "BRN",
+          registration_number: "NA",
+          email: "supplier@example.com",
+          phone: "+14155550100",
+          industry_code: "00000",
+          business_activity: "NOT APPLICABLE",
+          address: %{
+            lines: ["1 Example Street"],
+            city: "Example City",
+            postcode: "94000",
+            state_code: "17",
+            country_code: "USA"
+          }
+        },
+        lines: [
+          %{
+            description: "Software subscription",
+            classification_code: "022",
+            quantity: "2",
+            unit_code: "C62",
+            unit_price: "50.00",
+            tax_type: "06",
+            tax_rate: "0"
+          }
+        ]
+      },
+      overrides
+    )
+  end
+
+  @doc """
+  Adds the payable, expense, and purchase tax accounts a self-billed
+  document posts to, to a book `open_posting_book!/2` opened, and stores
+  their codes. Returns them by role.
+  """
+  def add_purchase_accounts!(%Scope{} = operator, company_id) do
+    accounts =
+      Map.new(
+        [
+          payable_account: {"2100", "Trade payables", "liability"},
+          expense_account: {"5000", "Purchases", "expense"},
+          purchase_tax_account: {"5100", "Purchase tax", "expense"}
+        ],
+        fn {role, {code, name, type}} ->
+          {:ok, account} =
+            Ledger.create_account(operator, company_id, %{
+              code: code,
+              name: name,
+              account_type: type
+            })
+
+          {role, account}
+        end
+      )
+
+    :ok =
+      put_settings!(
+        operator,
+        company_id,
+        Map.new(accounts, fn {role, account} -> {"posting.#{role}", account.code} end)
+      )
+
+    accounts
+  end
+
   ## Certificates
 
   @doc """
@@ -451,6 +533,23 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
 
   def create_einvoice_tables! do
     Enum.each(statements(), &SQL.query!(Repo, &1, []))
+
+    # The migration is loaded at run time, so the call is dynamic.
+    consolidation_migration()
+    |> apply(:statements, [[temporary: true]])
+    |> Enum.each(&SQL.query!(Repo, &1, []))
+  end
+
+  @consolidation_migration Path.expand(
+                             "../../priv/repo/migrations/20261013221500_add_finance_einvoice_consolidation.exs",
+                             __DIR__
+                           )
+
+  @doc "The consolidation migration's module, loaded from its file once."
+  def consolidation_migration do
+    module = Bilimbi.Finance.Einvoice.Migrations.AddConsolidation
+    unless Code.ensure_loaded?(module), do: Code.require_file(@consolidation_migration)
+    module
   end
 
   @records [

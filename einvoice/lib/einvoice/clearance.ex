@@ -79,10 +79,13 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
-  alias Bilimbi.Finance.Einvoice.{Certificate, Configuration, Document, Documents, Posting}
+  alias Bilimbi.Finance.Einvoice.{Certificate, Configuration, Consolidation, Document, Documents}
+  alias Bilimbi.Finance.Einvoice.Posting
   alias Bilimbi.Finance.Einvoice.{PollWorker, Submission}
 
-  @submittable ["issued", "refused", "invalid"]
+  # A document a consolidated document holds (`consolidated`) is reported
+  # by it and never submitted on its own; one it released may be.
+  @submittable ["issued", "released", "refused", "invalid"]
   @cancellable ["valid", "rejected"]
   # Notes in these statuses still reference their original at the authority.
   @active_note_statuses ["submitted", "valid", "rejected"]
@@ -113,6 +116,12 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
     cond do
       not submittable?(document.status) ->
+        {:error, :not_submittable}
+
+      # A refused or invalid consolidated document released its sources,
+      # which a new one may cover; it is never sent again.
+      document.status in Consolidation.releasing_events() and
+          Consolidation.consolidated?(document) ->
         {:error, :not_submittable}
 
       is_nil(credentials.client_id) or is_nil(credentials.client_secret) ->

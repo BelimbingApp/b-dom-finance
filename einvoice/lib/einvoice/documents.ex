@@ -13,14 +13,16 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
-  alias Bilimbi.Finance.Einvoice.{Document, Line, StatusEvent}
+  alias Bilimbi.Finance.Einvoice.Consolidation
+  alias Bilimbi.Finance.Einvoice.{Document, Line, StatusEvent, SubmitWorker}
 
   @max_bigint 9_223_372_036_854_775_807
   @reason_length 300
 
   # Events that move a document's status; any other event records an
-  # answer, a posting, or a notice without changing it.
-  @status_events ~w(issued submitted refused valid invalid cancelled rejected)
+  # answer, a posting, or a notice without changing it. `consolidated` and
+  # `released` move a source in and out of a consolidated document.
+  @status_events ~w(issued submitted refused valid invalid cancelled rejected consolidated released)
 
   # Statuses in which the authority still holds the document as valid: a
   # buyer's rejection request leaves it so until it is cancelled.
@@ -36,6 +38,40 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   def cancellation_window_hours, do: Configuration.authority().cancellation_window_hours()
 
   ## Queries
+
+  @submit_worker inspect(Module.concat(SubmitWorker, ObanAdapter))
+  @waiting_states ~w(available scheduled executing retryable)
+
+  @doc "Whether a submit job for the document is waiting or running."
+  def submission_queued?(company_id, document_id) do
+    args = %{"company_id" => company_id, "document_id" => document_id}
+
+    Repo.exists?(
+      from(j in Oban.Job,
+        where: j.worker == @submit_worker and j.state in @waiting_states and j.args == ^args
+      )
+    )
+  end
+
+  @doc "Which of these documents have a submit job waiting or running."
+  def submissions_queued(_company_id, []), do: MapSet.new()
+
+  def submissions_queued(company_id, document_ids) do
+    from(j in Oban.Job,
+      where:
+        j.worker == @submit_worker and j.state in @waiting_states and
+          fragment("?->>'company_id'", j.args) == ^to_string(company_id),
+      select: fragment("?->>'document_id'", j.args)
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn id ->
+      case Integer.parse(to_string(id)) do
+        {id, ""} -> if id in document_ids, do: [id], else: []
+        _other -> []
+      end
+    end)
+    |> MapSet.new()
+  end
 
   def documents_query(%Scope{} = scope, company_id) do
     from(d in Tenancy.scope_query(Document, scope), where: d.company_id == ^company_id)
@@ -137,10 +173,15 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   defp filter_search(query, search) when is_binary(search) and search != "" do
     pattern = "%" <> escape_like(search) <> "%"
 
+    self_billed = Configuration.authority().self_billed_document_types()
+
+    # The counterparty: the buyer, or the supplier of a self-billed document.
     where(
       query,
       [d],
-      ilike(d.code_number, ^pattern) or ilike(fragment("?->>'name'", d.buyer), ^pattern)
+      ilike(d.code_number, ^pattern) or
+        (d.document_type not in ^self_billed and ilike(fragment("?->>'name'", d.buyer), ^pattern)) or
+        (d.document_type in ^self_billed and ilike(fragment("?->>'name'", d.supplier), ^pattern))
     )
   end
 
@@ -272,15 +313,25 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
           %{actor_type: "system", system_principal: name}
       end
 
-    Repo.insert!(
-      struct!(
-        StatusEvent,
-        Map.merge(
-          %{tenant_id: Scope.tenant_id(scope), company_id: company_id, document_id: document_id},
-          Map.merge(actor, Map.new(attributes))
+    event =
+      Repo.insert!(
+        struct!(
+          StatusEvent,
+          Map.merge(
+            %{
+              tenant_id: Scope.tenant_id(scope),
+              company_id: company_id,
+              document_id: document_id
+            },
+            Map.merge(actor, Map.new(attributes))
+          )
         )
       )
-    )
+
+    # A consolidated document the authority refused, found invalid, or
+    # cancelled releases the documents it covered, in the same transaction.
+    Consolidation.release_sources!(scope, company_id, document_id, event.event)
+    event
   end
 
   @doc """
@@ -417,8 +468,24 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   def summary_view(document, status) do
     document
     |> Map.take(@summary_fields)
-    |> Map.put(:buyer_name, document.buyer["name"])
+    |> Map.merge(parties(document))
     |> Map.put(:status, status)
+  end
+
+  # The counterparty is the buyer, or the supplier on a self-billed document,
+  # where the company's own profile is the buyer.
+  defp parties(document) do
+    self_billed? =
+      document.document_type in Configuration.authority().self_billed_document_types()
+
+    counterparty = if self_billed?, do: document.supplier, else: document.buyer
+
+    %{
+      buyer_name: document.buyer["name"],
+      counterparty_name: counterparty["name"],
+      self_billed?: self_billed?,
+      consolidated?: Map.has_key?(document.details, Consolidation.month_key())
+    }
   end
 
   @doc """
@@ -441,9 +508,9 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
 
     document
     |> Map.take(@summary_fields ++ [:supplier, :buyer, :details])
+    |> Map.merge(parties(document))
     |> Map.merge(%{
       status: status && status.event,
-      buyer_name: document.buyer["name"],
       submission_uid: submitted && submitted.submission_uid,
       document_uuid: document_uuid,
       long_id: long_id,

@@ -19,6 +19,12 @@
     capability: "finance.einvoice.view"
   },
   %{
+    path: "/finance/einvoice/consolidation",
+    live: Bilimbi.Finance.Einvoice.Web.ConsolidationLive,
+    session: :auth,
+    capability: "finance.einvoice.view"
+  },
+  %{
     path: "/finance/einvoice/reconciliation",
     live: Bilimbi.Finance.Einvoice.Web.ReconciliationLive,
     session: :auth,

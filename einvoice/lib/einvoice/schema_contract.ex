@@ -12,7 +12,8 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
   # verifier compares after removing whitespace and parentheses.
 
   @doc "The migrations that build this contract, in order."
-  def migration_versions, do: [20_261_012_200_000, 20_261_013_090_000, 20_261_013_143_000]
+  def migration_versions,
+    do: [20_261_012_200_000, 20_261_013_090_000, 20_261_013_143_000, 20_261_013_221_500]
 
   def migration_version, do: List.last(migration_versions())
 
@@ -26,7 +27,14 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
 
   @impl true
   def tables do
-    [documents(), lines(), submissions(), status_events(), code_overrides()]
+    [
+      documents(),
+      lines(),
+      submissions(),
+      status_events(),
+      consolidated_sources(),
+      code_overrides()
+    ]
   end
 
   defp documents do
@@ -245,6 +253,43 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
         "finance_einvoice_status_events_ledger_entry_id" =>
           check("ledger_entry_id IS NULL OR ledger_entry_id > 0"),
         "finance_einvoice_status_events_actor" => check(@actor)
+      }
+    }
+  end
+
+  defp consolidated_sources do
+    table = "finance_einvoice_consolidated_sources"
+
+    %{
+      name: table,
+      columns:
+        owned_columns(table)
+        |> Map.merge(%{
+          "document_id" => column(:bigint, false),
+          "source_document_id" => column(:bigint, false),
+          "line_number" => column(:integer, false)
+        }),
+      indexes: %{
+        "finance_einvoice_consolidated_sources_pkey" => index(["id"], true),
+        "finance_einvoice_consolidated_sources_unique" =>
+          index(["document_id", "line_number", "source_document_id"], true),
+        "finance_einvoice_consolidated_sources_source_index" =>
+          index(["company_id", "source_document_id"])
+      },
+      foreign_keys: %{
+        "finance_einvoice_consolidated_sources_document_fkey" =>
+          company_reference("document_id", "finance_einvoice_documents"),
+        "finance_einvoice_consolidated_sources_source_fkey" =>
+          company_reference("source_document_id", "finance_einvoice_documents"),
+        "finance_einvoice_consolidated_sources_line_fkey" => %{
+          columns: ["document_id", "line_number"],
+          references: {"finance_einvoice_document_lines", ["document_id", "line_number"]},
+          on_delete: :restrict
+        }
+      },
+      checks: %{
+        "finance_einvoice_consolidated_sources_not_own_source" =>
+          check("source_document_id <> document_id")
       }
     }
   end

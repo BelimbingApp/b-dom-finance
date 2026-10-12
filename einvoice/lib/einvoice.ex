@@ -18,7 +18,11 @@ defmodule Bilimbi.Finance.Einvoice do
   amount from the lines, checks the document against the authority's rules
   and the company's code lists, and records it with its lines, its supplier
   and buyer as they stood, and an `issued` status event. A credit, debit,
-  or refund note names the validated (or buyer-rejected) original it corrects. A recorded
+  or refund note names the validated (or buyer-rejected) original it corrects.
+  A self-billed document is issued by the company as the buyer, with the
+  supplier as the counterparty. `issue_consolidated_document/3` reports a
+  month of sales no buyer asked an individual document for in one
+  consolidated document (`Bilimbi.Finance.Einvoice.Consolidation`). A recorded
   document is never edited or deleted: the database refuses it (see the
   migration), and a cancellation, a rejection, or any other answer from the
   authority is a new status event.
@@ -47,6 +51,7 @@ defmodule Bilimbi.Finance.Einvoice do
   alias Bilimbi.Finance.Einvoice.Clearance
   alias Bilimbi.Finance.Einvoice.CodeLists
   alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Consolidation
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Einvoice.{Document, Draft, Line, StatusEvent, SubmitWorker}
   alias Bilimbi.Finance.Ledger
@@ -97,21 +102,25 @@ defmodule Bilimbi.Finance.Einvoice do
     * `buyer`: `name`, `tax_id`, `registration_type` and
       `registration_number`, optional `sales_tax_registration`, `email`,
       `phone`, and `address` (`lines`, `city`, `postcode`, `state_code`,
-      `country_code`);
+      `country_code`); or, for a self-billed document (the authority's `11`
+      to `14`), `supplier` in the same shape plus `industry_code` and
+      `business_activity`, the company's own profile being the buyer;
     * optionally `payment_means_code`, `payment_terms`, and a billing period
       (`billing_period_start`, `billing_period_end`,
       `billing_period_description`);
-    * for a credit, debit, or refund note (the authority's `02` to `04`),
-      `original_document_id`: a validated document of this company, whose
-      code number and UUID the note carries;
+    * for a credit, debit, or refund note (the authority's `02` to `04`, or
+      self-billed `12` to `14`), `original_document_id`: a validated
+      invoice of this company of the same kind, whose code number and UUID
+      the note carries;
     * `lines`, each with `description`, `classification_code`, `quantity`,
       `unit_price`, `tax_type`, and `tax_rate` (always stated, `0` where the
       authority takes no tax), and optionally `unit_code`, `discount_amount`,
       `charge_amount` (blank is none), `tax_exemption_reason`, `tariff_code`,
       and `origin_country_code`.
 
-  The supplier comes from the company's e-invoicing settings and the
-  environment from its current setting. Amounts are derived, never taken:
+  The company's own party (the supplier, or the buyer of a self-billed
+  document) comes from its e-invoicing settings and the environment from
+  its current setting. Amounts are derived, never taken:
   a line's subtotal is quantity times unit price, less its discount plus
   its charge, and its tax is that times the rate, each rounded half up to
   two places. Refusals are a changeset; `{:error, :code_number_taken}` when
@@ -121,17 +130,19 @@ defmodule Bilimbi.Finance.Einvoice do
           {:ok, map()} | {:error, write_refusal() | :code_number_taken | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
     write(scope, company_id, @issue, fn company ->
-      %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} =
-        Scope.actor(scope)
-
-      supplier = Configuration.supplier(scope, company_id, company.display_name)
+      profile = Configuration.supplier(scope, company_id, company.display_name)
       codes = code_lookup(scope, company_id)
-      draft_changeset = Draft.changeset(attributes, DateTime.utc_now())
+
+      draft_changeset =
+        Draft.changeset(attributes, DateTime.utc_now(),
+          self_billed_types: authority().self_billed_document_types()
+        )
+
       original = original_document(scope, company_id, draft_changeset)
 
       changeset =
         validate_with_authority(draft_changeset, %{
-          supplier: supplier,
+          supplier: profile,
           codes: codes,
           original: original
         })
@@ -139,42 +150,9 @@ defmodule Bilimbi.Finance.Einvoice do
       with {:ok, draft} <- Changeset.apply_action(changeset, :insert),
            :ok <- unused_code_number(scope, company_id, environment(scope, company_id), draft) do
         document =
-          Repo.insert!(%Document{
-            tenant_id: Scope.tenant_id(scope),
-            company_id: company_id,
-            authority: authority().id(),
-            environment: environment(scope, company_id),
-            document_type: draft.document_type,
-            code_number: draft.code_number,
-            issued_at: draft.issued_at,
-            currency_code: draft.currency_code,
-            exchange_rate: draft.exchange_rate,
-            supplier: supplier_snapshot(supplier),
-            buyer: party_snapshot(draft.buyer),
-            details: details(draft, original),
-            original_document_id: original && original.id,
-            line_extension_amount: draft.line_extension_amount,
-            tax_exclusive_amount: draft.line_extension_amount,
-            tax_amount: draft.tax_amount,
-            tax_inclusive_amount: Decimal.add(draft.line_extension_amount, draft.tax_amount),
-            payable_amount: Decimal.add(draft.line_extension_amount, draft.tax_amount),
-            issued_by_user_id: user_id,
-            issued_by_impersonator_id: impersonator_id
-          })
+          record_document!(scope, company_id, profile, draft, details(draft, original), original)
 
-        insert_lines(document, draft.lines)
-
-        Repo.insert!(%StatusEvent{
-          tenant_id: document.tenant_id,
-          company_id: company_id,
-          document_id: document.id,
-          event: "issued",
-          actor_type: "user",
-          actor_user_id: user_id,
-          actor_impersonator_id: impersonator_id
-        })
-
-        view = Documents.document_view(Documents.fetch(scope, company_id, document.id))
+        view = get_view(scope, company_id, document.id)
 
         record_action(scope, company_id, "finance.einvoice.document.issued", %{
           "document_id" => view.id,
@@ -184,10 +162,238 @@ defmodule Bilimbi.Finance.Einvoice do
           "original_document_id" => view.original_document_id
         })
 
-        {:ok, Map.put(view, :submission_queued, false)}
+        {:ok, view}
       end
     end)
   end
+
+  # The document, its lines, and its `issued` event. The company's profile
+  # is the supplier, or the buyer of a self-billed document, whose supplier
+  # is the counterparty the caller gave.
+  defp record_document!(scope, company_id, profile, draft, details, original) do
+    %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+    {supplier, buyer} =
+      if draft.document_type in authority().self_billed_document_types(),
+        do: {supplier_party_snapshot(draft.supplier), supplier_snapshot(profile)},
+        else: {supplier_snapshot(profile), party_snapshot(draft.buyer)}
+
+    document =
+      Repo.insert!(%Document{
+        tenant_id: Scope.tenant_id(scope),
+        company_id: company_id,
+        authority: authority().id(),
+        environment: environment(scope, company_id),
+        document_type: draft.document_type,
+        code_number: draft.code_number,
+        issued_at: draft.issued_at,
+        currency_code: draft.currency_code,
+        exchange_rate: draft.exchange_rate,
+        supplier: supplier,
+        buyer: buyer,
+        details: details,
+        original_document_id: original && original.id,
+        line_extension_amount: draft.line_extension_amount,
+        tax_exclusive_amount: draft.line_extension_amount,
+        tax_amount: draft.tax_amount,
+        tax_inclusive_amount: Decimal.add(draft.line_extension_amount, draft.tax_amount),
+        payable_amount: Decimal.add(draft.line_extension_amount, draft.tax_amount),
+        issued_by_user_id: user_id,
+        issued_by_impersonator_id: impersonator_id
+      })
+
+    insert_lines(document, draft.lines)
+
+    Repo.insert!(%StatusEvent{
+      tenant_id: document.tenant_id,
+      company_id: company_id,
+      document_id: document.id,
+      event: "issued",
+      actor_type: "user",
+      actor_user_id: user_id,
+      actor_impersonator_id: impersonator_id
+    })
+
+    document
+  end
+
+  ## Consolidated documents
+
+  @doc """
+  What a consolidated document for `month` (`"YYYY-MM"`, or a `Date` in
+  it) would cover in the company's current environment:
+  `%{month, from, until, closes_at, open?, documents, refused,
+  line_extension_amount, tax_amount, payable_amount}`. `documents` are
+  the eligible documents, oldest first, as summaries; `refused` pairs each
+  document the authority's limits keep out (`document`) with its `reason`;
+  the amounts are the eligible documents' totals. `from` and `until` bound
+  the issue instants it covers, and it may be issued from `until` until
+  `closes_at` (`open?` says whether that is now). `{:error, :invalid_month}`
+  for a month that cannot be read.
+  """
+  @spec consolidation_candidates(Scope.t(), term(), String.t() | Date.t()) ::
+          {:ok, map()} | {:error, refusal() | :invalid_month}
+  def consolidation_candidates(%Scope{} = scope, company_id, month) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, month} <- month(month) do
+      window = authority().consolidation_window(month)
+      environment = environment(scope, company_id)
+      {eligible, refused} = Consolidation.candidates(scope, company_id, environment, window)
+      statuses = Documents.statuses(scope, company_id, Enum.map(eligible, & &1.id))
+
+      {:ok,
+       %{
+         month: month,
+         environment: environment,
+         from: window.from,
+         until: window.until,
+         closes_at: window.closes_at,
+         open?: Consolidation.open(window, consolidation_clock()) == :ok,
+         documents: Enum.map(eligible, &Documents.summary_view(&1, statuses[&1.id])),
+         refused:
+           Enum.map(refused, fn {document, reason} ->
+             %{document: Documents.summary_view(document, nil), reason: reason}
+           end),
+         line_extension_amount: sum(eligible, :line_extension_amount),
+         tax_amount: sum(eligible, :tax_amount),
+         payable_amount: sum(eligible, :payable_amount)
+       }}
+    end
+  end
+
+  @doc """
+  Issues the consolidated document for a month's sales no buyer asked an
+  individual document for, from plain attributes: `month` (`"YYYY-MM"`),
+  `code_number`, optionally `document_ids` (the eligible documents to
+  cover; default every one `consolidation_candidates/3` lists). Its lines
+  are one per covered document and tax.
+
+  It is issued now, which must fall inside the authority's window after
+  the month ends (`{:error, :period_not_ended}`,
+  `{:error, :consolidation_window_closed}`). The authority shapes it
+  (the general buyer, the consolidated classification, the month as its
+  billing period); each line's amount and tax are its documents' exact
+  sums, so its totals equal theirs. It records which documents each line
+  covers and a `consolidated` event on each, so none is consolidated twice
+  or submitted on its own while it holds them; once the authority refuses
+  it, finds it invalid, or it is cancelled, it releases them (`released`)
+  and is never submitted again. It is
+  submitted, polled, posted, and cancelled like any document, and is the
+  audit action `finance.einvoice.document.consolidated`.
+
+  Other refusals: `{:error, :nothing_to_consolidate}`,
+  `{:error, {:not_consolidatable, document_id}}` for a named document that
+  is not eligible, `{:error, :invalid_month}`, `{:error, :invalid_option}`,
+  `{:error, :code_number_taken}`, or a changeset.
+  """
+  @spec issue_consolidated_document(Scope.t(), term(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def issue_consolidated_document(%Scope{} = scope, company_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @issue, fn company ->
+      now = consolidation_clock()
+
+      with {:ok, request} <- consolidation_request(attributes),
+           window = authority().consolidation_window(request.month),
+           :ok <- Consolidation.open(window, now),
+           environment = environment(scope, company_id),
+           {eligible, _refused} = Consolidation.candidates(scope, company_id, environment, window),
+           {:ok, sources} <- chosen_sources(eligible, request.document_ids) do
+        groups = Consolidation.group(sources)
+        profile = Configuration.supplier(scope, company_id, company.display_name)
+
+        attributes =
+          authority().consolidated_document(%{
+            code_number: request.code_number,
+            issued_at: DateTime.truncate(now, :second),
+            month: request.month,
+            lines: groups
+          })
+
+        changeset =
+          attributes
+          |> Draft.changeset(now, source_tax: true)
+          |> validate_with_authority(%{
+            supplier: profile,
+            codes: code_lookup(scope, company_id),
+            original: nil,
+            consolidated: true
+          })
+
+        with {:ok, draft} <- Changeset.apply_action(changeset, :insert),
+             :ok <- unused_code_number(scope, company_id, environment, draft) do
+          details =
+            draft
+            |> details(nil)
+            |> Map.put(Consolidation.month_key(), Calendar.strftime(request.month, "%Y-%m"))
+
+          document = record_document!(scope, company_id, profile, draft, details, nil)
+          Consolidation.record_sources!(scope, company_id, document, groups)
+          view = get_view(scope, company_id, document.id)
+
+          record_action(scope, company_id, "finance.einvoice.document.consolidated", %{
+            "document_id" => view.id,
+            "code_number" => view.code_number,
+            "environment" => view.environment,
+            "month" => details[Consolidation.month_key()],
+            "document_count" => length(sources)
+          })
+
+          {:ok, view}
+        end
+      end
+    end)
+  end
+
+  # The instant a consolidated document is issued and its window judged at.
+  # Only tests set `:clock` (a function of no arguments), to stand inside a
+  # window that a real clock reaches only after a month's end.
+  defp consolidation_clock do
+    case Application.get_env(:bilimbi_finance_einvoice, :clock) do
+      nil -> DateTime.utc_now()
+      clock when is_function(clock, 0) -> clock.()
+    end
+  end
+
+  defp month(month) do
+    case Consolidation.parse_month(month) do
+      {:ok, date} -> {:ok, date}
+      :error -> {:error, :invalid_month}
+    end
+  end
+
+  defp consolidation_request(attributes) do
+    get = fn key -> Map.get(attributes, key, Map.get(attributes, Atom.to_string(key))) end
+    ids = get.(:document_ids)
+
+    with {:ok, month} <- month(get.(:month)),
+         true <-
+           (is_nil(ids) or
+              (is_list(ids) and ids != [] and Enum.all?(ids, &(is_integer(&1) and &1 > 0)))) ||
+             {:error, :invalid_option} do
+      {:ok,
+       %{
+         month: month,
+         code_number: get.(:code_number),
+         document_ids: ids && Enum.uniq(ids)
+       }}
+    end
+  end
+
+  defp chosen_sources([], nil), do: {:error, :nothing_to_consolidate}
+  defp chosen_sources(eligible, nil), do: {:ok, eligible}
+
+  defp chosen_sources(eligible, ids) do
+    by_id = Map.new(eligible, &{&1.id, &1})
+
+    case Enum.find(ids, &(not Map.has_key?(by_id, &1))) do
+      nil -> {:ok, eligible |> Enum.filter(&(&1.id in ids))}
+      id -> {:error, {:not_consolidatable, id}}
+    end
+  end
+
+  defp sum(documents, field),
+    do: Enum.reduce(documents, Decimal.new("0.00"), &Decimal.add(Map.fetch!(&1, field), &2))
 
   # A note's original, read before the authority judges it: the same
   # company's document, or `nil`.
@@ -207,7 +413,13 @@ defmodule Bilimbi.Finance.Einvoice do
   @doc """
   One document with its lines, its status events in order, and its current
   `status`: the latest status-moving event (`issued`, `submitted`,
-  `refused`, `valid`, `invalid`, `cancelled`, or `rejected`). The view also
+  `refused`, `valid`, `invalid`, `cancelled`, `rejected`, and for a
+  document a consolidated document covers, `consolidated` or `released`).
+  The view names the `counterparty_name` (the buyer, or the supplier of a
+  self-billed document) and says whether the document is `self_billed?`
+  or `consolidated?`; a consolidated document lists the documents it
+  covers as `sources` (each with the `line_numbers` carrying it), and a
+  covered document names its holder as `consolidated_by`. It also
   carries what the events say: `submission_uid`, `document_uuid`,
   `long_id`, `validated_at`, `validation_url`, `cancellable_until`,
   `ledger_entry_id`, `reversal_entry_id`, `pdf_artifact_id`, and
@@ -224,9 +436,8 @@ defmodule Bilimbi.Finance.Einvoice do
         nil ->
           {:error, :document_not_found}
 
-        {record, _events} = document ->
-          view = Documents.document_view(document)
-          {:ok, Map.put(view, :submission_queued, submission_queued?(company_id, record.id))}
+        {record, _events} ->
+          {:ok, get_view(scope, company_id, record.id)}
       end
     end
   end
@@ -333,17 +544,20 @@ defmodule Bilimbi.Finance.Einvoice do
     end)
   end
 
-  defp not_queued(company_id, document_id),
-    do: if(submission_queued?(company_id, document_id), do: {:error, :already_queued}, else: :ok)
+  defp not_queued(company_id, document_id) do
+    if Documents.submission_queued?(company_id, document_id),
+      do: {:error, :already_queued},
+      else: :ok
+  end
 
-  defp submission_queued?(company_id, document_id) do
-    worker = inspect(Module.concat(SubmitWorker, ObanAdapter))
-    args = %{"company_id" => company_id, "document_id" => document_id}
-    states = ~w(available scheduled executing retryable)
-
-    Repo.exists?(
-      from(j in Oban.Job, where: j.worker == ^worker and j.state in ^states and j.args == ^args)
-    )
+  # The full view with the consolidation it takes part in and whether a
+  # submit job for it is waiting.
+  defp get_view(scope, company_id, document_id) do
+    scope
+    |> Documents.fetch(company_id, document_id)
+    |> Documents.document_view()
+    |> Map.merge(Consolidation.view(scope, company_id, document_id))
+    |> Map.put(:submission_queued, Documents.submission_queued?(company_id, document_id))
   end
 
   @doc """
@@ -770,6 +984,17 @@ defmodule Bilimbi.Finance.Einvoice do
         "country_code" => supplier.country_code
       }
     }
+  end
+
+  # A self-billed document's supplier carries a supplier's fields too.
+  defp supplier_party_snapshot(party) do
+    party
+    |> party_snapshot()
+    |> Map.merge(%{
+      "industry_code" => party.industry_code,
+      "business_activity" => party.business_activity,
+      "tourism_tax_registration" => nil
+    })
   end
 
   defp party_snapshot(party) do

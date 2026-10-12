@@ -10,12 +10,18 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261013221500_add_finance_einvoice_consolidation.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Einvoice.Migrations.{AddLedgerEntry, AddPostingUniqueness, CreateEinvoice}
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddConsolidation, AddLedgerEntry}
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddPostingUniqueness, CreateEinvoice}
   alias Bilimbi.Finance.Einvoice.SchemaContract
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -39,12 +45,13 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       )
     )
 
-    [first, second, third] = SchemaContract.migration_versions()
+    [first, second, third, fourth] = SchemaContract.migration_versions()
 
     for {version, migration} <- [
           {first, CreateEinvoice},
           {second, AddLedgerEntry},
-          {third, AddPostingUniqueness}
+          {third, AddPostingUniqueness},
+          {fourth, AddConsolidation}
         ] do
       assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
     end
@@ -231,5 +238,93 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     assert %{rows: [[true]]} =
              query!.("SELECT recorded_at > '2026-01-01' FROM finance_einvoice_documents")
+  end
+
+  # The consolidation rules, outside a sandbox: the totals check runs at
+  # commit and the "recorded earlier" rule needs an earlier transaction.
+  @tag :capture_log
+  test "the migration keeps a consolidated document's sources whole and covered once",
+       %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    document = fn id, amount ->
+      "INSERT INTO finance_einvoice_documents (id, tenant_id, company_id, authority, environment, document_type, code_number, issued_at, currency_code, supplier, buyer, line_extension_amount, tax_exclusive_amount, tax_amount, tax_inclusive_amount, payable_amount, issued_by_user_id, recorded_at) VALUES (#{id}, 1, 1, 'authority', 'sandbox', '01', 'DOC-#{id}', '2026-10-01', 'XTS', '{}', '{}', #{amount}, #{amount}, 0, #{amount}, #{amount}, 1, '2000-01-01')"
+    end
+
+    line = fn document_id, amount ->
+      "INSERT INTO finance_einvoice_document_lines (tenant_id, company_id, document_id, line_number, description, classification_code, quantity, unit_price, subtotal, line_extension_amount, tax_type, tax_amount) VALUES (1, 1, #{document_id}, 1, 'Item', '004', 1, #{amount}, #{amount}, #{amount}, '06', 0)"
+    end
+
+    covers = fn document_id, source_id ->
+      "INSERT INTO finance_einvoice_consolidated_sources (tenant_id, company_id, document_id, source_document_id, line_number) VALUES (1, 1, #{document_id}, #{source_id}, 1)"
+    end
+
+    event = fn document_id, name ->
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, recorded_at) VALUES (1, 1, #{document_id}, 99, '#{name}', 'user', 1, '2000-01-01')"
+    end
+
+    consolidated = fn id, amount, sources ->
+      [document.(id, amount), line.(id, amount)] ++ Enum.map(sources, &covers.(id, &1))
+    end
+
+    submission =
+      fn document_id ->
+        "INSERT INTO finance_einvoice_submissions (tenant_id, company_id, document_id, environment, format, document_version, payload, payload_sha256, actor_type, actor_user_id, recorded_at) VALUES (1, 1, #{document_id}, 'sandbox', 'JSON', '1.0', 'x', encode(sha256('x'), 'hex'), 'user', 1, now())"
+      end
+
+    assert {:ok, _} =
+             in_transaction.([document.(1, 10), line.(1, 10), document.(2, 5), line.(2, 5)])
+
+    assert {:ok, _} = in_transaction.(consolidated.(10, 15, [1, 2]))
+
+    assert_raise Postgrex.Error, ~r/already recorded/, fn ->
+      in_transaction.([document.(3, 1), line.(3, 1), covers.(10, 3)])
+    end
+
+    assert_raise Postgrex.Error, ~r/totals differ from its sources/, fn ->
+      in_transaction.([document.(4, 7), line.(4, 7) | consolidated.(11, 6, [4])])
+    end
+
+    assert_raise Postgrex.Error, ~r/is already consolidated/, fn ->
+      in_transaction.(consolidated.(12, 10, [1]))
+    end
+
+    assert_raise Postgrex.Error, ~r/never a source/, fn ->
+      in_transaction.(consolidated.(13, 15, [10]))
+    end
+
+    assert_raise Postgrex.Error, ~r/cannot be submitted on its own/, fn ->
+      query!.(submission.(1))
+    end
+
+    # A cancelled consolidated document releases its sources and is never
+    # submitted again.
+    assert {:ok, _} = in_transaction.([event.(10, "cancelled")])
+    assert {:ok, _} = in_transaction.(consolidated.(14, 10, [1]))
+    assert %{num_rows: 1} = query!.(submission.(2))
+
+    assert_raise Postgrex.Error, ~r/released its sources/, fn -> query!.(submission.(10)) end
+
+    assert_raise Postgrex.Error, ~r/submitted on its own and cannot be consolidated/, fn ->
+      in_transaction.(consolidated.(15, 5, [2]))
+    end
+
+    for sql <- [
+          "UPDATE finance_einvoice_consolidated_sources SET company_id = company_id",
+          "DELETE FROM finance_einvoice_consolidated_sources",
+          "TRUNCATE finance_einvoice_consolidated_sources"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance e-invoicing keeps/, fn -> query!.(sql) end
+    end
+
+    assert %{rows: [[10, 1], [10, 2], [14, 1]]} =
+             query!.(
+               "SELECT document_id, source_document_id FROM finance_einvoice_consolidated_sources ORDER BY document_id, source_document_id"
+             )
   end
 end

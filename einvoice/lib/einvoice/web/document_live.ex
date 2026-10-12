@@ -2,7 +2,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   @moduledoc """
   One fiscal document: its parties, lines, totals, the authority's
   identifiers, its validation link with the QR code a buyer scans, every
-  status event, and the ledger entries it posted. Actions: submit to the
+  status event, and the ledger entries it posted. A consolidated document
+  lists the documents it covers, and a covered document names the
+  consolidated document that reports it. Actions: submit to the
   authority, refresh the status, cancel with a reason inside the authority's
   cancellation window, generate and download the PDF, and copy the share link.
 
@@ -18,7 +20,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   alias Bilimbi.Base.UI.Params
   alias Bilimbi.Base.UI.Workspace
   alias Bilimbi.Finance.Einvoice
+  alias Bilimbi.Finance.Einvoice.Clearance
   alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Consolidation
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Einvoice.QrCode
   alias Bilimbi.Finance.Einvoice.Web.DocumentsLive
@@ -172,7 +176,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     do: "A submission of this document is already queued."
 
   defp submit_message(:not_submittable),
-    do: "Only a recorded, refused, or invalid document can be submitted."
+    do:
+      "Only a recorded, released, refused, or invalid document can be submitted; a consolidated document reports the documents it covers, and one the authority refused or found invalid is never sent again: consolidate the month again."
 
   defp submit_message(:missing_credentials),
     do: "Set the client ID and secret for this environment in the e-invoice settings first."
@@ -262,6 +267,12 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
   defp attention_text(:reversal_failed),
     do: "The ledger reversal failed; see the last reversal event."
 
+  # Whether the submit control shows: what `Clearance.prepare/3` accepts.
+  defp submittable?(document) do
+    Clearance.submittable?(document.status) and
+      not (document.consolidated? and document.status in Consolidation.releasing_events())
+  end
+
   defp money(%Decimal{} = value), do: Decimal.to_string(value, :normal)
   defp money(nil), do: "—"
 
@@ -333,14 +344,17 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
                 {DocumentsLive.status_label(@document.status)}
               </.badge>
               <span class="ml-2 text-ink-muted">{@document.environment}</span>
+              <span :if={@document.self_billed?} id="einvoice-document-self-billed" class="ml-2">
+                <.badge dot={false}>Self-billed</.badge>
+              </span>
+              <span :if={@document.consolidated?} id="einvoice-document-consolidated" class="ml-2">
+                <.badge dot={false}>Consolidated {@document.details["consolidation_month"]}</.badge>
+              </span>
             </:subtitle>
             <:actions>
               <.link id="einvoice-document-back" navigate={~p"/finance/einvoice/documents"}>All documents</.link>
               <.button
-                :if={
-                  @can_submit? and @document.status in ["issued", "refused", "invalid"] and
-                    not @document.submission_queued
-                }
+                :if={@can_submit? and submittable?(@document) and not @document.submission_queued}
                 id="einvoice-document-submit"
                 phx-click="submit"
                 variant="primary"
@@ -390,6 +404,25 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
                 {attention_text(flag)}
               </li>
             </ul>
+          </.card>
+
+          <.card
+            :if={@document.consolidated_by}
+            id="einvoice-document-consolidated-by"
+            inner_class="p-5 sm:p-6"
+            role="region"
+            aria-labelledby="einvoice-document-consolidated-by-heading"
+          >
+            <.section_heading id="einvoice-document-consolidated-by-heading" title="Consolidated" />
+            <p class="mt-2 text-sm text-ink">
+              The consolidated document
+              <.link
+                id="einvoice-document-consolidated-by-link"
+                navigate={~p"/finance/einvoice/documents/#{@document.consolidated_by.id}"}
+                class="text-action hover:underline"
+              >{@document.consolidated_by.code_number}</.link>
+              reports this document to the authority, so it is not submitted on its own.
+            </p>
           </.card>
 
           <div class="grid gap-4 lg:grid-cols-3">
@@ -541,6 +574,42 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
                 </:item>
               </.list>
             </div>
+          </.card>
+
+          <.card
+            :if={@document.sources != []}
+            id="einvoice-document-sources"
+            inner_class="p-0"
+            role="region"
+            aria-labelledby="einvoice-document-sources-heading"
+          >
+            <.section_heading
+              id="einvoice-document-sources-heading"
+              title={"Covered documents (#{length(@document.sources)})"}
+              class="p-5 pb-0"
+            />
+            <.table
+              id="einvoice-document-sources-table"
+              rows={@document.sources}
+              framed={false}
+              row_id={&"einvoice-source-#{&1.id}"}
+              caption="Covered documents"
+            >
+              <:col :let={source} label="Number">
+                <.link
+                  navigate={~p"/finance/einvoice/documents/#{source.id}"}
+                  class="font-medium text-ink-strong hover:underline"
+                >{source.code_number}</.link>
+              </:col>
+              <:col :let={source} label="Issued">
+                <.datetime id={"einvoice-source-issued-#{source.id}"} value={source.issued_at} />
+              </:col>
+              <:col :let={source} label="Buyer">{source.counterparty_name}</:col>
+              <:col :let={source} label="On lines">{Enum.join(source.line_numbers, ", ")}</:col>
+              <:col :let={source} label="Payable" align={:right}>
+                {money(source.payable_amount)} {source.currency_code}
+              </:col>
+            </.table>
           </.card>
 
           <.card

@@ -65,6 +65,68 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
     assert {:ok, ^entry} = Ledger.get_entry(op, 73, entry.id)
   end
 
+  describe "a consolidated document" do
+    setup %{operator: op, first_scope: scope} do
+      :ok = TestFixtures.put_settings!(scope, 73, %{"document_version" => "1.0"})
+      # Inside September's window, which opens when the month ends.
+      Application.put_env(:bilimbi_finance_einvoice, :clock, fn -> ~U[2026-10-03 02:00:00Z] end)
+      on_exit(fn -> Application.delete_env(:bilimbi_finance_einvoice, :clock) end)
+
+      manager =
+        TestFixtures.sign_in!(scope, 73, 92, [
+          "finance.ledger.view",
+          "finance.ledger.periods.manage"
+        ])
+
+      {:ok, %{periods: [september | _]}} =
+        Ledger.open_fiscal_year(manager, 73, %{start_date: ~D[2026-09-01]})
+
+      {:ok, _source} =
+        Einvoice.issue_document(
+          op,
+          73,
+          TestFixtures.invoice_attributes(%{issued_at: ~U[2026-09-02 04:00:00Z]})
+        )
+
+      {:ok, consolidated} =
+        Einvoice.issue_consolidated_document(op, 73, %{
+          month: "2026-09",
+          code_number: "CON-2026-09"
+        })
+
+      :ok = TestFixtures.validate!(op, 73, consolidated.id)
+      %{consolidated: consolidated, manager: manager, september: september}
+    end
+
+    test "posts into the month it reports, not the month it was issued", %{
+      operator: op,
+      consolidated: consolidated
+    } do
+      assert consolidated.issued_at == ~U[2026-10-03 02:00:00Z]
+      assert {:ok, entry} = Posting.post(op, 73, consolidated)
+      assert entry.entry_date == ~D[2026-09-30]
+    end
+
+    test "is refused, never reopening the period, once its month is closed", %{
+      operator: op,
+      consolidated: consolidated,
+      manager: manager,
+      september: september
+    } do
+      assert {:ok, %{status: "closed"}} = Ledger.close_period(manager, 73, september.id)
+
+      assert {:error, message} = Posting.post(op, 73, consolidated)
+      assert message =~ "falls in a closed period"
+      assert {:ok, []} = Ledger.list_entries(op, 73)
+
+      assert {:ok, %{ledger_entry_id: nil, attention: [:posting_failed], events: events}} =
+               Einvoice.get_document(op, 73, consolidated.id)
+
+      assert List.last(events).event == "posting_failed"
+      assert {:error, ^message} = Posting.post(op, 73, consolidated)
+    end
+  end
+
   test "a document posts once, whatever view of it the caller holds", %{operator: op} do
     document = validated!(op, TestFixtures.invoice_attributes())
     assert {:ok, entry} = Posting.post(op, 73, document)

@@ -54,13 +54,19 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
   @callback note_document_types() :: [String.t()]
 
   @doc """
-  How a validated document of this type posts to the ledger: the side
-  (`:debit` or `:credit`) the document's counter-account takes, and which
-  account that is, the `:receivable_account` or the `:settlement_account`.
-  Revenue and tax take the opposite side. `nil` for a type with no rule.
+  The document types the company issues as the buyer (self-billed): the
+  counterparty is the supplier and the company's own profile the buyer.
+  """
+  @callback self_billed_document_types() :: [String.t()]
+
+  @doc """
+  How a validated document of this type posts to the ledger, naming the
+  company's posting settings: `counter` (the receivable, payable, or
+  settlement account) takes `side`, and `net` (revenue or expense) and
+  `tax` take the opposite side. `nil` for a type with no rule.
   """
   @callback posting_rule(document_type :: String.t()) ::
-              {:debit | :credit, :receivable_account | :settlement_account} | nil
+              %{side: :debit | :credit, counter: atom(), net: atom(), tax: atom()} | nil
 
   @doc "The human name of a document type, as the pages and the PDF show it."
   @callback document_type_name(document_type :: String.t()) :: String.t()
@@ -76,13 +82,51 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
 
   @doc """
   Adds the authority's own errors to a valid `Draft` changeset: codes outside
-  the company's code lists, fields its rules require, a supplier profile
+  the company's code lists, fields its rules require, a company profile
   missing what every document carries, and a note whose original is not
-  one the authority lets it reference. `context` carries `supplier`,
-  `codes` (one list's active codes for the company), and `original` (the
-  original document's view, or `nil`).
+  one the authority lets it reference. `context` carries `supplier` (the
+  company's own profile, which is the buyer on a self-billed document),
+  `codes` (one list's active codes for the company), `original` (the
+  original document's view, or `nil`), and `consolidated` (whether the
+  draft is a consolidated document built by
+  `Bilimbi.Finance.Einvoice.Consolidation`).
   """
   @callback validate(Ecto.Changeset.t(), context :: map()) :: Ecto.Changeset.t()
+
+  @doc """
+  The period a consolidated document for the month starting on `month`
+  covers, in the authority's own calendar, and when it may be issued:
+  `from` and `until` bound the issue instants of the documents it covers
+  (`until` exclusive, and also the moment from which it may be issued),
+  and `closes_at` ends the time the authority allows for issuing it.
+  """
+  @callback consolidation_window(month :: Date.t()) :: %{
+              from: DateTime.t(),
+              until: DateTime.t(),
+              closes_at: DateTime.t()
+            }
+
+  @doc """
+  Why a recorded document (`Einvoice.get_document/3`'s map) may not be
+  covered by a consolidated document, in a short phrase, or `nil` when it
+  may: the authority's own limits on what a consolidated document reports.
+  """
+  @callback consolidation_refusal(document :: map()) :: String.t() | nil
+
+  @doc """
+  The `Bilimbi.Finance.Einvoice.issue_document/3` attributes of a
+  consolidated document, in the authority's terms (document type, the
+  general buyer, line classification and unit, billing period). `lines`
+  are the grouped sources, each with `description`, `amount`, `tax_amount`,
+  `tax_type`, `tax_rate`, and `tax_exemption_reason`; a line's tax is the
+  sum of its sources' tax, which `Draft` takes as given for these lines.
+  """
+  @callback consolidated_document(%{
+              code_number: String.t(),
+              issued_at: DateTime.t(),
+              month: Date.t(),
+              lines: [map()]
+            }) :: map()
 
   @doc """
   Whether `value` has the shape the authority requires of a field of this

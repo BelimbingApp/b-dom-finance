@@ -162,12 +162,27 @@ defmodule Bilimbi.Finance.Einvoice.DocumentsTest do
     test "the pages, the PDF, and the cancellation window read the authority's rules" do
       authority = Bilimbi.Finance.Einvoice.Configuration.authority()
 
-      assert authority.posting_rule("01") == {:debit, :receivable_account}
-      assert authority.posting_rule("02") == {:credit, :receivable_account}
-      assert authority.posting_rule("03") == {:debit, :receivable_account}
-      assert authority.posting_rule("04") == {:credit, :settlement_account}
+      sale = %{net: :revenue_account, tax: :tax_account}
+      purchase = %{net: :expense_account, tax: :purchase_tax_account}
+
+      for {type, side, counter, accounts} <- [
+            {"01", :debit, :receivable_account, sale},
+            {"02", :credit, :receivable_account, sale},
+            {"03", :debit, :receivable_account, sale},
+            {"04", :credit, :settlement_account, sale},
+            {"11", :credit, :payable_account, purchase},
+            {"12", :debit, :payable_account, purchase},
+            {"13", :credit, :payable_account, purchase},
+            {"14", :debit, :settlement_account, purchase}
+          ] do
+        assert authority.posting_rule(type) ==
+                 Map.merge(accounts, %{side: side, counter: counter})
+      end
+
       assert authority.posting_rule("99") == nil
       assert authority.document_type_name("02") == "Credit note"
+      assert authority.document_type_name("11") == "Self-billed invoice"
+      assert authority.self_billed_document_types() == ["11", "12", "13", "14"]
       assert Documents.cancellation_window_hours() == authority.cancellation_window_hours()
     end
 

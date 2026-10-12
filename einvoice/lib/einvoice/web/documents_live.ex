@@ -1,7 +1,8 @@
 defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
   @moduledoc """
   The signed-in company's fiscal documents, newest first, filtered by
-  status, type, and environment and searched by code number or buyer.
+  status, type, and environment and searched by code number or
+  counterparty (the buyer, or the supplier of a self-billed document).
   Page, search, filters, and page size live in the URL
   (`Bilimbi.Base.UI.ListState`).
   """
@@ -15,7 +16,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
   alias Bilimbi.Finance.Einvoice
   alias Bilimbi.Finance.Einvoice.Configuration
 
-  @statuses ~w(issued submitted refused valid invalid cancelled rejected)
+  @statuses Einvoice.status_events()
   @types Configuration.authority().issuable_document_types()
 
   @list ListState.spec!(
@@ -33,7 +34,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
     %{id: "code_number", label: "Number", type: :string},
     %{id: "document_type", label: "Type", type: :string},
     %{id: "issued_at", label: "Issued", type: :datetime},
-    %{id: "buyer", label: "Buyer", type: :string},
+    %{id: "buyer", label: "Counterparty", type: :string},
     %{id: "payable_amount", label: "Payable", type: :string, align: :right},
     %{id: "status", label: "Status", type: :string},
     %{id: "environment", label: "Environment", type: :string}
@@ -122,6 +123,8 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
   def status_kind("valid"), do: :success
   def status_kind("submitted"), do: :info
   def status_kind("issued"), do: :default
+  def status_kind("consolidated"), do: :info
+  def status_kind("released"), do: :default
   def status_kind("cancelled"), do: :warning
   def status_kind("rejected"), do: :warning
   def status_kind(_other), do: :danger
@@ -140,6 +143,12 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
           <:subtitle>Fiscal documents this company issued, newest first.</:subtitle>
           <:actions>
             <.link
+              id="einvoice-documents-consolidation"
+              navigate={~p"/finance/einvoice/consolidation"}
+            >
+              Consolidation
+            </.link>
+            <.link
               id="einvoice-documents-reconciliation"
               navigate={~p"/finance/einvoice/reconciliation"}
             >
@@ -154,7 +163,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
             field={@filters_form[:search]}
             id="einvoice-documents-search"
             label="Search documents"
-            placeholder="Search by number or buyer…"
+            placeholder="Search by number or counterparty…"
           />
           <:control
             type={:select}
@@ -216,7 +225,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentsLive do
             <:col :let={%{record: document}} id="issued_at">
               <.datetime id={"einvoice-document-issued-#{document.id}"} value={document.issued_at} />
             </:col>
-            <:col :let={%{record: document}} id="buyer">{document.buyer_name}</:col>
+            <:col :let={%{record: document}} id="buyer">{document.counterparty_name}</:col>
             <:col :let={%{record: document}} id="payable_amount">
               <span class="tabular-nums">
                 {Decimal.to_string(document.payable_amount, :normal)} {document.currency_code}

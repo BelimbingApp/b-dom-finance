@@ -4,13 +4,20 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
   A document the authority validated posts one balanced entry through
   `Bilimbi.Finance.Ledger.post_entry/3`, as the user the work runs for,
-  dated the document's issue date, with the document's code number and
-  authority UUID in the entry's `reference`. The accounts come from the
+  dated the document's issue date (a consolidated document's, the last day
+  of the month it reports, so the month's revenue stays in that month),
+  with the document's code number and authority UUID in the entry's
+  `reference`. The accounts come from the
   company's `finance.einvoice.posting.*` settings, by account code in its
-  own chart; nothing here names an account. An invoice or debit note
-  debits the receivable account and credits revenue and tax; a credit note
-  posts the mirror image; a refund note debits revenue and tax and credits
-  the settlement account. A tax of zero posts no tax line.
+  own chart; nothing here names an account, and the authority's
+  `posting_rule/1` says which settings each document type posts to. An
+  invoice or debit note debits the receivable account and credits revenue
+  and tax; a credit note posts the mirror image; a refund note debits
+  revenue and tax and credits the settlement account. A self-billed
+  document is a purchase: its invoice or debit note credits the payable
+  account and debits expense and purchase tax, its credit note posts the
+  mirror image, and its refund note debits the settlement account. A tax
+  of zero posts no tax line.
 
   The entry's ID is recorded on a `posted` status event, and a cancelled
   document's entry is reversed with `Ledger.reverse_entry/4` and recorded
@@ -23,7 +30,8 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   connection, a timeout, lock contention) is tried a second time, as a
   fresh transaction once the first has ended, and recorded as one failure
   that says it was tried twice; a ledger refusal (an
-  inactive account, a closed period) or a configuration failure is final.
+  inactive account, a closed period, which is never reopened to post) or a
+  configuration failure is final.
   A document posts once: asking again after a `posted` event is `:noop`.
   A rejected document is still valid at the authority, so it posts too.
 
@@ -40,6 +48,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
+  alias Bilimbi.Finance.Einvoice.Consolidation
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Ledger
 
@@ -152,7 +161,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
          {:ok, lines} <- lines(document, accounts, book),
          {:ok, entry} <-
            Ledger.post_entry(scope, company_id, %{
-             entry_date: DateTime.to_date(document.issued_at),
+             entry_date: entry_date(document),
              description: description(document),
              reference: reference(document),
              lines: lines
@@ -204,6 +213,12 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     end
   end
 
+  defp entry_date(document) do
+    if Consolidation.consolidated?(document),
+      do: Date.from_iso8601!(document.details["billing_period_end"]),
+      else: DateTime.to_date(document.issued_at)
+  end
+
   defp postable(%{status: status, document_uuid: uuid}) when is_binary(uuid) do
     if status in Documents.valid_statuses(),
       do: :ok,
@@ -217,7 +232,7 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
     needed =
       case Configuration.authority().posting_rule(document_type) do
-        {_side, account} -> [account, :revenue_account, :tax_account]
+        %{counter: counter, net: net, tax: tax} -> [counter, net, tax]
         nil -> []
       end
 
@@ -262,23 +277,22 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
     end
   end
 
-  # The entry's lines by document type. `other` is the side the receivable
-  # or settlement account takes; revenue and tax take the opposite side.
+  # The entry's lines by document type. The counter-account (receivable,
+  # payable, or settlement) takes the rule's side; the net (revenue or
+  # expense) and tax accounts take the opposite side.
   defp lines(document, accounts, _book) do
-    type = document.document_type
     net = document.tax_exclusive_amount
     tax = document.tax_amount
     gross = document.payable_amount
 
-    {other_side, other_field} = Configuration.authority().posting_rule(type)
-    other_account = Map.fetch!(accounts, other_field)
-    revenue_side = if other_side == :debit, do: :credit, else: :debit
+    rule = Configuration.authority().posting_rule(document.document_type)
+    opposite = if rule.side == :debit, do: :credit, else: :debit
 
     lines =
       [
-        {other_account, other_side, gross, nil},
-        {accounts.revenue_account, revenue_side, net, "Tax-exclusive amount"},
-        {accounts.tax_account, revenue_side, tax, "Tax"}
+        {Map.fetch!(accounts, rule.counter), rule.side, gross, nil},
+        {Map.fetch!(accounts, rule.net), opposite, net, "Tax-exclusive amount"},
+        {Map.fetch!(accounts, rule.tax), opposite, tax, "Tax"}
       ]
       |> Enum.reject(fn {_account, _side, amount, _description} -> Decimal.eq?(amount, 0) end)
       |> Enum.map(fn {account, side, amount, description} ->
