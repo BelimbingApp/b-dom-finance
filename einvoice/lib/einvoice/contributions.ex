@@ -34,7 +34,7 @@ defmodule Bilimbi.Finance.Einvoice.Contributions do
         %{
           id: "finance.einvoice.documents",
           label: "E-invoices",
-          icon: "document-text",
+          icon: "circle-stack",
           parent: "finance",
           route: "/finance/einvoice/documents",
           capability: @view,
@@ -43,7 +43,7 @@ defmodule Bilimbi.Finance.Einvoice.Contributions do
         %{
           id: "finance.einvoice.reconciliation",
           label: "E-invoice Reconciliation",
-          icon: "scale",
+          icon: "chart-bar",
           parent: "finance",
           route: "/finance/einvoice/reconciliation",
           capability: @view,
