@@ -31,7 +31,11 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   submission UID and document UUID are recorded as `submitted` with the
   authority's own entry, and the poll job is queued. Only when nothing is
   found is the `duplicate` recorded and the job stopped for an operator,
-  or the outage retried.
+  or the outage retried. The search covers the time from before the
+  document was issued to a minute past the moment of asking. A retry that
+  finds an earlier attempt with no final answer (a crash, or only an
+  outage) searches first and sends again only when the search found
+  nothing; when the search cannot answer, the job retries without sending.
 
   ## Polling
 
@@ -78,6 +82,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   @active_note_statuses ["submitted", "valid", "rejected"]
   @outage_hours 72
   @max_reads_per_job 10
+  @lookup_margin_seconds 60
 
   @type job_result :: :ok | {:retry, atom()} | {:cancel, atom()}
 
@@ -165,37 +170,103 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
         {:cancel, reason}
 
-      {:ok, %{credentials: credentials, version: version, signing_key: key}} ->
-        case authority().payload(document, %{version: version, signing_key: key}, now) do
-          {:ok, payload} ->
-            submission = store_submission!(scope, company_id, document, payload)
-
-            outcome =
-              authority().submit(scope, company_id, credentials, %{
-                format: payload.format,
-                bytes: payload.bytes,
-                code_number: document.code_number
-              })
-
-            record_submission_outcome(
-              scope,
-              company_id,
-              document,
-              submission,
-              outcome,
-              credentials,
-              now
-            )
-
-          {:error, reason} ->
-            record(scope, company_id, document.id, %{
-              event: "unsendable",
-              reason: "cannot build the payload: #{reason}"
-            })
-
-            {:cancel, reason}
+      {:ok, prepared} ->
+        case unresolved_attempt(scope, company_id, document) do
+          nil -> send_submission(scope, company_id, document, prepared, now)
+          attempt -> settle_attempt(scope, company_id, document, prepared, attempt, now)
         end
     end
+  end
+
+  # An earlier attempt that never got a final answer may have been accepted.
+  # Ask the authority before sending the bytes again: an accepted document is
+  # recorded, a lookup that cannot answer retries without sending, and only
+  # a lookup that finds nothing lets the document go out again.
+  defp settle_attempt(scope, company_id, document, prepared, attempt, now) do
+    case find_submission(scope, company_id, prepared.credentials, document) do
+      {:found, found} ->
+        record_submission_outcome(
+          scope,
+          company_id,
+          document,
+          attempt,
+          {:accepted, found},
+          now
+        )
+
+      {status, answer} when status in [:rate_limited, :unavailable] ->
+        record_submission_outcome(
+          scope,
+          company_id,
+          document,
+          attempt,
+          {status, answer},
+          now
+        )
+
+      {_not_found_or_refused, _answer} ->
+        send_submission(scope, company_id, document, prepared, now)
+    end
+  end
+
+  defp send_submission(scope, company_id, document, prepared, now) do
+    %{credentials: credentials, version: version, signing_key: key} = prepared
+
+    case authority().payload(document, %{version: version, signing_key: key}, now) do
+      {:ok, payload} ->
+        submission = store_submission!(scope, company_id, document, payload)
+
+        outcome =
+          authority().submit(scope, company_id, credentials, %{
+            format: payload.format,
+            bytes: payload.bytes,
+            code_number: document.code_number
+          })
+
+        outcome = recover_outcome(scope, company_id, credentials, document, outcome)
+
+        record_submission_outcome(
+          scope,
+          company_id,
+          document,
+          submission,
+          outcome,
+          now
+        )
+
+      {:error, reason} ->
+        record(scope, company_id, document.id, %{
+          event: "unsendable",
+          reason: "cannot build the payload: #{reason}"
+        })
+
+        {:cancel, reason}
+    end
+  end
+
+  # The latest submission stored since the document last became submittable
+  # whose answer is missing or was only an outage: it may have been accepted.
+  defp unresolved_attempt(scope, company_id, document) do
+    last_status =
+      document.events
+      |> Enum.filter(&(&1.event in Documents.status_events()))
+      |> List.last()
+
+    settled =
+      document.events
+      |> Enum.reverse()
+      |> Enum.take_while(&(&1.event not in Documents.status_events()))
+      |> Enum.reject(&(&1.event == "unavailable" or is_nil(&1.submission_id)))
+      |> MapSet.new(& &1.submission_id)
+
+    from(s in Tenancy.scope_query(Submission, scope),
+      where:
+        s.company_id == ^company_id and s.document_id == ^document.id and
+          s.recorded_at > ^last_status.recorded_at,
+      order_by: [desc: s.id]
+    )
+    |> Repo.all()
+    |> Enum.find(&(&1.id not in settled))
   end
 
   # The bytes are committed before the authority sees them.
@@ -227,11 +298,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
          document,
          submission,
          outcome,
-         credentials,
          now
        ) do
-    outcome = recover_outcome(scope, company_id, credentials, document, outcome, now)
-
     base = %{
       "document_id" => document.id,
       "code_number" => document.code_number,
@@ -320,24 +388,40 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   # code number, among what was submitted since the document last became
   # submittable, instead of sending the bytes again. A lookup that finds
   # nothing leaves the outcome as it was; one that cannot answer retries.
-  defp recover_outcome(scope, company_id, credentials, document, {kind, _answer} = outcome, now)
+  defp recover_outcome(scope, company_id, credentials, document, {kind, _answer} = outcome)
        when kind in [:duplicate, :unavailable] do
-    since =
-      document.events
-      |> Enum.filter(&(&1.event in Documents.status_events()))
-      |> List.last()
-      |> Map.fetch!(:recorded_at)
-
-    lookup = %{code_number: document.code_number, since: since, until: now}
-
-    case authority().find_submission(scope, company_id, credentials, lookup) do
+    case find_submission(scope, company_id, credentials, document) do
       {:found, found} -> {:accepted, found}
       {status, answer} when status in [:rate_limited, :unavailable] -> {status, answer}
       {_not_found_or_refused, _answer} -> outcome
     end
   end
 
-  defp recover_outcome(_scope, _company_id, _credentials, _document, outcome, _now), do: outcome
+  defp recover_outcome(_scope, _company_id, _credentials, _document, outcome), do: outcome
+
+  # The window runs from before the document existed to a minute past the
+  # moment of asking, so it holds the attempt that has just ended.
+  defp find_submission(scope, company_id, credentials, document) do
+    first_stored =
+      from(s in Tenancy.scope_query(Submission, scope),
+        where: s.company_id == ^company_id and s.document_id == ^document.id,
+        select: min(s.recorded_at)
+      )
+      |> Repo.one()
+
+    since =
+      [document.issued_at | List.wrap(first_stored)]
+      |> Enum.min(DateTime)
+      |> DateTime.add(-@lookup_margin_seconds, :second)
+
+    lookup = %{
+      code_number: document.code_number,
+      since: since,
+      until: DateTime.add(DateTime.utc_now(), @lookup_margin_seconds + 1, :second)
+    }
+
+    authority().find_submission(scope, company_id, credentials, lookup)
+  end
 
   # Once the authority has been unreachable for 72 hours since this
   # document's first failed attempt, the operator is told once, through an

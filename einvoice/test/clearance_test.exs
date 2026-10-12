@@ -84,6 +84,33 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
     ]
   end
 
+  defp drain_requests do
+    receive do
+      {:request, _method, _path, _body} -> drain_requests()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp query_instant(conn, key) do
+    {:ok, instant, _offset} =
+      conn
+      |> Plug.Conn.fetch_query_params()
+      |> Map.fetch!(:query_params)
+      |> Map.fetch!(key)
+      |> DateTime.from_iso8601()
+
+    instant
+  end
+
+  defp stub_outage! do
+    TestFixtures.stub_authority!(%{
+      {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+      {"POST", @submit_path} => &Req.Test.transport_error(&1, :timeout),
+      {"GET", @recent_path} => &recent_response(&1, [])
+    })
+  end
+
   describe "queuing a submission" do
     test "queues the submit job as the user and records the request", %{
       operator: op,
@@ -354,6 +381,114 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                SubmitWorker.handle_job(args(fresh), execution(op))
 
       assert [{"issued", _}, {"unavailable", %{reason: "TransportError"}}] = events(op, fresh)
+    end
+
+    test "searches a window that reaches past the job's start", %{
+      operator: op,
+      document: document
+    } do
+      started = DateTime.add(DateTime.utc_now(), -3600, :second)
+      asked_at = DateTime.truncate(DateTime.utc_now(), :second)
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &Req.Test.transport_error(&1, :timeout),
+        {"GET", @recent_path} => fn conn ->
+          if DateTime.compare(query_instant(conn, "submissionDateTo"), asked_at) == :lt,
+            do: recent_response(conn, []),
+            else: recent_response(conn, held_by_authority())
+        end
+      })
+
+      assert :ok = Clearance.submit(op, 73, document.id, started)
+
+      assert [{"issued", _}, {"submitted", %{document_uuid: "F9D425P6DS7D8IU"}}] =
+               events(op, document)
+    end
+
+    test "a retry after an outage finds the earlier attempt accepted and does not send again", %{
+      operator: op,
+      document: document
+    } do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &recent_response(&1, held_by_authority())
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+
+      assert_received {:request, "GET", @recent_path, _}
+      refute_received {:request, "POST", @submit_path, _}
+
+      assert [
+               {"issued", _},
+               {"unavailable", _},
+               {"submitted", %{submission_uid: "HJSD135P2S7D8IU"}}
+             ] =
+               events(op, document)
+
+      assert length(Repo.all(Submission)) == 1
+      assert [_poll_job] = Repo.all(Oban.Job)
+    end
+
+    test "a retry after an outage does not send while the search cannot answer", %{
+      operator: op,
+      document: document
+    } do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &(&1 |> Plug.Conn.put_status(503) |> Req.Test.json(%{}))
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      refute_received {:request, "POST", @submit_path, _}
+
+      assert [{"issued", _}, {"unavailable", _}, {"unavailable", %{http_status: 503}}] =
+               events(op, document)
+
+      assert length(Repo.all(Submission)) == 1
+    end
+
+    test "a retry after an outage sends again when the search finds nothing", %{
+      operator: op,
+      document: document
+    } do
+      stub_outage!()
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      drain_requests()
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &TestFixtures.accepted_response(&1, "JSON-INV12345"),
+        {"GET", @recent_path} => &recent_response(&1, [])
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+
+      assert_received {:request, "POST", @submit_path, _}
+      assert [{"issued", _}, {"unavailable", _}, {"submitted", _}] = events(op, document)
+      assert length(Repo.all(Submission)) == 2
     end
 
     test "retries a rate limit and an outage, and notices a 72-hour outage once", %{

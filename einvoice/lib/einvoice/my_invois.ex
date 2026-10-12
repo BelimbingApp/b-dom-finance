@@ -453,7 +453,9 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
            page: page
          ) do
       {:ok, %{status: status, body: %{"result" => results} = body}} when is_list(results) ->
-        case Enum.find(results, &(&1["internalId"] == code)) do
+        case results
+             |> Enum.filter(&(&1["internalId"] == code))
+             |> Enum.max_by(&to_string(&1["dateTimeReceived"]), fn -> nil end) do
           %{"uuid" => uuid, "submissionUid" => uid} = entry
           when is_binary(uuid) and is_binary(uid) ->
             {:found,

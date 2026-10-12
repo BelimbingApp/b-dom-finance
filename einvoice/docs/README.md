@@ -95,8 +95,12 @@ accepted request, it asks the authority for the document by its code number
 (`Authority.find_submission/4`; MyInvois lists the documents the taxpayer
 recently sent) and records the UID and UUID it finds as `submitted`, with
 the authority's own entry, and queues the poll. Only when nothing is found
-does a duplicate stop the job for an operator, and an outage retry. A rate
-limit or outage retries under Base Queue's
+does a duplicate stop the job for an operator, and an outage retry. The
+search runs from before the document was issued to a minute past the
+moment of asking, and it also runs before any retry that finds an earlier
+attempt without a final answer (a crash, or only an outage): the bytes go
+out again only when the search found nothing, and not at all while it
+cannot answer. A rate limit or outage retries under Base Queue's
 backoff (Base Queue has no snooze, so the authority's `Retry-After` is
 recorded on the event rather than honoured to the second); an outage that
 has lasted 72 hours records `overdue` and the audit action
