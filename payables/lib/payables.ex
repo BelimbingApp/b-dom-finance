@@ -333,8 +333,7 @@ defmodule Bilimbi.Finance.Payables do
     write(scope, company_id, @post_documents, fn ->
       with {:ok, document} <- fetch_document(scope, company_id, document_id),
            :ok <- require_status(document, "approved", :not_approved),
-           {:ok, payable_account_id} <- payable_account(scope, company_id),
-           :ok <- debit_note_within_outstanding(scope, company_id, document),
+           {:ok, payable_account_id} <- posting_account(scope, company_id, document),
            {:ok, entry} <-
              Ledger.post_entry(scope, company_id, document_entry(document, payable_account_id)) do
         %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
@@ -898,18 +897,22 @@ defmodule Bilimbi.Finance.Payables do
        else: :ok
   end
 
-  # A debit note is checked again when it posts: payments may have reduced
-  # what is owed on its bill since it was recorded.
-  defp debit_note_within_outstanding(scope, company_id, %Document{
+  # A debit note posts against the account its bill posted to, and is checked
+  # again when it posts: payments may have reduced what is owed on its bill
+  # since it was recorded.
+  defp posting_account(scope, company_id, %Document{
          document_type: "debit_note",
          corrects_document_id: bill_id,
          total: total
        }) do
     {:ok, bill} = fetch_document(scope, company_id, bill_id)
-    if exceeds?(scope, company_id, bill, total), do: {:error, :exceeds_outstanding}, else: :ok
+
+    if exceeds?(scope, company_id, bill, total),
+      do: {:error, :exceeds_outstanding},
+      else: {:ok, bill.payable_account_id}
   end
 
-  defp debit_note_within_outstanding(_scope, _company_id, _bill), do: :ok
+  defp posting_account(scope, company_id, _bill), do: payable_account(scope, company_id)
 
   defp exceeds?(scope, company_id, bill, total) do
     owed = Map.fetch!(Balances.outstanding(scope, company_id, [bill]), bill.id)

@@ -409,6 +409,27 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       assert payable_id == accounts.payable.id and decimal?(payable_debit, 27)
     end
 
+    test "post against the bill's own payable account after the setting changes", context do
+      %{operator: operator, bill: bill, accounts: accounts} = context
+
+      {:ok, _} =
+        Payables.put_settings(operator, 73, %{payable_account_id: accounts.other_payable.id})
+
+      {:ok, note} =
+        Payables.create_debit_note(operator, 73, bill.id, %{
+          document_date: ~D[2026-10-05],
+          lines: [line(accounts.expense, "25")]
+        })
+
+      {:ok, _} = Payables.approve_document(operator, 73, note.id)
+      assert {:ok, posted} = Payables.post_document(operator, 73, note.id)
+      assert posted.payable_account_id == accounts.payable.id
+
+      {:ok, entry} = Ledger.get_entry(operator, 73, posted.entry_id)
+      assert accounts.payable.id in Enum.map(entry.lines, & &1.account_id)
+      refute accounts.other_payable.id in Enum.map(entry.lines, & &1.account_id)
+    end
+
     test "take string keys and keep the bill's party", context do
       %{operator: operator, bill: bill, accounts: accounts} = context
 
