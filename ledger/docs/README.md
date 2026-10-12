@@ -27,8 +27,8 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `close_period/4` | `finance.ledger.periods.manage` | Closes an open period, optional `reason` |
 | `reopen_period/4` | `finance.ledger.periods.reopen` | Reopens a closed period with a `reason` |
 | `lock_period/4` | `finance.ledger.periods.lock` | Locks a closed period for good, optional `reason` |
-| `close_fiscal_year/4` | `finance.ledger.periods.manage` | Posts the closing entry into retained earnings and closes the year; idempotent |
-| `reopen_fiscal_year/4` | `finance.ledger.periods.reopen` | Reopens a closed year with a `reason`, reversing its closing entry |
+| `close_fiscal_year/4` | `finance.ledger.periods.manage` and `finance.ledger.entries.post` | Posts the closing entry into retained earnings and closes the year; idempotent |
+| `reopen_fiscal_year/4` | `finance.ledger.periods.reopen` and `finance.ledger.entries.post` | Reopens a closed year with a `reason`, reversing its closing entry |
 
 ## Authorization and company scope
 
@@ -46,6 +46,9 @@ entry posts into it. Ledger figures are financial facts, so reads need
 `finance.ledger.view`; the Tenant Owner role holds all six capabilities.
 Closing, reopening, and locking are separate capabilities, so a company can
 let one person close periods and keep reopening and locking with another.
+Closing and reopening a fiscal year also post an entry, so each needs the
+posting capability `finance.ledger.entries.post` as well; a caller missing
+either capability is `{:error, :unauthorized}` and nothing is posted.
 
 An entry records who posted it: `posted_by_user_id` from `Scope.actor/1`, and
 `posted_by_impersonator_id` for an impersonated session; the database stamps
@@ -179,11 +182,13 @@ period of the year still open; the year's last period closes only this way,
 so it stays open for year-end adjustments until the close. A year with no
 income or expense balance closes with no entry. The previous year must be
 closed first (`:earlier_period_open`), and an active retained-earnings
-account must be designated (`:no_retained_earnings_account`).
+account must be designated (`:no_retained_earnings_account`). Closing needs
+the posting capability as well as the period-management one, since it posts
+the closing entry.
 
 The close is idempotent: closing a closed year returns it unchanged and posts
-nothing. Only `reopen_fiscal_year/4` undoes it, with the reopen capability
-and a `reason`: it records the year's and its last period's `reopen` events
+nothing. Only `reopen_fiscal_year/4` undoes it, with the reopen and posting
+capabilities and a `reason`: it records the year's and its last period's `reopen` events
 and posts the closing entry's reversal on the year's last day. The year's
 other periods stay closed until each is reopened. A year whose last period is
 locked never reopens (`:period_locked`), nor one whose next year has a closed

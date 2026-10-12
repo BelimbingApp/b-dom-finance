@@ -450,7 +450,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def close_period(%Scope{} = scope, company_id, period_id, attributes \\ %{})
       when is_map(attributes) do
-    write(scope, company_id, @manage_periods, fn ->
+    write(scope, company_id, [@manage_periods, @post_entries], fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, period} <- find_period(state, period_id),
@@ -480,7 +480,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def reopen_period(%Scope{} = scope, company_id, period_id, attributes)
       when is_map(attributes) do
-    write(scope, company_id, @reopen_periods, fn ->
+    write(scope, company_id, [@reopen_periods, @post_entries], fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, period} <- find_period(state, period_id),
@@ -527,6 +527,10 @@ defmodule Bilimbi.Finance.Ledger do
   year with no income or expense balance closes with no entry. The previous
   year must be closed first (`{:error, :earlier_period_open}`).
 
+  The close posts an entry, so the caller needs the period-management
+  capability and the entry-posting capability; missing either is
+  `{:error, :unauthorized}`.
+
   Closing a closed year again returns it unchanged: the close is
   idempotent. Only `reopen_fiscal_year/4` undoes it.
   """
@@ -541,7 +545,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def close_fiscal_year(%Scope{} = scope, company_id, fiscal_year_id, attributes \\ %{})
       when is_map(attributes) do
-    write(scope, company_id, @manage_periods, fn ->
+    write(scope, company_id, [@manage_periods, @post_entries], fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, book} <- open_book_for_write(scope, company_id),
@@ -555,7 +559,8 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc """
   Reopens a closed fiscal year with a `reason`, which needs the privileged
-  reopen capability: it reopens the year and its last period, and reverses
+  reopen capability and the entry-posting capability, because it posts the
+  reversal (missing either is `{:error, :unauthorized}`): it reopens the year and its last period, and reverses
   the closing entry on the year's last day. The year's other periods stay
   closed until each is reopened. A year whose last period is locked never
   reopens (`{:error, :period_locked}`), and a year reopens only while the
@@ -573,7 +578,7 @@ defmodule Bilimbi.Finance.Ledger do
              | Changeset.t()}
   def reopen_fiscal_year(%Scope{} = scope, company_id, fiscal_year_id, attributes)
       when is_map(attributes) do
-    write(scope, company_id, @reopen_periods, fn ->
+    write(scope, company_id, [@reopen_periods, @post_entries], fn ->
       state = closing_state(scope, company_id)
 
       with {:ok, book} <- open_book_for_write(scope, company_id),
@@ -976,8 +981,17 @@ defmodule Bilimbi.Finance.Ledger do
     end
   end
 
-  defp write(scope, company_id, capability, fun) do
-    with :ok <- authorize(scope, company_id, capability) do
+  defp authorize_all(scope, company_id, capabilities) do
+    Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
+      case authorize(scope, company_id, capability) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp write(scope, company_id, capabilities, fun) do
+    with :ok <- authorize_all(scope, company_id, List.wrap(capabilities)) do
       Repo.transact(fn ->
         case Company.lock_writable_company(scope, company_id) do
           {:ok, _proof} -> fun.()

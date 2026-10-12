@@ -361,6 +361,26 @@ defmodule Bilimbi.Finance.Ledger.ClosingTest do
                Ledger.close_fiscal_year(operator, 73, next.id)
     end
 
+    test "closing and reopening a year need the posting capability as well", context do
+      %{operator: operator, first_scope: system, year: year} = context
+
+      no_posting = TestFixtures.sign_in!(system, 73, 96, [@view, @periods, @reopen])
+      assert {:error, :unauthorized} = Ledger.close_fiscal_year(no_posting, 73, year.id)
+      assert {:ok, %{status: "open", closing_entry_id: nil}} = year_of(operator, year)
+
+      no_periods = TestFixtures.sign_in!(system, 73, 97, [@view, @post])
+      assert {:error, :unauthorized} = Ledger.close_fiscal_year(no_periods, 73, year.id)
+      assert {:ok, %{status: "open", closing_entry_id: nil}} = year_of(operator, year)
+
+      {:ok, %{closing_entry_id: entry_id}} = Ledger.close_fiscal_year(operator, 73, year.id)
+
+      assert {:error, :unauthorized} =
+               Ledger.reopen_fiscal_year(no_posting, 73, year.id, %{reason: "Adjust"})
+
+      assert {:ok, %{status: "closed", closing_entry_id: ^entry_id}} = year_of(operator, year)
+      assert {:ok, %{reversed_by_entry_id: nil}} = Ledger.get_entry(operator, 73, entry_id)
+    end
+
     test "needs an active retained-earnings account and the previous year closed", context do
       %{operator: operator, accounts: accounts, year: year} = context
       {:ok, next} = Ledger.open_fiscal_year(operator, 73)
@@ -488,6 +508,8 @@ defmodule Bilimbi.Finance.Ledger.ClosingTest do
       assert %{retained_earnings: ["must be an equity account"]} = errors_on(changeset)
     end
   end
+
+  defp year_of(scope, year), do: Ledger.get_fiscal_year(scope, 73, year.id)
 
   defp period(year, number), do: Enum.find(year.periods, &(&1.period_number == number))
 
