@@ -1,0 +1,125 @@
+Code.require_file("../priv/repo/migrations/20261012200000_create_finance_einvoice.exs", __DIR__)
+
+defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
+  use ExUnit.Case, async: false
+
+  alias Bilimbi.Base.Database.SchemaVerifier
+  alias Bilimbi.Base.Repo
+  alias Bilimbi.Finance.Einvoice.Migrations.CreateEinvoice
+  alias Bilimbi.Finance.Einvoice.SchemaContract
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+
+  setup do
+    # UUIDs keep fresh databases isolated across concurrent BEAM instances.
+    database = "bilimbi_finance_einvoice_#{String.replace(Ecto.UUID.generate(), "-", "")}"
+    quoted = SchemaVerifier.quote_identifier!(database)
+    Sandbox.unboxed_run(Repo, fn -> SQL.query!(Repo, "CREATE DATABASE #{quoted}", []) end)
+
+    on_exit(fn ->
+      Sandbox.unboxed_run(Repo, fn -> SQL.query!(Repo, "DROP DATABASE #{quoted}", []) end)
+    end)
+
+    repo = Module.concat(__MODULE__, FreshRepo)
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {Repo, name: repo, database: database, pool: DBConnection.ConnectionPool, pool_size: 2},
+        id: repo
+      )
+    )
+
+    assert :ok =
+             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), CreateEinvoice,
+               log: false,
+               dynamic_repo: repo
+             )
+
+    %{repo: repo}
+  end
+
+  test "the fresh migration implements the complete e-invoicing contract", %{repo: repo} do
+    assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  # The module's other suites prove these rules on temporary copies of the
+  # tables; this proves the migration itself carries them, outside a sandbox,
+  # where the deferred totals check runs at commit. A refused commit
+  # disconnects, which Postgrex logs; the log is expected.
+  @tag :capture_log
+  test "the migration's triggers keep records whole, stamped, numbered, and append-only",
+       %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    # The writer's own recording time is replaced by the database's.
+    document = fn id, amount ->
+      "INSERT INTO finance_einvoice_documents (id, tenant_id, company_id, authority, environment, document_type, code_number, issued_at, currency_code, supplier, buyer, line_extension_amount, tax_exclusive_amount, tax_amount, tax_inclusive_amount, payable_amount, issued_by_user_id, recorded_at) VALUES (#{id}, 1, 1, 'authority', 'sandbox', '01', 'INV-#{id}', '2026-10-01', 'XTS', '{}', '{}', #{amount}, #{amount}, 0, #{amount}, #{amount}, 1, '2000-01-01')"
+    end
+
+    line = fn document_id, number, amount ->
+      "INSERT INTO finance_einvoice_document_lines (tenant_id, company_id, document_id, line_number, description, classification_code, quantity, unit_price, subtotal, line_extension_amount, tax_type, tax_amount) VALUES (1, 1, #{document_id}, #{number}, 'Item', '022', 1, #{amount}, #{amount}, #{amount}, '06', 0)"
+    end
+
+    event = fn document_id, name ->
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, recorded_at) VALUES (1, 1, #{document_id}, 99, '#{name}', 'user', 1, '2000-01-01')"
+    end
+
+    assert {:ok, _} =
+             in_transaction.([
+               document.(1, 10),
+               line.(1, 1, 4),
+               line.(1, 2, 6),
+               event.(1, "issued")
+             ])
+
+    assert_raise Postgrex.Error, ~r/totals differ from its lines/, fn ->
+      in_transaction.([document.(2, 10), line.(2, 1, 9)])
+    end
+
+    assert_raise Postgrex.Error, ~r/has no lines/, fn -> in_transaction.([document.(3, 0)]) end
+
+    assert_raise Postgrex.Error, ~r/already recorded/, fn -> in_transaction.([line.(1, 3, 1)]) end
+
+    # A cancellation is a new event, numbered after the last.
+    assert {:ok, _} = in_transaction.([event.(1, "cancelled")])
+
+    payload = "convert_to('{\"Invoice\":[]}', 'UTF8')"
+
+    submission = fn hash ->
+      "INSERT INTO finance_einvoice_submissions (tenant_id, company_id, document_id, environment, format, document_version, payload, payload_sha256, actor_type, system_principal, recorded_at) VALUES (1, 1, 1, 'sandbox', 'JSON', '1.1', #{payload}, #{hash}, 'system', 'finance.einvoice.submitter', now())"
+    end
+
+    assert_raise Postgrex.Error, ~r/payload_sha256/, fn ->
+      query!.(submission.("repeat('0', 64)"))
+    end
+
+    assert %{num_rows: 1} = query!.(submission.("encode(sha256(#{payload}), 'hex')"))
+
+    for table <- [
+          "finance_einvoice_documents",
+          "finance_einvoice_document_lines",
+          "finance_einvoice_submissions",
+          "finance_einvoice_status_events"
+        ],
+        sql <- [
+          "UPDATE #{table} SET company_id = company_id",
+          "DELETE FROM #{table}",
+          "TRUNCATE #{table} CASCADE"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance e-invoicing keeps/, fn -> query!.(sql) end
+    end
+
+    assert %{rows: [[1, "issued", true], [2, "cancelled", true]]} =
+             query!.(
+               "SELECT sequence, event, recorded_at > '2026-01-01' FROM finance_einvoice_status_events ORDER BY sequence"
+             )
+
+    assert %{rows: [[true]]} =
+             query!.("SELECT recorded_at > '2026-01-01' FROM finance_einvoice_documents")
+  end
+end
