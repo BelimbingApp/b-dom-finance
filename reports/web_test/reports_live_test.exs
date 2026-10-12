@@ -104,7 +104,7 @@ defmodule BilimbiWeb.FinanceReportsLiveTest do
 
       assert has_element?(view, "#balance-sheet-account-#{accounts["1020"].id}-0", "300.00")
       assert has_element?(view, "#balance-sheet-earnings", "180.00")
-      assert has_element?(view, "#balance-sheet-total-assets", "1,300.00")
+      assert has_element?(view, "#balance-sheet-asset-total", "1,300.00")
       assert has_element?(view, "#balance-sheet-total-liabilities-and-equity", "1,300.00")
 
       {:ok, activity, _html} =

@@ -273,7 +273,6 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
             minor_units={@report.minor_units}
             groups={balance_sheet_groups(@report)}
             footer={[
-              {"total-assets", "Total assets", @report.total_assets},
               {"total-liabilities-and-equity", "Total liabilities and equity",
                @report.total_liabilities_and_equity}
             ]}
