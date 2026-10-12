@@ -249,8 +249,8 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc """
   Posted entries with their lines, ordered by entry date and then ID.
-  Options: `from` and `to` dates (inclusive), `limit` (a positive integer,
-  default #{@default_entry_limit}, capped at #{@max_entry_limit}), and
+  Options: `from` and `to` dates (inclusive), `limit` (an integer from 1 to
+  #{@max_entry_limit}, default #{@default_entry_limit}), and
   `after`, the `{entry_date, id}` of the last entry already read, which
   returns only the entries after it, so a caller pages by passing the last
   returned entry's date and ID until fewer than `limit` entries come back.
@@ -283,9 +283,9 @@ defmodule Bilimbi.Finance.Ledger do
     to = Keyword.get(options, :to)
     cursor = Keyword.get(options, :after)
 
-    if is_integer(limit) and limit > 0 and optional_date?(from) and optional_date?(to) and
+    if is_integer(limit) and limit in 1..@max_entry_limit and optional_date?(from) and optional_date?(to) and
          valid_cursor?(cursor),
-       do: {:ok, min(limit, @max_entry_limit), from, to, cursor},
+       do: {:ok, limit, from, to, cursor},
        else: {:error, :invalid_option}
   end
 
@@ -309,7 +309,8 @@ defmodule Bilimbi.Finance.Ledger do
   date, so passing the same `as_of` and `through_entry_number: n` reproduces
   an earlier report's debit and credit figures (row totals and balances, and
   the totals) exactly: entries are numbered in posting order and never
-  change. Account names, parents, and active flags are read as they are now. A malformed option is `{:error, :invalid_option}`.
+  change. Account names, parents, and active flags are read as they are now.
+  A malformed option is `{:error, :invalid_option}`.
   """
   @spec trial_balance(Scope.t(), term(), Date.t(), keyword()) ::
           {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}

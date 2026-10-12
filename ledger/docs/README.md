@@ -84,8 +84,8 @@ Each entry has an `entry_number`, its book's sequence number: the database
 numbers a company's entries 1, 2, 3, ... in posting order, so a number is never
 skipped (a refused or rolled-back post takes none) or reused.
 
-`list_entries/3` orders entries by date and then ID. `limit` is a positive
-integer (default 100, at most 500). To page past it, pass `after:
+`list_entries/3` orders entries by date and then ID. `limit` is an integer
+from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
 `limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
 shape is `{:error, :invalid_option}`.
@@ -104,8 +104,7 @@ report's debit and credit figures (each row's totals and balance, and the
 totals) reproduce exactly by passing the same `as_of` and its
 `through_entry_number`: posted entries never change and are numbered in
 posting order. Account names, parents, and active flags are read as they are
-now. Closing a period against back-dated postings is
-later work.
+now. Closing a period against back-dated postings is later work.
 
 ## Database
 

@@ -216,6 +216,7 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
             [limit: "10"],
             [limit: 0],
             [limit: 2.5],
+            [limit: 501],
             [limit: nil],
             [from: "2026-10-01"],
             [to: 20_261_001],
