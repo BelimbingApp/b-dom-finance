@@ -80,9 +80,8 @@ optional parent of the same type in the same company for grouping, and an
 active flag. Code and type never change once created, and an account is never
 deleted: deactivate it instead. A deactivated account takes no new postings,
 but its history stays and reversals of entries that used it still post, as do
-settlement entries that name it (see Journal entries). An
-account can be deactivated only once its balance (its posted debits less its
-credits) is zero; otherwise `update_account/4` returns a changeset whose
+settlement entries that name it (see Journal entries). An account can be
+deactivated only once its balance (its posted debits less its credits) is zero; otherwise `update_account/4` returns a changeset whose
 `active` error names the account and its balance, so an account that still
 holds a balance, such as receivables an invoice still owes, cannot be left
 where nothing can be posted against it. The code ships no account list; a
@@ -96,9 +95,10 @@ the company's choice; designating another account moves the designation.
 
 `post_entry/3,4` stores an entry only when it has at least two lines, each line
 names an active account of the company with exactly one positive amount, and
-debits equal credits (the one exception is the settlement exception below); otherwise it returns a changeset whose `lines` errors
-say why, per line where one line is at fault. Its `entry_date` must fall in
-an open period (see Period closing); otherwise the changeset's `entry_date`
+debits equal credits (an inactive account is allowed only under the
+settlement exception below); otherwise it returns a changeset whose `lines`
+errors say why, per line where one line is at fault. Its `entry_date` must
+fall in an open period (see Period closing); otherwise the changeset's `entry_date`
 error says the period is closed or locked, or that the date is before the
 company's first fiscal year. A posted entry and its lines are
 immutable. `reverse_entry/4` corrects one by posting the same lines with
