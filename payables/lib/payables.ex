@@ -314,8 +314,9 @@ defmodule Bilimbi.Finance.Payables do
   credits back, taken off what the company owes on that bill. Attributes
   are `create_bill/3`'s without the party, which is copied from the bill;
   `party_document_number` is optional. Its date is not before the bill's,
-  and its total cannot exceed what is still owed on the bill, now and as
-  of the debit note's date (`{:error, :exceeds_outstanding}`, checked again
+  and its total cannot exceed the least that is owed on the bill on any date
+  from the debit note's date on, counting each later payment, reversal, and
+  debit note date and now (`{:error, :exceeds_outstanding}`, checked again
   when it posts).
   """
   @spec create_debit_note(Scope.t(), term(), term(), map()) ::
@@ -506,9 +507,10 @@ defmodule Bilimbi.Finance.Payables do
   each `%{document_id, amount}` naming a posted bill of that party dated on
   or before the payment. The payment's amount is the allocations' total; an
   allocation cannot exceed what is still owed on its bill, so a bill may be
-  paid in parts. It must also fit what was owed on the bill as of the payment's
-  date, so a later reversal of an earlier payment cannot leave the bill owed
-  less than nothing. The ledger entry debits each bill's payable account and
+  paid in parts. An allocation fits the least that is owed on its bill on any
+  date from `payment_date` on (see `create_debit_note/4`), so a payment dated
+  before a payment that is later reversed cannot leave the bill owed less
+  than nothing. The ledger entry debits each bill's payable account and
   credits the paid-from account.
   """
   @spec post_payment(Scope.t(), term(), map()) ::
@@ -681,8 +683,8 @@ defmodule Bilimbi.Finance.Payables do
   in `exceptions` (with `outstanding` negative), outside the parties and
   buckets, and `exceptions_total` is their sum. `total + exceptions_total`
   is what the payable accounts hold for the bills as of the date. Posting
-  checks keep this empty by refusing a debit note or payment that would
-  leave a bill owed less than nothing, now or on its own date.
+  refuses any debit note or payment that would leave a bill owed less than
+  nothing on any date, so the list is empty unless another writer made it so.
   Each party's rows list its bills with `days_overdue` (days past the due
   date) and `bucket`, the index of its column in `buckets`: column 0 is not
   yet due, column `i` is overdue up to `bucket_days[i - 1]` days, and the
@@ -1069,15 +1071,9 @@ defmodule Bilimbi.Finance.Payables do
 
   defp posting_account(scope, company_id, _bill), do: payable_account(scope, company_id)
 
-  # An amount taken off a bill must fit what is owed on it both now and on the
-  # date of the debit note: a payment reversed after that date still counts
-  # there, and one later reversed must not leave the bill owed less than nothing.
   defp exceeds?(scope, company_id, bill, total, date) do
-    [
-      Balances.outstanding(scope, company_id, [bill]),
-      Balances.outstanding(scope, company_id, [bill], date)
-    ]
-    |> Enum.any?(&Decimal.lt?(Map.fetch!(&1, bill.id), total))
+    owed = Map.fetch!(Balances.lowest_outstanding(scope, company_id, [bill], date), bill.id)
+    Decimal.lt?(owed, total)
   end
 
   defp document_entry(document, payable_account_id) do
@@ -1158,18 +1154,16 @@ defmodule Bilimbi.Finance.Payables do
     bills =
       scope |> documents_query(company_id) |> where([d], d.id in ^document_ids) |> Repo.all()
 
-    owed = Balances.outstanding(scope, company_id, bills)
-
-    owed_on_date =
+    owed =
       if match?(%Date{}, payment_date),
-        do: Balances.outstanding(scope, company_id, bills, payment_date),
-        else: %{}
+        do: Balances.lowest_outstanding(scope, company_id, bills, payment_date),
+        else: Balances.outstanding(scope, company_id, bills)
 
     bills = Map.new(bills, &{&1.id, &1})
 
     allocations =
       allocations
-      |> Enum.map(&check_allocation(&1, bills, {owed, owed_on_date}, party_key, payment_date))
+      |> Enum.map(&check_allocation(&1, bills, owed, party_key, payment_date))
       |> mark_repeated_documents()
 
     party_name =
@@ -1215,7 +1209,7 @@ defmodule Bilimbi.Finance.Payables do
 
   defp cast_date(_value), do: nil
 
-  defp check_allocation(allocation, bills, {owed, owed_on_date}, party_key, payment_date) do
+  defp check_allocation(allocation, bills, owed, party_key, payment_date) do
     document_id = Changeset.get_field(allocation, :document_id)
     amount = Changeset.get_field(allocation, :amount)
 
@@ -1239,13 +1233,6 @@ defmodule Bilimbi.Finance.Payables do
 
           allocation.valid? and Decimal.gt?(amount, Map.fetch!(owed, bill.id)) ->
             Changeset.add_error(allocation, :amount, "exceeds what is owed on the bill")
-
-          allocation.valid? and Decimal.gt?(amount, Map.get(owed_on_date, bill.id, amount)) ->
-            Changeset.add_error(
-              allocation,
-              :amount,
-              "exceeds what is owed on the bill on the payment date"
-            )
 
           true ->
             allocation

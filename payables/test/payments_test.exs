@@ -248,7 +248,7 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
 
       assert %{
                allocations: [
-                 %{amount: ["exceeds what is owed on the bill on the payment date"]}
+                 %{amount: ["exceeds what is owed on the bill"]}
                ]
              } = errors_on(changeset)
 

@@ -17,7 +17,7 @@ defmodule Bilimbi.Finance.Payables.Balances do
   of `as_of`, when a bill dated after it is left out.
   """
   def outstanding(scope, company_id, documents, as_of \\ @end_of_time) do
-    case for(%Document{document_type: "bill", status: "posted", id: id} <- documents, do: id) do
+    case bill_ids(documents) do
       [] ->
         %{}
 
@@ -27,6 +27,53 @@ defmodule Bilimbi.Finance.Payables.Balances do
         |> Repo.all()
         |> Map.new(&{&1.id, &1.owed})
     end
+  end
+
+  @doc """
+  The least each posted bill among `documents` is owed on any date from
+  `since` on, by ID: on `since`, on each later date a payment, a payment
+  reversal, or a debit note against it is dated, and now. A new amount taken
+  off a bill fits only if it fits this least.
+  """
+  def lowest_outstanding(scope, company_id, documents, %Date{} = since) do
+    case bill_ids(documents) do
+      [] ->
+        %{}
+
+      ids ->
+        [since | event_dates(scope, company_id, ids, since)]
+        |> Enum.map(&outstanding(scope, company_id, documents, &1))
+        |> Enum.reduce(outstanding(scope, company_id, documents), fn owed, lowest ->
+          Map.merge(lowest, owed, fn _id, left, right -> Decimal.min(left, right) end)
+        end)
+    end
+  end
+
+  defp bill_ids(documents),
+    do: for(%Document{document_type: "bill", status: "posted", id: id} <- documents, do: id)
+
+  defp event_dates(scope, company_id, ids, since) do
+    paid =
+      from(a in Tenancy.scope_query(Allocation, scope),
+        join: p in ^Tenancy.scope_query(Payment, scope),
+        on: p.id == a.payment_id,
+        left_join: r in ^Tenancy.scope_query(Payment, scope),
+        on: r.reverses_payment_id == p.id,
+        where: a.company_id == ^company_id and a.document_id in ^ids,
+        select: [p.payment_date, r.payment_date]
+      )
+
+    noted =
+      from(d in Tenancy.scope_query(Document, scope),
+        where: d.company_id == ^company_id and d.document_type == "debit_note",
+        where: d.status == "posted" and d.corrects_document_id in ^ids,
+        select: [d.document_date]
+      )
+
+    (Repo.all(paid) ++ Repo.all(noted))
+    |> List.flatten()
+    |> Enum.filter(&(&1 && Date.compare(&1, since) == :gt))
+    |> Enum.uniq()
   end
 
   @doc "The aged payables report; see `Bilimbi.Finance.Payables.aged_payables/4`."

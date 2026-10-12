@@ -1,6 +1,8 @@
 defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
   use Bilimbi.Finance.Payables.PayablesCase
 
+  alias Ecto.Adapters.SQL
+
   setup context do
     %{accounts: accounts} = context
 
@@ -44,6 +46,15 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
   defp aged(context, as_of, options \\ []) do
     {:ok, report} = Payables.aged_payables(context.operator, 73, as_of, options)
     report
+  end
+
+  defp payment_to(context, bill, date) do
+    %{
+      payment_date: date,
+      party_key: bill.party_key,
+      paid_from_account_id: context.accounts.bank.id,
+      allocations: [%{document_id: bill.id, amount: "100"}]
+    }
   end
 
   defp amounts(values), do: Enum.map(values, &Decimal.to_string(Decimal.normalize(&1), :normal))
@@ -115,29 +126,81 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
     assert amounts([aged(context, ~D[2026-11-05]).total]) == ["175"]
   end
 
+  test "refuses what would leave a bill owed less than nothing on a later date", context do
+    %{operator: operator, accounts: accounts} = context
+    bill = post_bill!(context, bill("P-3", "X", [line(accounts.expense, "100")]))
+
+    {:ok, payment} =
+      Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-10]))
+
+    {:ok, _} = Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-11-01]})
+
+    assert {:ok, %{outstanding: owed}} = Payables.get_document(operator, 73, bill.id)
+    assert amounts([owed]) == ["100"]
+
+    assert {:error, :exceeds_outstanding} =
+             Payables.create_debit_note(operator, 73, bill.id, %{
+               document_date: ~D[2026-10-05],
+               lines: [line(accounts.expense, "100")]
+             })
+
+    assert {:error, changeset} =
+             Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-05]))
+
+    assert %{allocations: [%{amount: ["exceeds what is owed on the bill"]}]} =
+             errors_on(changeset)
+
+    assert {:ok, _} =
+             Payables.create_debit_note(operator, 73, bill.id, %{
+               document_date: ~D[2026-11-01],
+               lines: [line(accounts.expense, "100")]
+             })
+  end
+
   test "lists a bill owed less than nothing as an exception that keeps the total whole",
        context do
     %{operator: operator, accounts: accounts} = context
     bill = post_bill!(context, bill("P-3", "X", [line(accounts.expense, "100")]))
 
     {:ok, payment} =
-      Payables.post_payment(operator, 73, %{
-        payment_date: ~D[2026-10-10],
-        party_key: "P-3",
-        paid_from_account_id: accounts.bank.id,
-        allocations: [%{document_id: bill.id, amount: "100"}]
-      })
+      Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-10]))
 
     {:ok, _} = Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-11-01]})
 
-    {:ok, note} =
-      Payables.create_debit_note(operator, 73, bill.id, %{
-        document_date: ~D[2026-10-05],
-        lines: [line(accounts.expense, "100")]
+    # Another writer's second payment that the facade would have refused.
+    {:ok, entry} =
+      Ledger.post_entry(operator, 73, %{
+        entry_date: ~D[2026-10-05],
+        description: "Raw payment",
+        lines: [
+          %{account_id: accounts.payable.id, debit: "100"},
+          %{account_id: accounts.bank.id, credit: "100"}
+        ]
       })
 
-    {:ok, _} = Payables.approve_document(operator, 73, note.id)
-    {:ok, _} = Payables.post_document(operator, 73, note.id)
+    %{rows: [[raw_id]]} =
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO finance_payables_payments
+          (tenant_id, company_id, payment_number, payment_date, party_key, party_name,
+           paid_from_account_id, amount, currency_code, entry_id, entry_number,
+           posted_by_user_id, posted_at)
+        VALUES (41, 73, 1, '2026-10-05', 'P-3', 'Raw', $1, 100, 'XTS', $2, $3, 91, '2000-01-01')
+        RETURNING id
+        """,
+        [accounts.bank.id, entry.id, entry.entry_number]
+      )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO finance_payables_payment_allocations
+        (tenant_id, company_id, payment_id, line_number, document_id, amount)
+      VALUES (41, 73, $1, 1, $2, 100)
+      """,
+      [raw_id, bill.id]
+    )
 
     report = aged(context, ~D[2026-10-20])
     bill_id = bill.id

@@ -94,8 +94,7 @@ account its bill posted to, whatever the settings say by then. The document
 keeps its `payable_account_id`, `entry_id`, and `entry_number`. A posted
 document is never changed or voided: a bill is corrected by a debit note,
 whose total cannot exceed what is still owed on the bill, checked when it is
-recorded and again when it posts, both now and as of the debit note's date
-(see Aged payables).
+recorded and again when it posts, on the date rule under Aged payables.
 
 Posted documents are numbered per company and document type, 1, 2, 3, ... in
 posting order, by the database: drafts and voided documents take no number,
@@ -113,10 +112,11 @@ ledger's `list_entries/3` does.
 account), with optional `reference` and `description`, and `allocations`,
 each `%{document_id, amount}` naming a posted bill of that party dated on or
 before the payment. Its amount is the allocations' total; an allocation
-cannot exceed what is still owed on its bill, now and as of `payment_date`,
-so a bill is paid in one or more parts. The ledger entry debits each paid bill's own payable account and
-credits the paid-from account. Payments are numbered per company like
-documents. Paying ahead of a bill, and refunds from a party, are later work.
+cannot exceed what is still owed on its bill on the date rule under Aged
+payables, from `payment_date` on, so a bill is paid in one or more parts. The
+ledger entry debits each paid bill's own payable account and credits the
+paid-from account. Payments are numbered per company like documents. Paying
+ahead of a bill, and refunds from a party, are later work.
 
 A posted payment is corrected by `reverse_payment/4`: the ledger reverses its
 entry, and its bills are owed again from the reversal's date. A payment is
@@ -144,16 +144,20 @@ the figures for that date, so a report reproduces exactly by passing the same
 entry numbers follow posting order. Party names are the latest bill's
 snapshot.
 
-A bill is never owed less than nothing: a debit note or payment is refused
-(`:exceeds_outstanding`, or an allocation error) if it would take a bill below
-nothing either now or as of its own date. The date check matters because a
-payment later reversed still counts on the dates before its reversal. Dated
-postings can still leave a bill negative on some date between those two, so
-the report never drops one silently: `exceptions` lists each bill owed less
-than nothing as of `as_of` (with a negative `outstanding`), outside the parties
-and buckets, and `exceptions_total` is their sum. `total + exceptions_total`
-is what the payable accounts hold for these bills as of the date, which is
-what the ledger's trial balance shows for them.
+A bill is never owed less than nothing on any date. A debit note or payment
+allocation of an amount is refused (`:exceeds_outstanding`, or an `amount`
+error on the allocation) unless the amount fits the least that is owed on the
+bill on any date from the new document's own date on: on that date, on each
+later date a payment, a payment reversal, or a debit note against the bill is
+dated, and now. This is checked when a debit note is recorded and again when
+it posts, and for each allocation. A payment dated before one that is later
+reversed is therefore refused, because the earlier one still counts until its
+reversal. The aged report still never drops a bill owed less than nothing
+silently, in case another writer made one: `exceptions` lists each bill owed
+less than nothing as of `as_of` (with a negative `outstanding`), outside the
+parties and buckets, and `exceptions_total` is their sum. `total +
+exceptions_total` is what the payable accounts hold for these bills as of the
+date, which is what the ledger's trial balance shows for them.
 
 ## Seams for later work
 
