@@ -168,6 +168,9 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     end
   end
 
+  defp submit_message(:already_queued),
+    do: "A submission of this document is already queued."
+
   defp submit_message(:not_submittable),
     do: "Only a recorded, refused, or invalid document can be submitted."
 
@@ -334,7 +337,10 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
             <:actions>
               <.link id="einvoice-document-back" navigate={~p"/finance/einvoice/documents"}>All documents</.link>
               <.button
-                :if={@can_submit? and @document.status in ["issued", "refused", "invalid"]}
+                :if={
+                  @can_submit? and @document.status in ["issued", "refused", "invalid"] and
+                    not @document.submission_queued
+                }
                 id="einvoice-document-submit"
                 phx-click="submit"
                 variant="primary"

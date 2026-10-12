@@ -116,6 +116,7 @@ defmodule BilimbiWeb.EinvoiceDocumentsLiveTest do
 
       view |> element("#einvoice-document-submit") |> render_click()
       assert has_element?(view, "#flash-success", "Submission queued")
+      refute has_element?(view, "#einvoice-document-submit")
       assert [job] = Bilimbi.Base.Repo.all(Oban.Job)
       assert job.args == %{"company_id" => 73, "document_id" => document.id}
     end

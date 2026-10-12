@@ -307,92 +307,107 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     }
 
     write!(scope, company_id, fn ->
-      case outcome do
-        {:accepted, answer} ->
-          record(scope, company_id, document.id, %{
-            event: "submitted",
-            submission_id: submission.id,
-            authority_status: "Submitted",
-            submission_uid: answer.submission_uid,
-            document_uuid: answer.document_uuid,
-            reason: answer[:reason],
-            http_status: answer.http_status,
-            response: answer.response
-          })
-
-          action(scope, company_id, "finance.einvoice.submitted", base, answer)
-
-          {:ok, _job} =
-            Queue.enqueue_for(scope, PollWorker, %{
-              "company_id" => company_id,
-              "document_id" => document.id
-            })
-
-          :ok
-
-        {kind, answer} when kind in [:rejected, :refused] ->
-          record(scope, company_id, document.id, %{
-            event: "refused",
-            submission_id: submission.id,
-            submission_uid: answer[:submission_uid],
-            reason: answer[:reason],
-            http_status: answer[:http_status],
-            response: answer[:response]
-          })
-
-          action(scope, company_id, "finance.einvoice.refused", base, answer)
-          :ok
-
-        {:duplicate, answer} ->
-          record(scope, company_id, document.id, %{
-            event: "duplicate",
-            submission_id: submission.id,
-            reason:
-              "the authority holds an identical submission; read its status before resubmitting",
-            http_status: answer[:http_status],
-            response: answer[:response]
-          })
-
-          action(scope, company_id, "finance.einvoice.submission.duplicate", base, answer)
-          {:cancel, :duplicate_submission}
-
-        {:deferred, status, answer} ->
-          record(scope, company_id, document.id, %{
-            event: "search_deferred",
-            submission_id: submission.id,
-            reason:
-              "the search for the document could not answer: #{deferred_reason(status, answer)}",
-            http_status: answer[:http_status],
-            response: answer[:response]
-          })
-
-          notice_if_overdue(scope, company_id, document, now)
-          {:retry, if(status == :rate_limited, do: :rate_limited, else: :authority_unavailable)}
-
-        {:rate_limited, answer} ->
-          record(scope, company_id, document.id, %{
-            event: "rate_limited",
-            submission_id: submission.id,
-            reason: retry_after_reason(answer),
-            http_status: answer[:http_status],
-            response: answer[:response]
-          })
-
-          {:retry, :rate_limited}
-
-        {:unavailable, answer} ->
-          record(scope, company_id, document.id, %{
-            event: "unavailable",
-            submission_id: submission.id,
-            reason: answer[:reason],
-            http_status: answer[:http_status],
-            response: answer[:response]
-          })
-
-          notice_if_overdue(scope, company_id, document, now)
-          {:retry, :authority_unavailable}
-      end
+      if submittable_now?(scope, company_id, document.id),
+        do: apply_outcome(scope, company_id, document, submission, outcome, base, now),
+        else: :ok
     end)
+  end
+
+  # Another job may have recorded its answer while this one waited for the
+  # lock; an outcome is recorded only while the document is still submittable.
+  defp submittable_now?(scope, company_id, document_id) do
+    scope
+    |> Documents.statuses(company_id, [document_id])
+    |> Map.get(document_id)
+    |> submittable?()
+  end
+
+  defp apply_outcome(scope, company_id, document, submission, outcome, base, now) do
+    case outcome do
+      {:accepted, answer} ->
+        record(scope, company_id, document.id, %{
+          event: "submitted",
+          submission_id: submission.id,
+          authority_status: "Submitted",
+          submission_uid: answer.submission_uid,
+          document_uuid: answer.document_uuid,
+          reason: answer[:reason],
+          http_status: answer.http_status,
+          response: answer.response
+        })
+
+        action(scope, company_id, "finance.einvoice.submitted", base, answer)
+
+        {:ok, _job} =
+          Queue.enqueue_for(scope, PollWorker, %{
+            "company_id" => company_id,
+            "document_id" => document.id
+          })
+
+        :ok
+
+      {kind, answer} when kind in [:rejected, :refused] ->
+        record(scope, company_id, document.id, %{
+          event: "refused",
+          submission_id: submission.id,
+          submission_uid: answer[:submission_uid],
+          reason: answer[:reason],
+          http_status: answer[:http_status],
+          response: answer[:response]
+        })
+
+        action(scope, company_id, "finance.einvoice.refused", base, answer)
+        :ok
+
+      {:duplicate, answer} ->
+        record(scope, company_id, document.id, %{
+          event: "duplicate",
+          submission_id: submission.id,
+          reason:
+            "the authority holds an identical submission; read its status before resubmitting",
+          http_status: answer[:http_status],
+          response: answer[:response]
+        })
+
+        action(scope, company_id, "finance.einvoice.submission.duplicate", base, answer)
+        {:cancel, :duplicate_submission}
+
+      {:deferred, status, answer} ->
+        record(scope, company_id, document.id, %{
+          event: "search_deferred",
+          submission_id: submission.id,
+          reason:
+            "the search for the document could not answer: #{deferred_reason(status, answer)}",
+          http_status: answer[:http_status],
+          response: answer[:response]
+        })
+
+        notice_if_overdue(scope, company_id, document, now)
+        {:retry, if(status == :rate_limited, do: :rate_limited, else: :authority_unavailable)}
+
+      {:rate_limited, answer} ->
+        record(scope, company_id, document.id, %{
+          event: "rate_limited",
+          submission_id: submission.id,
+          reason: retry_after_reason(answer),
+          http_status: answer[:http_status],
+          response: answer[:response]
+        })
+
+        {:retry, :rate_limited}
+
+      {:unavailable, answer} ->
+        record(scope, company_id, document.id, %{
+          event: "unavailable",
+          submission_id: submission.id,
+          reason: answer[:reason],
+          http_status: answer[:http_status],
+          response: answer[:response]
+        })
+
+        notice_if_overdue(scope, company_id, document, now)
+        {:retry, :authority_unavailable}
+    end
   end
 
   # A duplicate, or an outage that may have hidden an accepted request,

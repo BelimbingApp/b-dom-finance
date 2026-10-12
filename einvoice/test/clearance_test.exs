@@ -127,6 +127,19 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert "finance.einvoice.submission.queued" in action_events(op)
     end
 
+    test "refuses a second submission while one is queued", %{
+      operator: op,
+      document: document
+    } do
+      assert {:ok, %{job_id: job_id}} = Einvoice.submit_document(op, 73, document.id)
+      assert {:error, :already_queued} = Einvoice.submit_document(op, 73, document.id)
+      assert {:ok, %{submission_queued: true}} = Einvoice.get_document(op, 73, document.id)
+      assert [%{id: ^job_id}] = Repo.all(Oban.Job)
+
+      Repo.update_all(Oban.Job, set: [state: "completed"])
+      assert {:ok, %{submission_queued: false}} = Einvoice.get_document(op, 73, document.id)
+    end
+
     test "refuses before queuing what the job could not do",
          %{operator: op, document: document} = context do
       :ok = TestFixtures.put_settings!(context.first_scope, 73, %{"sandbox.client_secret" => " "})
@@ -240,6 +253,32 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
       assert Repo.all(Oban.Job) == []
       # A refused document can be submitted again once the cause is fixed.
       assert {:ok, _job} = Einvoice.submit_document(op, 73, document.id)
+    end
+
+    test "an outcome is not recorded once another job moved the document on", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => fn conn ->
+          Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+            event: "submitted",
+            authority_status: "Submitted",
+            submission_uid: "HJSD135P2S7D8IU",
+            document_uuid: "F9D425P6DS7D8IU"
+          })
+
+          TestFixtures.accepted_response(conn, "JSON-INV12345")
+        end
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+
+      assert [{"issued", _}, {"submitted", %{submission_id: nil}}] = events(op, document)
+      assert Repo.all(Oban.Job) == []
+      refute "finance.einvoice.submitted" in action_events(op)
+      assert [_stored] = Repo.all(Submission)
     end
 
     test "records a refusal the authority explained", %{operator: op, document: document} do

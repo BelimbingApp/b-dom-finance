@@ -213,15 +213,20 @@ defmodule Bilimbi.Finance.Einvoice do
   `ledger_entry_id`, `reversal_entry_id`, `pdf_artifact_id`, and
   `attention`, the flags an operator should look at (`:overdue`,
   `:rejection_requested`, `:unposted`, `:posting_failed`, `:unreversed`,
-  `:reversal_failed`).
+  `:reversal_failed`), and `submission_queued`, whether a submit job for
+  the document is waiting or running.
   """
   @spec get_document(Scope.t(), term(), term()) ::
           {:ok, map()} | {:error, refusal() | :document_not_found}
   def get_document(%Scope{} = scope, company_id, document_id) do
     with :ok <- authorize(scope, company_id, @view) do
       case Documents.fetch(scope, company_id, document_id) do
-        nil -> {:error, :document_not_found}
-        document -> {:ok, Documents.document_view(document)}
+        nil ->
+          {:error, :document_not_found}
+
+        {record, _events} = document ->
+          view = Documents.document_view(document)
+          {:ok, Map.put(view, :submission_queued, submission_queued?(company_id, record.id))}
       end
     end
   end
@@ -294,7 +299,8 @@ defmodule Bilimbi.Finance.Einvoice do
   the company lacks credentials for the document's environment
   (`:missing_credentials`), or the chosen format version needs a signature
   and the certificate and key are missing or mismatched
-  (`:signing_key_required`).
+  (`:signing_key_required`), or a submit job for the document is already
+  waiting or running (`:already_queued`).
   """
   @spec submit_document(Scope.t(), term(), term()) ::
           {:ok, %{job_id: pos_integer()}}
@@ -309,6 +315,7 @@ defmodule Bilimbi.Finance.Einvoice do
     write(scope, company_id, @submit, fn _company ->
       with {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
            {:ok, _prepared} <- Clearance.prepare(scope, company_id, document),
+           :ok <- not_queued(company_id, document.id),
            {:ok, job} <-
              Queue.enqueue_for(scope, SubmitWorker, %{
                "company_id" => company_id,
@@ -324,6 +331,19 @@ defmodule Bilimbi.Finance.Einvoice do
         {:ok, %{job_id: job.id}}
       end
     end)
+  end
+
+  defp not_queued(company_id, document_id),
+    do: if(submission_queued?(company_id, document_id), do: {:error, :already_queued}, else: :ok)
+
+  defp submission_queued?(company_id, document_id) do
+    worker = inspect(Module.concat(SubmitWorker, ObanAdapter))
+    args = %{"company_id" => company_id, "document_id" => document_id}
+    states = ~w(available scheduled executing retryable)
+
+    Repo.exists?(
+      from(j in Oban.Job, where: j.worker == ^worker and j.state in ^states and j.args == ^args)
+    )
   end
 
   @doc """

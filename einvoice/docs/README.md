@@ -85,11 +85,16 @@ still missing. A code number is unique per company and environment.
 document and the authority's verdict; its moduledoc is the contract.
 `submit_document/3` queues `Bilimbi.Finance.Einvoice.SubmitWorker` with
 `Bilimbi.Base.Queue.enqueue_for/3`, so the job runs as the user who asked
-and every event, audit action, and ledger entry names them. The job
+and every event, audit action, and ledger entry names them. It refuses
+with `:already_queued` while a submit job for the document is waiting or
+running, and the page hides its submit button meanwhile. The job
 commits a submission row with the exact bytes before the HTTP call,
 records the authority's answer as a status event (`submitted`, `refused`,
 `duplicate`, `rate_limited`, or `unavailable`), and never resubmits a
-document the authority accepted: a 2xx ends the job. After a
+document the authority accepted: a 2xx ends the job. An outcome is
+recorded under the company lock only while the document is still
+submittable, so two overlapping jobs leave one `submitted` event and one
+poll job. After a
 `DuplicateSubmission` answer, or an outage that may have hidden an
 accepted request, it asks the authority for the document by its code number
 (`Authority.find_submission/4`; MyInvois lists the documents the taxpayer
