@@ -302,6 +302,28 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   end
 
   @doc """
+  Whether the company can be written to: `:ok`, or the refusal
+  `lock_writable_company/2` gives (`:company_archived`, `:not_found`).
+  Asked before an irreversible call to the authority, so its outcome can
+  still be recorded.
+  """
+  def ensure_writable(%Scope{} = scope, company_id) do
+    result =
+      Repo.transact(fn ->
+        case Company.lock_writable_company(scope, company_id) do
+          {:ok, _proof} -> {:ok, :writable}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    case result do
+      {:ok, :writable} -> :ok
+      {:error, :not_found} -> {:error, :company_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Records an audit action for the company as the scope's actor. The
   payload names identifiers and outcomes, never a payload, a secret, or a
   party's details.

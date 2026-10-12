@@ -135,6 +135,13 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   @doc "Runs one submission attempt for the document, as the poll and submit jobs do."
   @spec submit(Scope.t(), pos_integer(), pos_integer(), DateTime.t()) :: job_result()
   def submit(%Scope{} = scope, company_id, document_id, %DateTime{} = now) do
+    case Documents.ensure_writable(scope, company_id) do
+      :ok -> submit_writable(scope, company_id, document_id, now)
+      {:error, reason} -> {:cancel, reason}
+    end
+  end
+
+  defp submit_writable(scope, company_id, document_id, now) do
     case Documents.fetch(scope, company_id, document_id) do
       nil ->
         {:cancel, :document_not_found}
@@ -371,6 +378,13 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   @doc "Reads a submitted document's progress until the authority decides, within one job's bounds."
   @spec poll(Scope.t(), pos_integer(), pos_integer(), DateTime.t()) :: job_result()
   def poll(%Scope{} = scope, company_id, document_id, %DateTime{} = now) do
+    case Documents.ensure_writable(scope, company_id) do
+      :ok -> poll_writable(scope, company_id, document_id, now)
+      {:error, reason} -> {:cancel, reason}
+    end
+  end
+
+  defp poll_writable(scope, company_id, document_id, now) do
     case Documents.fetch(scope, company_id, document_id) do
       nil ->
         {:cancel, :document_not_found}
@@ -424,8 +438,21 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
   @doc "Reads the document's status at the authority and records what changed."
   @spec refresh(Scope.t(), pos_integer(), pos_integer(), DateTime.t()) ::
-          {:ok, map()} | {:error, :document_not_found | :not_submitted | {:authority, term()}}
+          {:ok, map()}
+          | {:error,
+             :document_not_found
+             | :not_submitted
+             | :company_archived
+             | :company_not_found
+             | {:authority, term()}}
   def refresh(%Scope{} = scope, company_id, document_id, %DateTime{} = now) do
+    case Documents.ensure_writable(scope, company_id) do
+      :ok -> refresh_writable(scope, company_id, document_id, now)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp refresh_writable(scope, company_id, document_id, now) do
     case Documents.fetch(scope, company_id, document_id) do
       nil ->
         {:error, :document_not_found}
@@ -617,7 +644,12 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
   @type retry_result ::
           {:ok, map()}
-          | {:error, :document_not_found | :not_postable | :not_reversible}
+          | {:error,
+             :document_not_found
+             | :company_archived
+             | :company_not_found
+             | :not_postable
+             | :not_reversible}
           | {:error, {:failed, String.t()}}
 
   @doc """
@@ -671,18 +703,20 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   # The ledger call runs outside any transaction of ours. A failed try
   # still records its event and the audit action.
   defp retry(scope, company_id, document_id, operation, decide, run) do
-    case Documents.fetch(scope, company_id, document_id) do
-      nil ->
-        {:error, :document_not_found}
+    with :ok <- Documents.ensure_writable(scope, company_id) do
+      case Documents.fetch(scope, company_id, document_id) do
+        nil ->
+          {:error, :document_not_found}
 
-      fetched ->
-        document = Documents.document_view(fetched)
+        fetched ->
+          document = Documents.document_view(fetched)
 
-        case decide.(document) do
-          :noop -> {:ok, document}
-          {:error, reason} -> {:error, reason}
-          :run -> retried(scope, company_id, document, operation, run.(document))
-        end
+          case decide.(document) do
+            :noop -> {:ok, document}
+            {:error, reason} -> {:error, reason}
+            :run -> retried(scope, company_id, document, operation, run.(document))
+          end
+      end
     end
   end
 
@@ -731,6 +765,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           {:ok, map()}
           | {:error,
              :document_not_found
+             | :company_archived
+             | :company_not_found
              | :not_cancellable
              | :cancellation_period_over
              | :active_referencing_documents
@@ -740,7 +776,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
              | :rate_limited}
   def cancel(%Scope{} = scope, company_id, document_id, reason, %DateTime{} = now) do
     with {:ok, document} <- cancellable_document(scope, company_id, document_id, now),
-         :ok <- valid_reason(reason) do
+         :ok <- valid_reason(reason),
+         :ok <- Documents.ensure_writable(scope, company_id) do
       credentials = Configuration.credentials(scope, company_id, document.environment)
 
       base = %{

@@ -120,6 +120,11 @@ is guarded locally (valid or rejected, inside the 72 hours after
 validation, no note the authority holds referencing it) before the
 authority is asked; its refusal is recorded as `cancellation_refused`.
 
+Every clearance call (the jobs, a refresh, a cancellation, a ledger retry)
+checks that the company is writable before it asks the authority anything,
+so an archived company is `{:error, :company_archived}` (a cancelled job)
+rather than an authority answer that cannot be recorded.
+
 Audit actions per outcome: `finance.einvoice.submission.queued`,
 `.submitted`, `.refused`, `.submission.duplicate`, `.submission.overdue`,
 `.validated`, `.invalid`, `.rejected`, `.cancelled`,

@@ -10,6 +10,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
   alias Bilimbi.Finance.Einvoice.{Clearance, PollWorker, Submission, SubmitWorker, TestFixtures}
   alias Bilimbi.Finance.Einvoice.MyInvois.TokenCache
   alias Bilimbi.Finance.Ledger
+  alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
   @submit_path "/api/v1.0/documentsubmissions/"
@@ -915,6 +916,32 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
       assert Enum.count(action_events(op), &(&1 == "finance.einvoice.posting.retried")) == 1
+    end
+
+    test "an archived company is refused before the authority is asked or an event recorded", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"PUT", @cancel_path} =>
+          &Req.Test.json(&1, %{uuid: "F9D425P6DS7D8IU", status: "Cancelled"}),
+        {"GET", @details_path} => &TestFixtures.details_response(&1, "Valid")
+      })
+
+      SQL.query!(Repo, "UPDATE companies SET status = 'archived' WHERE id = 73", [])
+
+      assert {:error, :company_archived} =
+               Einvoice.cancel_document(op, 73, document.id, "Wrong buyer")
+
+      assert {:error, :company_archived} = Einvoice.refresh_status(op, 73, document.id)
+      assert {:error, :company_archived} = Einvoice.retry_posting(op, 73, document.id)
+      assert {:error, :company_archived} = Einvoice.retry_reversal(op, 73, document.id)
+      assert {:cancel, :company_archived} = PollWorker.handle_job(args(document), execution(op))
+      assert {:cancel, :company_archived} = SubmitWorker.handle_job(args(document), execution(op))
+
+      refute_received {:request, _method, _path, _body}
+      assert [{"issued", _}, {"submitted", _}, {"valid", _}] = events(op, document)
     end
 
     test "cancel is guarded locally before the authority is asked", %{

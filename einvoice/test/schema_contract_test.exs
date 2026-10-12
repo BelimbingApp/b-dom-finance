@@ -75,19 +75,32 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, ledger_entry_id, recorded_at) VALUES (1, 1, 1, 99, '#{name}', 'user', 1, #{entry}, '2000-01-01')"
     end
 
+    refused = fn sql ->
+      try do
+        query!.(sql)
+      rescue
+        error in Postgrex.Error -> error.postgres
+      end
+    end
+
     assert %{num_rows: 1} = query!.(event.("posted", 5))
     assert %{num_rows: 1} = query!.(event.("posting_failed", "NULL"))
     assert %{num_rows: 1} = query!.(event.("posting_failed", "NULL"))
 
-    assert_raise Postgrex.Error, ~r/finance_einvoice_status_events_posted_unique/, fn ->
-      query!.(event.("posted", 6))
-    end
+    assert %{code: :unique_violation, constraint: "finance_einvoice_status_events_posted_unique"} =
+             refused.(event.("posted", 6))
 
     assert %{num_rows: 1} = query!.(event.("posting_reversed", 7))
 
-    assert_raise Postgrex.Error, ~r/finance_einvoice_status_events_reversed_unique/, fn ->
-      query!.(event.("posting_reversed", 8))
-    end
+    assert %{
+             code: :unique_violation,
+             constraint: "finance_einvoice_status_events_reversed_unique"
+           } = refused.(event.("posting_reversed", 8))
+
+    assert %{rows: [[1], [1]]} =
+             query!.(
+               "SELECT count(*) FROM finance_einvoice_status_events WHERE event IN ('posted', 'posting_reversed') GROUP BY event"
+             )
   end
 
   @tag :capture_log

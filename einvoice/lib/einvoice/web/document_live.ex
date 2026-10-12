@@ -196,9 +196,11 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     do: "The authority did not answer with a status; the answer is recorded on the document."
 
   defp refresh_message(:unauthorized), do: "You do not have permission to read the status."
+  defp refresh_message(:company_archived), do: "The company is archived."
   defp refresh_message(reason), do: "The status could not be refreshed (#{inspect(reason)})."
 
   defp cancel_message(:not_cancellable), do: "Only a validated document can be cancelled."
+  defp cancel_message(:company_archived), do: "The company is archived."
 
   defp cancel_message(:cancellation_period_over),
     do: "The 72-hour cancellation window has closed; issue a credit note instead."

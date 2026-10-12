@@ -63,6 +63,7 @@ defmodule Bilimbi.Finance.Einvoice.Web.ReconciliationLive do
   defp retry_message(:unauthorized), do: "You need permission to post to the ledger."
   defp retry_message(:not_postable), do: "Only a valid document can be posted."
   defp retry_message(:not_reversible), do: "Only a cancelled document can be reversed."
+  defp retry_message(:company_archived), do: "The company is archived."
   defp retry_message(:document_not_found), do: "The document no longer exists."
   defp retry_message(reason), do: "It could not be tried (#{inspect(reason)})."
 
