@@ -41,7 +41,7 @@ defmodule Bilimbi.Finance.Ledger do
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
-  alias Bilimbi.Finance.Ledger.{Account, Book, Entry, Line}
+  alias Bilimbi.Finance.Ledger.{Account, Book, Entry, Line, Postings}
   alias Ecto.Changeset
 
   @view "finance.ledger.view"
@@ -255,18 +255,25 @@ defmodule Bilimbi.Finance.Ledger do
   `after`, the `{entry_date, id}` of the last entry already read, which
   returns only the entries after it, so a caller pages by passing the last
   returned entry's date and ID until fewer than `limit` entries come back.
+  `account_id` keeps the entries with a line on that account, and
+  `through_entry_number` the entries numbered up to it, so the entries
+  behind an `account_totals/3` figure are listed with the same options.
   A malformed option is `{:error, :invalid_option}`.
   """
   @spec list_entries(Scope.t(), term(), keyword()) ::
           {:ok, [map()]} | {:error, refusal() | :invalid_option}
   def list_entries(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
     with :ok <- authorize(scope, company_id, @view),
-         {:ok, limit, from, to, cursor} <- entry_options(options) do
+         {:ok, limit, from, to, cursor} <- entry_options(options),
+         {:ok, account_id} <- account_option(options),
+         {:ok, through} <- through_option(options) do
       entries =
         scope
         |> entries_query(company_id)
         |> date_bound(:from, from)
         |> date_bound(:to, to)
+        |> through_bound(through)
+        |> account_bound(scope, company_id, account_id)
         |> after_cursor(cursor)
         |> order_by([e], asc: e.entry_date, asc: e.id)
         |> limit(^limit)
@@ -288,6 +295,14 @@ defmodule Bilimbi.Finance.Ledger do
          optional_date?(to) and valid_cursor?(cursor),
        do: {:ok, limit, from, to, cursor},
        else: {:error, :invalid_option}
+  end
+
+  defp account_option(options) do
+    case Keyword.get(options, :account_id) do
+      nil -> {:ok, nil}
+      id when is_integer(id) and id in 1..@max_bigint -> {:ok, id}
+      _other -> {:error, :invalid_option}
+    end
   end
 
   defp optional_date?(value), do: is_nil(value) or match?(%Date{}, value)
@@ -337,34 +352,14 @@ defmodule Bilimbi.Finance.Ledger do
   defp build_trial_balance(scope, company_id, book, as_of, through) do
     through = through || last_entry_number(scope, company_id)
 
-    totals =
-      from(l in lines_query(scope),
-        join: e in ^Tenancy.scope_query(Entry, scope),
-        on: e.id == l.entry_id,
-        where: l.company_id == ^company_id and e.entry_date <= ^as_of,
-        where: e.entry_number <= ^through,
-        group_by: l.account_id,
-        select: {l.account_id, {sum(l.debit), sum(l.credit)}}
-      )
-      |> Repo.all()
-      |> Map.new()
-
     rows =
       scope
-      |> accounts_query(company_id)
-      |> where([a], a.id in ^Map.keys(totals))
-      |> order_by([a], asc: a.code)
-      |> Repo.all()
-      |> Enum.map(fn account ->
-        {debits, credits} = Map.fetch!(totals, account.id)
+      |> totals_by_account(company_id, nil, as_of, through)
+      |> Enum.map(fn %{debits: debits, credits: credits} = row ->
         net = Decimal.sub(debits, credits)
         zero = Decimal.new(0)
 
-        account
-        |> account_view()
-        |> Map.merge(%{
-          debits: debits,
-          credits: credits,
+        Map.merge(row, %{
           debit_balance: if(Decimal.gt?(net, 0), do: net, else: zero),
           credit_balance: if(Decimal.lt?(net, 0), do: Decimal.negate(net), else: zero)
         })
@@ -380,6 +375,111 @@ defmodule Bilimbi.Finance.Ledger do
       total_debit: sum(rows, :debit_balance),
       total_credit: sum(rows, :credit_balance)
     }
+  end
+
+  ## Posting notices
+
+  @doc """
+  Subscribes the calling process to the company's postings. After the
+  transaction that posts an entry commits, the process receives
+  `{:finance_ledger_posted, %{company_id: company_id, entry_number: number}}`
+  for that entry, on every node; a rolled-back post sends nothing, and a
+  post inside a caller's own transaction is announced when that transaction
+  commits. A notice carries no figures: a subscriber reads them through this
+  facade, which authorizes the read afresh. Subscribing twice is one
+  subscription, and it ends with the process.
+  """
+  @spec subscribe_postings(Scope.t(), term()) :: :ok | {:error, refusal()}
+  def subscribe_postings(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Postings.subscribe(Scope.tenant_id(scope), company_id)
+    end
+  end
+
+  ## Account totals
+
+  @doc """
+  Each account's debit and credit totals over the entries dated from `from`
+  through `to` (both optional and inclusive): every account with a posting
+  in that window, ordered by code. The sums are computed by PostgreSQL, one
+  row per account, so a report never loads the lines themselves.
+
+  Like `trial_balance/4`, the result names `through_entry_number`, the last
+  entry it counts, and passing it back reproduces the same figures exactly.
+  Several windows read with the same `through_entry_number` describe one
+  state of the ledger, which is how a report keeps its columns consistent.
+  Account names, parents, and active flags are read as they are now. A
+  malformed option, or a `from` after `to`, is `{:error, :invalid_option}`.
+  """
+  @spec account_totals(Scope.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def account_totals(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, from, to} <- window_option(options),
+         {:ok, through} <- through_option(options) do
+      case book(scope, company_id) do
+        nil ->
+          {:error, :book_not_open}
+
+        book ->
+          through = through || last_entry_number(scope, company_id)
+
+          {:ok,
+           %{
+             company_id: company_id,
+             from: from,
+             to: to,
+             through_entry_number: through,
+             currency_code: book.currency_code,
+             minor_units: book.minor_units,
+             rows: totals_by_account(scope, company_id, from, to, through)
+           }}
+      end
+    end
+  end
+
+  defp window_option(options) do
+    from = Keyword.get(options, :from)
+    to = Keyword.get(options, :to)
+
+    cond do
+      not (optional_date?(from) and optional_date?(to)) -> {:error, :invalid_option}
+      from && to && Date.compare(from, to) == :gt -> {:error, :invalid_option}
+      true -> {:ok, from, to}
+    end
+  end
+
+  # Sums per account in the database, joined through the entries' date and
+  # number; the lines' (company_id, account_id) and (entry_id, line_number)
+  # indexes and the entries' date index serve it.
+  defp totals_by_account(scope, company_id, from, to, through) do
+    entries =
+      scope
+      |> entries_query(company_id)
+      |> date_bound(:from, from)
+      |> date_bound(:to, to)
+      |> through_bound(through)
+
+    totals =
+      from(l in lines_query(scope),
+        join: e in subquery(select(entries, [e], %{id: e.id})),
+        on: e.id == l.entry_id,
+        where: l.company_id == ^company_id,
+        group_by: l.account_id,
+        select: {l.account_id, {sum(l.debit), sum(l.credit)}}
+      )
+      |> Repo.all()
+      |> Map.new()
+
+    scope
+    |> accounts_query(company_id)
+    |> where([a], a.id in ^Map.keys(totals))
+    |> order_by([a], asc: a.code)
+    |> Repo.all()
+    |> Enum.map(fn account ->
+      {debits, credits} = Map.fetch!(totals, account.id)
+      account |> account_view() |> Map.merge(%{debits: debits, credits: credits})
+    end)
   end
 
   defp last_entry_number(scope, company_id) do
@@ -584,6 +684,22 @@ defmodule Bilimbi.Finance.Ledger do
   defp date_bound(query, _bound, nil), do: query
   defp date_bound(query, :from, %Date{} = date), do: where(query, [e], e.entry_date >= ^date)
   defp date_bound(query, :to, %Date{} = date), do: where(query, [e], e.entry_date <= ^date)
+
+  defp through_bound(query, nil), do: query
+  defp through_bound(query, through), do: where(query, [e], e.entry_number <= ^through)
+
+  defp account_bound(query, _scope, _company_id, nil), do: query
+
+  # The lines' (company_id, account_id) index finds the account's entries.
+  defp account_bound(query, scope, company_id, account_id) do
+    entry_ids =
+      scope
+      |> lines_query()
+      |> where([l], l.company_id == ^company_id and l.account_id == ^account_id)
+      |> select([l], l.entry_id)
+
+    where(query, [e], e.id in subquery(entry_ids))
+  end
 
   defp after_cursor(query, nil), do: query
 

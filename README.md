@@ -6,15 +6,17 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
-| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, and trial balance |
+| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, trial balance, and posting notices |
+| [`reports/`](reports/docs/README.md) | `finance/reports` | profit and loss, balance sheet, cash position, and headline figures read live from the ledger, with the entries behind each figure |
 
-The ledger is the first module. Later Finance modules, such as receivables,
-payables, tax, and bank reconciliation, sit beside it as sibling module
-folders and post through its public API; other Domains post through the same
-API. This slice exposes that API with no pages, menu entries, or agent
-operations. The ledger's "Standards addressed" section says which
-bookkeeping and audit standards it meets: double-entry integrity, an audit
-trail, and retention.
+The ledger is the first module. Other Finance modules, such as reports,
+receivables, payables, tax, and bank reconciliation, sit beside it as
+sibling module folders and post or read through its public API; other
+Domains post through the same API. The ledger has no pages; the reports
+module adds Finance's first pages under the Finance menu. Each module's
+"Standards addressed" section says which bookkeeping and audit standards it
+meets: double-entry integrity, an audit trail, retention, and reproducible
+reports.
 
 ## Mount
 

@@ -18,8 +18,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, or `active` |
 | `post_entry/3` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines` |
 | `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
-| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, and `after` |
+| `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, and `through_entry_number` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
+| `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` |
+| `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
 
 ## Authorization and company scope
 
@@ -87,9 +89,11 @@ skipped (a refused or rolled-back post takes none) or reused.
 `list_entries/3` orders entries by date and then ID. `limit` is an integer
 from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
-`limit` entries come back. A `limit`, `from`, `to`, or `after` of the wrong
-shape or range, including an `after` ID beyond PostgreSQL's `bigint`, is
-`{:error, :invalid_option}`.
+`limit` entries come back. `account_id` keeps the entries with a line on
+that account and `through_entry_number` those numbered up to it, so the
+entries behind an `account_totals/3` figure are listed with the same
+options. An option of the wrong shape or range, including an ID beyond
+PostgreSQL's `bigint`, is `{:error, :invalid_option}`.
 
 ## Trial balance
 
@@ -108,6 +112,34 @@ posting order. Account names, parents, and active flags are read as they are
 now. A `through_entry_number` outside 0 to the `bigint` maximum is
 `{:error, :invalid_option}`. Closing a period against back-dated postings is
 later work.
+
+## Account totals
+
+`account_totals/3` returns, for every account with a posting dated from
+`from` through `to` (both optional and inclusive), its debit and credit
+totals, ordered by code. PostgreSQL sums the lines per account, so a report
+over any number of entries reads one row per account; the lines'
+`(company_id, account_id)` and `(entry_id, line_number)` indexes and the
+entries' date index serve it. It names `through_entry_number` like the
+trial balance, and reading several windows at one number gives a report's
+columns one state of the ledger. Financial statements are built on it in
+the sibling `finance/reports` module.
+
+## Posting notices
+
+`subscribe_postings/2` registers the calling process for one company's
+postings. A trigger on `finance_ledger_entries` (migration
+`20261012214100`) calls `pg_notify` on the `finance_ledger_postings`
+channel with `tenant_id:company_id:entry_number`, and PostgreSQL delivers
+a notification only when the posting transaction commits: a refused or
+rolled-back post sends nothing, and a post inside a caller's own
+transaction is announced at that transaction's commit, when a reader can
+already see it. The ledger's application runs one relay per node
+(`Bilimbi.Finance.Ledger.Postings`), which opens its listening connection
+with the first subscription on that node and sends each subscriber
+`{:finance_ledger_posted, %{company_id: company_id, entry_number: number}}`.
+A notice carries no figures, so a subscriber reads them through the facade,
+which authorizes the read again.
 
 ## Database
 
@@ -129,12 +161,16 @@ checks, so no other writer can break them:
   `posted_at`, replacing whatever the inserting writer sent, and a unique
   index refuses a reused number.
 
+The migration `20261012214100`, also `:bilimbi_only`, adds the trigger that
+announces each posted entry (see Posting notices).
+
 `Bilimbi.Finance.Ledger.SchemaContract` describes the tables but is not
 registered in the descriptor: compatibility verification runs before pending
 Bilimbi-only migrations, when these tables correctly do not exist.
-`test/schema_contract_test.exs` runs the migration in a fresh database,
+`test/schema_contract_test.exs` runs the migrations in a fresh database,
 verifies the contract with `Bilimbi.Base.Database.SchemaVerifier.verify/2`, and
-proves the migration's own triggers outside the test sandbox.
+proves the migrations' own triggers outside the test sandbox, including that
+a committed entry is announced and a refused one is not.
 
 ## Standards addressed
 
@@ -159,8 +195,10 @@ accounts are held to. What this slice covers:
   retention period, such as the seven years Malaysia's Companies Act 2016
   requires; how long a company must keep them is law, not code.
 
-Financial reporting under MFRS or IFRS (statements, period close, tax) is
-later work in sibling modules.
+Financial statements (profit and loss, balance sheet, cash position) are
+the sibling `finance/reports` module, read through `account_totals/3` and
+`list_entries/3`. Statement layouts specific to MFRS or IFRS, period close,
+and tax are later work in sibling modules.
 
 ## Tests
 
@@ -169,5 +207,8 @@ included, from `test/support/test_fixtures.ex`; change them with the
 migration. `setup_ledger!/0` there builds two tenants' companies and an Authz
 snapshot, and `sign_in!/4` signs a user in with direct grants.
 
-This slice has no pages, menu entries, or agent operations; callers use the
+`test/postings_test.exs` proves who hears a notice by sending one committed
+outside the sandbox, because a sandboxed post never commits.
+
+The ledger has no pages, menu entries, or agent operations; callers use the
 facade.

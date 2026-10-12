@@ -1,11 +1,17 @@
 Code.require_file("../priv/repo/migrations/20261012170100_create_finance_ledger.exs", __DIR__)
 
+Code.require_file(
+  "../priv/repo/migrations/20261012214100_notify_finance_ledger_postings.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Ledger.Migrations.CreateLedger
+  alias Bilimbi.Finance.Ledger.Migrations.{CreateLedger, NotifyPostings}
+  alias Bilimbi.Finance.Ledger.Postings
   alias Bilimbi.Finance.Ledger.SchemaContract
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -29,13 +35,14 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), CreateLedger,
-               log: false,
-               dynamic_repo: repo
-             )
+    for {version, migration} <- [
+          {SchemaContract.migration_version(), CreateLedger},
+          {20_261_012_214_100, NotifyPostings}
+        ] do
+      assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
+    end
 
-    %{repo: repo}
+    %{repo: repo, database: database}
   end
 
   test "the fresh migration implements the complete ledger contract", %{repo: repo} do
@@ -112,5 +119,62 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              query!.(
                "SELECT id, entry_number, posted_at > '2026-01-01' FROM finance_ledger_entries ORDER BY id"
              )
+  end
+
+  # PostgreSQL delivers a notification at commit only, which no sandboxed
+  # suite can show; this listens on the fresh database the way the ledger's
+  # relay does.
+  @tag :capture_log
+  test "the migration announces a committed entry and nothing for a refused one",
+       %{repo: repo, database: database} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    listener =
+      start_supervised!(
+        {Postgrex.Notifications,
+         Repo.config()
+         |> Keyword.drop([:pool, :pool_size, :name])
+         |> Keyword.put(:database, database)}
+      )
+
+    {:ok, _ref} = Postgrex.Notifications.listen(listener, Postings.channel())
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (7, 3, 'XTS', 2, now())",
+        "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 7, 3, '1', 'Debit', 'asset', now(), now()), (2, 7, 3, '2', 'Credit', 'income', now(), now())"
+      ])
+
+    entry =
+      "INSERT INTO finance_ledger_entries (tenant_id, company_id, entry_number, entry_date, description, currency_code, posted_by_user_id, posted_at) VALUES (7, 3, 1, '2026-10-01', 'Entry', 'XTS', 1, now()) RETURNING id"
+
+    post = fn credit ->
+      Repo.transaction(fn ->
+        %{rows: [[id]]} = query!.(entry)
+
+        for {account, debit, credit} <- [{1, 10, 0}, {2, 0, credit}] do
+          query!.(
+            "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (7, 3, #{id}, #{account}, #{account}, #{debit}, #{credit})"
+          )
+        end
+      end)
+    end
+
+    assert {:ok, _} = post.(10)
+    assert_receive {:notification, ^listener, _ref, "finance_ledger_postings", "7:3:1"}
+
+    assert_raise Postgrex.Error, ~r/does not balance/, fn -> post.(9) end
+
+    assert {:error, :rolled_back} =
+             Repo.transaction(fn -> query!.(entry) && Repo.rollback(:rolled_back) end)
+
+    assert {:ok, _} = post.(10)
+    assert_receive {:notification, ^listener, _ref, "finance_ledger_postings", "7:3:2"}
+    refute_received {:notification, _, _, _, _}
   end
 end
