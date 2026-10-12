@@ -316,10 +316,26 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
         opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
       end)
     end)
-    |> Enum.map_join("; ", fn {field, messages} ->
-      "#{field} #{Enum.join(List.wrap(messages), ", ")}"
-    end)
+    |> error_lines([])
+    |> Enum.join("; ")
     |> String.slice(0, 300)
+  end
+
+  defp error_lines(errors, path) when is_map(errors) do
+    errors
+    |> Enum.sort()
+    |> Enum.flat_map(fn {key, value} -> error_lines(value, path ++ [to_string(key)]) end)
+  end
+
+  defp error_lines([first | _] = messages, path) when is_binary(first),
+    do: [Enum.join(path ++ [Enum.join(messages, ", ")], " ")]
+
+  defp error_lines(errors, path) when is_list(errors) do
+    errors
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {error, index} ->
+      error_lines(error, List.update_at(path, -1, &"#{&1}[#{index}]"))
+    end)
   end
 
   defp failure_message({:transient, message}),

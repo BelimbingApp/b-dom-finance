@@ -284,7 +284,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   @doc """
   Runs `fun` in a transaction holding the company's writable lock, as the
   facade's writes do, and returns what it returns. Never call the ledger
-  inside it: a ledger refusal rolls back the transaction it joins.
+  inside it: a ledger refusal rolls back the transaction it joins and the
+  commit then fails. `Bilimbi.Finance.Einvoice.Posting` alone calls the
+  ledger inside a transaction of its own, rolls all of it back on a
+  refusal, and records the failure in a fresh one.
   """
   def write!(%Scope{} = scope, company_id, fun) do
     {:ok, result} =

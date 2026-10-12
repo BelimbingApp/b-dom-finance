@@ -91,7 +91,8 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
   end
 
   @tag :capture_log
-  test "two sessions racing to record a posted event end with exactly one", %{repo: repo} do
+  test "two sessions racing to record an event cannot both take the same sequence",
+       %{repo: repo} do
     Repo.put_dynamic_repo(repo)
     query! = fn sql -> SQL.query!(repo, sql, []) end
 
@@ -128,8 +129,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
     assert [{:ok, _}, {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}}] =
              Enum.sort_by(results, &match?({:error, _}, &1))
 
-    assert %{rows: [[1]]} =
-             query!.("SELECT count(*) FROM finance_einvoice_status_events WHERE event = 'posted'")
+    assert %{rows: [[1]]} = query!.("SELECT count(*) FROM finance_einvoice_status_events")
   end
 
   # The module's other suites prove these rules on temporary copies of the

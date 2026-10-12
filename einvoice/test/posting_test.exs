@@ -103,13 +103,15 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
     document = validated!(op, TestFixtures.invoice_attributes())
     {:ok, _account} = Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: false})
 
-    assert {:error, _reason} = Posting.post(op, 73, document)
+    assert {:error, message} = Posting.post(op, 73, document)
+    assert message =~ ~r/^lines\[\d+\] account_id /
     assert {:ok, []} = Ledger.list_entries(op, 73)
 
     assert {:ok, %{ledger_entry_id: nil, events: events}} =
              Einvoice.get_document(op, 73, document.id)
 
     assert Enum.map(events, & &1.event) == ["issued", "submitted", "valid", "posting_failed"]
+    assert List.last(events).reason == message
 
     {:ok, _account} = Ledger.update_account(op, 73, accounts.revenue_account.id, %{active: true})
     assert {:ok, entry} = Posting.post(op, 73, document)

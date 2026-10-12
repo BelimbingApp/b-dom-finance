@@ -56,8 +56,10 @@ here; they govern this code and are not copied here.
   before stopping or retrying; never resubmit one the authority holds.
   Post a document once (`Posting.post` is a no-op after a `posted` event),
   decide a status change from the document read under the company lock,
-  call the ledger only outside your own transaction (its refusal rolls
-  back the one it joins), and resolve a failed posting with
+  never call the ledger inside a `write!`: its refusal rolls back the
+  transaction it joins. Only `Posting` calls it inside a transaction, of
+  its own, which it rolls back whole on a refusal before recording the
+  failure in a fresh one. Resolve a failed posting with
   `Einvoice.retry_posting/3` or `retry_reversal/3`.
 - A job that acts for a user is queued with `Queue.enqueue_for/3` and its
   arguments are identifiers only (`SubmitWorker.validate_args/1` is the

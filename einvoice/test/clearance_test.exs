@@ -605,7 +605,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                {"posting_failed", failed}
              ] = events(op, document)
 
-      assert is_binary(failed.reason)
+      assert failed.reason =~ ~r/^lines\[\d+\] account_id /
       assert "finance.einvoice.validated" in action_events(op)
 
       assert {:ok, %{status: "valid", attention: [:posting_failed]}} =
