@@ -291,23 +291,6 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
       $$
       """,
       """
-      CREATE FUNCTION pg_temp.finance_ledger_notify_posting() RETURNS trigger
-      LANGUAGE plpgsql AS $$
-      BEGIN
-        PERFORM pg_notify(
-          'finance_ledger_postings',
-          NEW.tenant_id || ':' || NEW.company_id || ':' || NEW.entry_number
-        );
-
-        RETURN NULL;
-      END
-      $$
-      """,
-      """
-      CREATE TRIGGER finance_ledger_entries_notify AFTER INSERT ON finance_ledger_entries
-        FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_notify_posting()
-      """,
-      """
       CREATE TRIGGER finance_ledger_entry_lines_posted_entry BEFORE INSERT ON finance_ledger_entry_lines
         FOR EACH ROW EXECUTE FUNCTION pg_temp.finance_ledger_refuse_posted_line()
       """,

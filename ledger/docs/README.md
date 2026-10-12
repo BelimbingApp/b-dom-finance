@@ -340,8 +340,10 @@ migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0`
 there builds two tenants' companies and an Authz snapshot, and `sign_in!/4`
 signs a user in with direct grants.
 
-`test/postings_test.exs` proves who hears a notice by sending one committed
-outside the sandbox, because a sandboxed post never commits.
+The posting-notice trigger is not copied: a sandboxed post never commits, so
+it could never deliver. `test/schema_contract_test.exs` proves the real
+trigger, and `test/postings_test.exs` proves who hears a notice by sending
+one committed outside the sandbox.
 
 The ledger has no pages, menu entries, or agent operations; callers use the
 facade.
