@@ -18,7 +18,7 @@ defmodule Bilimbi.Finance.Einvoice do
   amount from the lines, checks the document against the authority's rules
   and the company's code lists, and records it with its lines, its supplier
   and buyer as they stood, and an `issued` status event. A credit, debit,
-  or refund note names the validated original it corrects. A recorded
+  or refund note names the validated (or buyer-rejected) original it corrects. A recorded
   document is never edited or deleted: the database refuses it (see the
   migration), and a cancellation, a rejection, or any other answer from the
   authority is a new status event.
@@ -49,6 +49,7 @@ defmodule Bilimbi.Finance.Einvoice do
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.Documents
   alias Bilimbi.Finance.Einvoice.{Document, Draft, Line, StatusEvent, SubmitWorker}
+  alias Bilimbi.Finance.Ledger
   alias Ecto.Changeset
 
   @view "finance.einvoice.view"
@@ -361,6 +362,42 @@ defmodule Bilimbi.Finance.Einvoice do
     end
   end
 
+  @doc """
+  Posts the ledger entry of a valid document whose posting failed or was
+  never attempted, once its cause is fixed. It needs the submit capability
+  and also the ledger's entry-posting grant, so a refused actor leaves no
+  failed event behind. A document that already has its entry comes back
+  unchanged. `{:error, {:failed, reason}}` when the posting fails again
+  (recorded as a `posting_failed` event), `{:error, :not_postable}` for a
+  document that is not valid. Each try is the audit action
+  `finance.einvoice.posting.retried`.
+  """
+  @spec retry_posting(Scope.t(), term(), term()) ::
+          {:ok, map()}
+          | {:error, refusal() | :document_not_found | :not_postable | {:failed, String.t()}}
+  def retry_posting(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @submit),
+         {:ok, _company} <- authorize_company(scope, company_id, Ledger.post_entries_capability()) do
+      Clearance.retry_posting(scope, company_id, document_id)
+    end
+  end
+
+  @doc """
+  Reverses the ledger entry of a cancelled document whose reversal failed
+  or was never attempted. The same guards, results, and audit action as
+  `retry_posting/3`; `{:error, :not_reversible}` for a document that is
+  not cancelled.
+  """
+  @spec retry_reversal(Scope.t(), term(), term()) ::
+          {:ok, map()}
+          | {:error, refusal() | :document_not_found | :not_reversible | {:failed, String.t()}}
+  def retry_reversal(%Scope{} = scope, company_id, document_id) do
+    with {:ok, _company} <- authorize_company(scope, company_id, @submit),
+         {:ok, _company} <- authorize_company(scope, company_id, Ledger.post_entries_capability()) do
+      Clearance.retry_reversal(scope, company_id, document_id, DateTime.utc_now())
+    end
+  end
+
   @doc false
   # The submit job's body: one attempt, as the job's user.
   def run_submission(%Scope{} = scope, company_id, document_id) do
@@ -382,8 +419,8 @@ defmodule Bilimbi.Finance.Einvoice do
   @doc """
   The documents whose ledger side does not match their status: `unposted`,
   valid documents without a ledger entry (with the reason the last
-  posting failed, if one did), and `unreversed`, documents that are no
-  longer valid at the authority but whose entry stands. Each row is a
+  posting failed, if one did), and `unreversed`, cancelled documents
+  whose entry stands. Each row is a
   document summary with `ledger_entry_id`, `reversal_entry_id`, and
   `reason`.
   """

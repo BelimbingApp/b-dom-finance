@@ -52,6 +52,11 @@ here; they govern this code and are not copied here.
   through the `Bilimbi.Finance.Einvoice.Authority` callbacks (`submit`,
   `document_status`, `cancel`, ...), which return meta-term outcomes;
   `Bilimbi.Finance.Einvoice.Clearance` is the one caller that records them.
+  On a duplicate or an outage, look the document up with `find_submission`
+  before stopping or retrying; never resubmit one the authority holds. Post a document once (`Posting.post` is a no-op after a
+  `posted` event), decide a status change from the document read under the
+  company lock, and resolve a failed posting with
+  `Einvoice.retry_posting/3` or `retry_reversal/3`.
 - A job that acts for a user is queued with `Queue.enqueue_for/3` and its
   arguments are identifiers only (`SubmitWorker.validate_args/1` is the
   allowlist shape). Base Queue has no snooze: a worker returns `{:retry,

@@ -123,6 +123,23 @@ defmodule Bilimbi.Finance.Einvoice.Authority do
               {:done | :in_progress | :refused | :rate_limited | :unavailable, answer()}
 
   @doc """
+  Looks up a document the authority may already hold, by the company's code
+  number, among what the submitter sent between `since` and `until`:
+  `{:found, answer}` where the answer carries `submission_uid` and
+  `document_uuid` and the authority's own entry as `response`, or
+  `{:not_found | :refused | :rate_limited | :unavailable, answer}`. Used
+  after a duplicate or an unknown outcome, so a submission is never
+  repeated once the authority accepted it.
+  """
+  @callback find_submission(
+              Scope.t(),
+              pos_integer(),
+              credentials :: map(),
+              lookup :: %{code_number: String.t(), since: DateTime.t(), until: DateTime.t()}
+            ) ::
+              {:found | :not_found | :refused | :rate_limited | :unavailable, answer()}
+
+  @doc """
   A document's current status: `{:ok, answer}` where the answer carries
   `status` (`t:document_status/0`), `long_id`, `validated_at`,
   `rejection_requested_at`, and `reason`; or `{:refused | :rate_limited |

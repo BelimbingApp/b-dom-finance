@@ -14,6 +14,7 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
   @progress_path "/api/v1.0/documentsubmissions/HJSD135P2S7D8IU"
   @details_path "/api/v1.0/documents/F9D425P6DS7D8IU/details"
   @cancel_path "/api/v1.0/documents/state/F9D425P6DS7D8IU/state"
+  @recent_path "/api/v1.0/documents/recent"
 
   setup do
     context = TestFixtures.setup_einvoice!()
@@ -52,6 +53,32 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
   defp action_events(scope) do
     {:ok, actions} = Audit.list_actions(scope)
     Enum.map(actions, & &1.event)
+  end
+
+  defp duplicate_response(conn) do
+    conn
+    |> Plug.Conn.put_status(422)
+    |> Plug.Conn.put_resp_header("retry-after", "300")
+    |> Req.Test.json(%{error: %{code: "DuplicateSubmission", message: "Duplicate"}})
+  end
+
+  defp recent_response(conn, results) do
+    Req.Test.json(conn, %{
+      result: results,
+      metadata: %{totalPages: 1, totalCount: length(results)}
+    })
+  end
+
+  defp held_by_authority do
+    [
+      %{internalId: "OTHER-1", uuid: "OTHERUUID", submissionUid: "OTHERSUB"},
+      %{
+        internalId: "JSON-INV12345",
+        uuid: "F9D425P6DS7D8IU",
+        submissionUid: "HJSD135P2S7D8IU",
+        status: "Submitted"
+      }
+    ]
   end
 
   describe "queuing a submission" do
@@ -220,6 +247,110 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       assert [{"issued", _}, {"duplicate", %{http_status: 422}}] = events(op, document)
       assert "finance.einvoice.submission.duplicate" in action_events(op)
+    end
+
+    test "reads a duplicate back from the authority instead of resubmitting", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &duplicate_response/1,
+        {"GET", @recent_path} => &recent_response(&1, held_by_authority())
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+
+      assert_received {:request, "POST", @submit_path, _}
+      assert_received {:request, "GET", @recent_path, _}
+      refute_received {:request, "POST", @submit_path, _}
+
+      assert [{"issued", _}, {"submitted", submitted}] = events(op, document)
+
+      assert %{
+               submission_uid: "HJSD135P2S7D8IU",
+               document_uuid: "F9D425P6DS7D8IU",
+               authority_status: "Submitted",
+               http_status: 200,
+               response: %{"internalId" => "JSON-INV12345"}
+             } = submitted
+
+      assert "finance.einvoice.submitted" in action_events(op)
+      refute "finance.einvoice.submission.duplicate" in action_events(op)
+
+      assert [job] = Repo.all(Oban.Job)
+      assert job.worker == "Bilimbi.Finance.Einvoice.PollWorker.ObanAdapter"
+
+      assert {:ok, %{status: "submitted", submission_uid: "HJSD135P2S7D8IU"}} =
+               Einvoice.get_document(op, 73, document.id)
+    end
+
+    test "keeps the duplicate and stops when the authority holds no such document", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &duplicate_response/1,
+        {"GET", @recent_path} =>
+          &recent_response(&1, [%{internalId: "OTHER-1", uuid: "U", submissionUid: "S"}])
+      })
+
+      assert {:cancel, :duplicate_submission} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      assert_received {:request, "GET", @recent_path, _}
+      assert [{"issued", _}, {"duplicate", %{http_status: 422}}] = events(op, document)
+      assert "finance.einvoice.submission.duplicate" in action_events(op)
+      assert Repo.all(Oban.Job) == []
+    end
+
+    test "retries a duplicate whose lookup the authority could not answer", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &duplicate_response/1,
+        {"GET", @recent_path} => &(&1 |> Plug.Conn.put_status(503) |> Req.Test.json(%{}))
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(document), execution(op))
+
+      assert [{"issued", _}, {"unavailable", %{http_status: 503}}] = events(op, document)
+    end
+
+    test "looks for a submission an outage may have hidden before retrying", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &Req.Test.transport_error(&1, :timeout),
+        {"GET", @recent_path} => &recent_response(&1, held_by_authority())
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(document), execution(op))
+
+      assert [{"issued", _}, {"submitted", %{document_uuid: "F9D425P6DS7D8IU"}}] =
+               events(op, document)
+
+      assert [_poll_job] = Repo.all(Oban.Job)
+
+      {:ok, fresh} =
+        Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes(%{code_number: "INV-2"}))
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", @submit_path} => &Req.Test.transport_error(&1, :timeout),
+        {"GET", @recent_path} => &recent_response(&1, [])
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(fresh), execution(op))
+
+      assert [{"issued", _}, {"unavailable", %{reason: "TransportError"}}] = events(op, fresh)
     end
 
     test "retries a rate limit and an outage, and notices a 72-hour outage once", %{
@@ -448,6 +579,40 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
                Einvoice.get_document(op, 73, document.id)
     end
 
+    test "a refresh that lands during the poll is not recorded twice", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.open_posting_book!(op, 73)
+      test = self()
+
+      responses = %{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"GET", @details_path} => &TestFixtures.details_response(&1, "Valid")
+      }
+
+      TestFixtures.stub_authority!(
+        Map.put(responses, {"GET", @progress_path}, fn conn ->
+          # The user's refresh finishes while the poll holds the earlier view.
+          unless Process.get(:refreshed) do
+            Process.put(:refreshed, true)
+            send(test, {:refreshed, Einvoice.refresh_status(op, 73, document.id)})
+          end
+
+          TestFixtures.progress_response(conn, "valid")
+        end)
+      )
+
+      assert :ok = PollWorker.handle_job(args(document), execution(op))
+      assert_received {:refreshed, {:ok, %{status: "valid"}}}
+
+      assert [{"issued", _}, {"submitted", _}, {"valid", _}, {"posted", _}, {"status_checked", _}] =
+               events(op, document)
+
+      validated = Enum.count(action_events(op), &(&1 == "finance.einvoice.validated"))
+      assert validated == 1
+    end
+
     test "retries on a rate limit or outage and stops when the status is unreadable", %{
       operator: op,
       document: document
@@ -540,6 +705,110 @@ defmodule Bilimbi.Finance.Einvoice.ClearanceTest do
 
       assert {:ok, %{status: "cancelled"}} = Einvoice.refresh_status(op, 73, document.id)
       assert "finance.einvoice.cancelled" in action_events(op)
+    end
+
+    test "a status read tries a transient posting failure once more, not a configuration one", %{
+      operator: op,
+      document: document
+    } do
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"GET", @details_path} => &TestFixtures.details_response(&1, "Valid")
+      })
+
+      failed = fn retryable ->
+        Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+          event: "posting_failed",
+          reason: "failed",
+          response: %{"retryable" => retryable}
+        })
+      end
+
+      failed.(false)
+
+      assert {:ok, %{status: "valid", ledger_entry_id: nil}} =
+               Einvoice.refresh_status(op, 73, document.id)
+
+      failed.(true)
+
+      assert {:ok, %{status: "valid", ledger_entry_id: entry_id, attention: []}} =
+               Einvoice.refresh_status(op, 73, document.id)
+
+      assert is_integer(entry_id)
+    end
+
+    test "retry_posting posts a failed document once, audits each try, and is idempotent",
+         %{operator: op, document: document} = context do
+      :ok =
+        TestFixtures.put_settings!(context.first_scope, 73, %{"posting.tax_account" => "9999"})
+
+      assert {:error, {:failed, "accounts not in the chart: tax_account 9999"}} =
+               Einvoice.retry_posting(op, 73, document.id)
+
+      assert {:ok, %{attention: [:posting_failed]}} = Einvoice.get_document(op, 73, document.id)
+
+      :ok =
+        TestFixtures.put_settings!(context.first_scope, 73, %{"posting.tax_account" => "2200"})
+
+      assert {:ok, %{ledger_entry_id: entry_id, attention: []}} =
+               Einvoice.retry_posting(op, 73, document.id)
+
+      assert is_integer(entry_id)
+
+      assert {:ok, %{ledger_entry_id: ^entry_id}} = Einvoice.retry_posting(op, 73, document.id)
+
+      assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
+      assert Enum.count(events(op, document), &match?({"posted", _}, &1)) == 1
+      assert Enum.count(action_events(op), &(&1 == "finance.einvoice.posting.retried")) == 2
+
+      {:ok, fresh} =
+        Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes(%{code_number: "INV-2"}))
+
+      assert {:error, :not_postable} = Einvoice.retry_posting(op, 73, fresh.id)
+      assert {:error, :document_not_found} = Einvoice.retry_posting(op, 73, fresh.id + 1000)
+    end
+
+    test "retries need the ledger grant as well as the e-invoice one, and record nothing without",
+         %{operator: op, document: document} = context do
+      submitter = TestFixtures.sign_in!(context.first_scope, 73, 92, TestFixtures.capabilities())
+
+      bookkeeper =
+        TestFixtures.sign_in!(context.first_scope, 73, 93, TestFixtures.ledger_capabilities())
+
+      for scope <- [submitter, bookkeeper] do
+        assert {:error, :unauthorized} = Einvoice.retry_posting(scope, 73, document.id)
+        assert {:error, :unauthorized} = Einvoice.retry_reversal(scope, 73, document.id)
+      end
+
+      assert [_, _, _] = events(op, document)
+      refute "finance.einvoice.posting.retried" in action_events(op)
+    end
+
+    test "retry_reversal reverses a cancelled document's entry once", %{
+      operator: op,
+      document: document
+    } do
+      {:ok, entry} = Bilimbi.Finance.Einvoice.Posting.post(op, 73, document)
+      assert {:error, :not_reversible} = Einvoice.retry_reversal(op, 73, document.id)
+
+      Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+        event: "cancelled",
+        authority_status: "Cancelled",
+        reason: "portal"
+      })
+
+      assert {:ok, %{unreversed: [_row]}} = Einvoice.reconciliation(op, 73)
+
+      assert {:ok, %{ledger_entry_id: entry_id, reversal_entry_id: reversal_id, attention: []}} =
+               Einvoice.retry_reversal(op, 73, document.id)
+
+      assert entry_id == entry.id and is_integer(reversal_id)
+
+      assert {:ok, %{reversal_entry_id: ^reversal_id}} =
+               Einvoice.retry_reversal(op, 73, document.id)
+
+      assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
+      assert Enum.count(action_events(op), &(&1 == "finance.einvoice.posting.retried")) == 1
     end
 
     test "cancel is guarded locally before the authority is asked", %{

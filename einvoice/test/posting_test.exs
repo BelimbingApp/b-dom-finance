@@ -63,6 +63,18 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
     assert {:ok, ^entry} = Ledger.get_entry(op, 73, entry.id)
   end
 
+  test "a document posts once, whatever view of it the caller holds", %{operator: op} do
+    document = validated!(op, TestFixtures.invoice_attributes())
+    assert {:ok, entry} = Posting.post(op, 73, document)
+    assert :noop = Posting.post(op, 73, document)
+
+    assert {:ok, %{ledger_entry_id: entry_id, events: events}} =
+             Einvoice.get_document(op, 73, document.id)
+
+    assert entry_id == entry.id
+    assert Enum.count(events, &(&1.event == "posted")) == 1
+  end
+
   test "a credit note posts the mirror image, a refund note credits the settlement account, and zero tax posts no tax line",
        %{operator: op, accounts: accounts} do
     original = validated!(op, TestFixtures.invoice_attributes())
@@ -167,6 +179,22 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
 
     assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
     assert {:ok, %{attention: []}} = Einvoice.get_document(op, 73, document.id)
+  end
+
+  test "a rejected document keeps its entry and is not listed for reversal", %{operator: op} do
+    document = validated!(op, TestFixtures.invoice_attributes())
+    {:ok, _entry} = Posting.post(op, 73, document)
+
+    Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, document.id, %{
+      event: "rejected",
+      authority_status: "Valid",
+      reason: "Wrong quantity"
+    })
+
+    assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
+
+    assert {:ok, %{attention: [:rejection_requested]}} =
+             Einvoice.get_document(op, 73, document.id)
   end
 
   test "a book in another currency refuses the posting", %{operator: op} = context do

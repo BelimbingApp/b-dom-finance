@@ -18,7 +18,10 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   auditor walks document to UUID to entry. A posting that cannot happen
   (accounts unset, book not open, currency mismatch, missing grant) is
   recorded as `posting_failed` or `reversal_failed` with its reason, and
-  the reconciliation page lists the document until it is resolved.
+  the reconciliation page lists the document until it is resolved. A
+  `posting_failed` event also says whether the failure may pass on its own
+  (`retry_due?/1`): configuration and authorization failures do not.
+  A document posts once: asking again after a `posted` event is `:noop`.
   """
 
   alias Bilimbi.Base.Tenancy.Scope
@@ -30,9 +33,39 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
   @credit_side ["02"]
   @refund ["04"]
 
-  @doc "Posts the entry for a validated document and records the outcome as an event."
-  @spec post(Scope.t(), pos_integer(), map()) :: {:ok, map()} | {:error, String.t()}
+  @doc """
+  Posts the entry for a validated document and records the outcome as an
+  event. A document that already has its entry is `:noop`, whatever view
+  of it the caller holds.
+  """
+  @spec post(Scope.t(), pos_integer(), map()) :: {:ok, map()} | {:error, String.t()} | :noop
   def post(%Scope{} = scope, company_id, document) do
+    if posted?(scope, company_id, document.id),
+      do: :noop,
+      else: post_entry(scope, company_id, document)
+  end
+
+  @doc """
+  Whether a validated document without an entry failed its last posting
+  for a reason that may pass on its own, so a status read tries it again.
+  """
+  @spec retry_due?(map()) :: boolean()
+  def retry_due?(%{status: "valid", ledger_entry_id: nil, events: events}) do
+    case events |> Enum.filter(&(&1.event == "posting_failed")) |> List.last() do
+      %{response: %{"retryable" => true}} -> true
+      _none -> false
+    end
+  end
+
+  def retry_due?(_document), do: false
+
+  defp posted?(scope, company_id, document_id) do
+    scope
+    |> Documents.events(company_id, document_id)
+    |> Enum.any?(&(&1.event == "posted"))
+  end
+
+  defp post_entry(scope, company_id, document) do
     result =
       with :ok <- postable(document),
            {:ok, book} <- book(scope, company_id, document),
@@ -61,7 +94,8 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
         Documents.record_event!(scope, company_id, document.id, %{
           event: "posting_failed",
-          reason: message
+          reason: message,
+          response: %{"retryable" => transient?(reason)}
         })
 
         {:error, message}
@@ -106,6 +140,15 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
         end
     end
   end
+
+  # Our own messages (accounts, book, currency, rules) and the ledger's
+  # refusals of the actor or the book stay until someone changes them.
+  defp transient?(reason) when is_binary(reason), do: false
+
+  defp transient?(reason) when reason in [:unauthorized, :book_not_open, :company_archived],
+    do: false
+
+  defp transient?(_reason), do: true
 
   defp postable(%{status: "valid", document_uuid: uuid}) when is_binary(uuid), do: :ok
   defp postable(_document), do: {:error, "the document is not validated"}

@@ -52,6 +52,23 @@ defmodule Bilimbi.Finance.Einvoice.NotesTest do
     end
   end
 
+  test "a note may reference an original the buyer asked to reject", %{
+    operator: op,
+    original: original
+  } do
+    :ok = TestFixtures.validate!(op, 73, original.id)
+
+    Bilimbi.Finance.Einvoice.Documents.record_event!(op, 73, original.id, %{
+      event: "rejected",
+      authority_status: "Valid",
+      reason: "Wrong quantity"
+    })
+
+    assert {:ok, %{status: "rejected"}} = Einvoice.get_document(op, 73, original.id)
+    assert {:ok, note} = Einvoice.issue_document(op, 73, note("02", original.id))
+    assert note.original_document_id == original.id
+  end
+
   test "a note needs an original the authority validated, and an invoice takes none", %{
     operator: op,
     original: original

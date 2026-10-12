@@ -45,7 +45,8 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `submit_document/3` | `finance.einvoice.documents.submit` | Queues the submission as the signed-in user, after checking credentials and the signing key |
 | `refresh_status/3` | `finance.einvoice.documents.submit` | Reads the status at the authority and records what changed |
 | `cancel_document/4` | `finance.einvoice.documents.cancel` | Cancels a validated document inside its 72-hour window, then reverses its entry |
-| `reconciliation/2` | `finance.einvoice.view` | Valid documents without an entry, and entries whose document is no longer valid |
+| `reconciliation/2` | `finance.einvoice.view` | Valid documents without an entry, and cancelled documents whose entry was not reversed |
+| `retry_posting/3`, `retry_reversal/3` | `finance.einvoice.documents.submit` and `finance.ledger.entries.post` | Posts or reverses the entry of a listed document once its cause is fixed; idempotent, and an audit action names each try |
 | `generate_pdf/3`, `read_pdf/3` | `finance.einvoice.view` | Renders and reads the printable document through Base Artifacts |
 | `list_codes/3` | `finance.einvoice.view` | The company's active codes in one of the authority's lists |
 | `override_code/5` | `finance.einvoice.settings.manage` | Renames, retires, or adds a code for the company |
@@ -88,8 +89,14 @@ and every event, audit action, and ledger entry names them. The job
 commits a submission row with the exact bytes before the HTTP call,
 records the authority's answer as a status event (`submitted`, `refused`,
 `duplicate`, `rate_limited`, or `unavailable`), and never resubmits a
-document the authority accepted: a 2xx, or a `DuplicateSubmission`
-answer, ends the job. A rate limit or outage retries under Base Queue's
+document the authority accepted: a 2xx ends the job. After a
+`DuplicateSubmission` answer, or an outage that may have hidden an
+accepted request, it asks the authority for the document by its code number
+(`Authority.find_submission/4`; MyInvois lists the documents the taxpayer
+recently sent) and records the UID and UUID it finds as `submitted`, with
+the authority's own entry, and queues the poll. Only when nothing is found
+does a duplicate stop the job for an operator, and an outage retry. A rate
+limit or outage retries under Base Queue's
 backoff (Base Queue has no snooze, so the authority's `Retry-After` is
 recorded on the event rather than honoured to the second); an outage that
 has lasted 72 hours records `overdue` and the audit action
@@ -98,6 +105,8 @@ list show. `PollWorker` reads the submission's progress a few seconds
 apart (`:poll_interval_ms`, 4 seconds), a bounded number of reads per job,
 and records `valid` (with the long ID that completes the validation link)
 or `invalid` (with the validation results), then posts the ledger entry.
+A status change is decided from the document as read under the company's
+lock, so a refresh and a poll cannot both record it.
 
 A refresh (`refresh_status/3`) reads the document at the authority and
 records a buyer's rejection request as `rejected`, a cancellation made on
@@ -111,8 +120,9 @@ authority is asked; its refusal is recorded as `cancellation_refused`.
 Audit actions per outcome: `finance.einvoice.submission.queued`,
 `.submitted`, `.refused`, `.submission.duplicate`, `.submission.overdue`,
 `.validated`, `.invalid`, `.rejected`, `.cancelled`,
-`.cancellation.refused`, and `.pdf.generated`, each carrying the document
-ID, code number, environment, and the authority's identifiers.
+`.cancellation.refused`, `.posting.retried`, and `.pdf.generated`, each
+carrying the document ID, code number, environment, and the authority's
+identifiers.
 
 ## Ledger bridge
 
@@ -130,7 +140,14 @@ posts no tax line. A posting that cannot happen (accounts unset or
 unknown, book not open or in another currency, missing grant) records
 `posting_failed` or `reversal_failed` with the reason, and
 `reconciliation/2` lists the document until it is resolved. The user who
-submits needs `finance.ledger.entries.post` for the posting to happen.
+submits needs `finance.ledger.entries.post` for the posting to happen. A
+document posts once: a second attempt is a no-op. The failure records
+whether it may pass on its own; a status read tries such a posting once
+more, while a configuration or grant failure waits for
+`retry_posting/3` or `retry_reversal/3`, which the reconciliation page
+offers to a user holding both the e-invoice and the ledger grants. A
+rejected document stays valid at the authority, so its entry stands and a
+note corrects it.
 
 ## Pages
 

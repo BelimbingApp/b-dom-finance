@@ -19,7 +19,10 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   a 202 whose accepted list names the document is `:accepted`; a 202 that
   lists it as rejected is `:rejected`; `DuplicateSubmission` (422) is
   `:duplicate`; 429 is `:rate_limited`; a 5xx or transport failure is
-  `:unavailable`; any other refusal is `:refused`.
+  `:unavailable`; any other refusal is `:refused`. A document the
+  authority may already hold is found again among the documents the
+  taxpayer recently sent (up to #{30} days back), by its internal ID,
+  which is the company's code number.
   """
 
   @behaviour Bilimbi.Finance.Einvoice.Authority
@@ -33,6 +36,9 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   @versions [%{version: "1.1", signed: true}, %{version: "1.0", signed: false}]
   @invoice "01"
   @notes ["02", "03", "04"]
+  @referable ["valid", "rejected"]
+  @search_days 30
+  @search_pages 10
   @portal_urls %{
     "sandbox" => "https://preprod.myinvois.hasil.gov.my",
     "production" => "https://myinvois.hasil.gov.my"
@@ -168,7 +174,8 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   end
 
   # A note references the validated original it corrects (Guideline
-  # §2.4.5): the original must be valid at the authority, carry its UUID,
+  # §2.4.5): the original must be valid at the authority (a buyer's
+  # rejection request leaves it valid there), carry its UUID,
   # be an invoice rather than another note, and share the currency. An
   # invoice references nothing.
   defp validate_original(changeset, original) do
@@ -182,7 +189,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
       type in @notes and is_nil(original) ->
         add_error(changeset, :original_document_id, "is not a document of this company")
 
-      type in @notes and original.status != "valid" ->
+      type in @notes and original.status not in @referable ->
         add_error(changeset, :original_document_id, "is not a validated document")
 
       type in @notes and is_nil(original.document_uuid) ->
@@ -429,6 +436,51 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
         failure(error)
     end
   end
+
+  @impl true
+  def find_submission(scope, company_id, credentials, %{
+        code_number: code,
+        since: since,
+        until: until
+      }) do
+    from = Enum.max([since, DateTime.add(until, -@search_days * 86_400, :second)], DateTime)
+    search_sent(scope, company_id, credentials, code, [from: from, to: until], 1)
+  end
+
+  defp search_sent(scope, company_id, credentials, code, window, page) do
+    case Client.recent_documents(scope, company_id, credentials, window,
+           owner_id: company_id,
+           page: page
+         ) do
+      {:ok, %{status: status, body: %{"result" => results} = body}} when is_list(results) ->
+        case Enum.find(results, &(&1["internalId"] == code)) do
+          %{"uuid" => uuid, "submissionUid" => uid} = entry
+          when is_binary(uuid) and is_binary(uid) ->
+            {:found,
+             answer(status, entry,
+               submission_uid: uid,
+               document_uuid: uuid,
+               reason: "found at the authority by its code number"
+             )}
+
+          _none ->
+            if more_pages?(body, page),
+              do: search_sent(scope, company_id, credentials, code, window, page + 1),
+              else: {:not_found, answer(status, body)}
+        end
+
+      {:ok, %{status: status, body: body}} ->
+        {:refused, answer(status, body, reason: "no document list in the answer")}
+
+      error ->
+        failure(error)
+    end
+  end
+
+  defp more_pages?(%{"metadata" => %{"totalPages" => total}}, page) when is_integer(total),
+    do: page < total and page < @search_pages
+
+  defp more_pages?(_body, _page), do: false
 
   @impl true
   def document_status(scope, company_id, credentials, document_uuid) do

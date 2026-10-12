@@ -18,13 +18,20 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   submission UID and document UUID; the poll job is queued), `refused`
   (the authority explained why), `duplicate` (the same bytes were
   submitted inside the authority's window, so an earlier attempt reached
-  it: the job stops and an operator reads the status), `rate_limited`
-  (the job retries after the queue's backoff), or `unavailable` (an
-  outage or transport failure: the job retries, and when the outage has
-  lasted #{72} hours an `overdue` event and the audit action
-  `finance.einvoice.submission.overdue` give the operator notice). A
-  document whose status is already `submitted`, `valid`, or `cancelled`
+  it), `rate_limited` (the job retries after the queue's backoff), or
+  `unavailable` (an outage or transport failure: the job retries, and
+  when the outage has lasted #{72} hours an `overdue` event and the audit
+  action `finance.einvoice.submission.overdue` give the operator notice).
+  A document whose status is already `submitted`, `valid`, or `cancelled`
   is never submitted again, whatever the job says.
+
+  A duplicate, or an outage that may have hidden an accepted request,
+  never resubmits blindly: the authority is asked for the document by its
+  code number (`Authority.find_submission/4`). When it holds one, its
+  submission UID and document UUID are recorded as `submitted` with the
+  authority's own entry, and the poll job is queued. Only when nothing is
+  found is the `duplicate` recorded and the job stopped for an operator,
+  or the outage retried.
 
   ## Polling
 
@@ -33,7 +40,9 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   is still processing. Once done it reads the document's status and
   records `valid` (with the long ID that completes the validation link)
   or `invalid` (with the validation results), then posts the ledger entry
-  for a valid document (`Bilimbi.Finance.Einvoice.Posting`).
+  for a valid document (`Bilimbi.Finance.Einvoice.Posting`). A posting that
+  failed for a reason that may pass on its own is tried once more by each
+  status read that finds the document still unposted.
 
   ## Refreshing and cancelling
 
@@ -44,6 +53,13 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   asked: only a valid (or rejected) document, inside its 72-hour window,
   with no active note referencing it; the authority's own refusal is
   recorded as `cancellation_refused`.
+
+  ## Ledger follow-up
+
+  `retry_posting/3` and `retry_reversal/4` post or reverse the entry of a
+  document the reconciliation page lists, once the cause (the book, the
+  accounts, a grant) is fixed. Each is idempotent and records an audit
+  action; the facade asks for the ledger grant before calling them.
   """
 
   import Ecto.Query
@@ -155,7 +171,15 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
                 code_number: document.code_number
               })
 
-            record_submission_outcome(scope, company_id, document, submission, outcome, now)
+            record_submission_outcome(
+              scope,
+              company_id,
+              document,
+              submission,
+              outcome,
+              credentials,
+              now
+            )
 
           {:error, reason} ->
             record(scope, company_id, document.id, %{
@@ -191,7 +215,17 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     end)
   end
 
-  defp record_submission_outcome(scope, company_id, document, submission, outcome, now) do
+  defp record_submission_outcome(
+         scope,
+         company_id,
+         document,
+         submission,
+         outcome,
+         credentials,
+         now
+       ) do
+    outcome = recover_outcome(scope, company_id, credentials, document, outcome, now)
+
     base = %{
       "document_id" => document.id,
       "code_number" => document.code_number,
@@ -208,6 +242,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
             authority_status: "Submitted",
             submission_uid: answer.submission_uid,
             document_uuid: answer.document_uuid,
+            reason: answer[:reason],
             http_status: answer.http_status,
             response: answer.response
           })
@@ -273,6 +308,30 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       end
     end)
   end
+
+  # A duplicate, or an outage that may have hidden an accepted request,
+  # means the authority may hold the document already: ask for it by its
+  # code number, among what was submitted since the document last became
+  # submittable, instead of sending the bytes again. A lookup that finds
+  # nothing leaves the outcome as it was; one that cannot answer retries.
+  defp recover_outcome(scope, company_id, credentials, document, {kind, _answer} = outcome, now)
+       when kind in [:duplicate, :unavailable] do
+    since =
+      document.events
+      |> Enum.filter(&(&1.event in Documents.status_events()))
+      |> List.last()
+      |> Map.fetch!(:recorded_at)
+
+    lookup = %{code_number: document.code_number, since: since, until: now}
+
+    case authority().find_submission(scope, company_id, credentials, lookup) do
+      {:found, found} -> {:accepted, found}
+      {status, answer} when status in [:rate_limited, :unavailable] -> {status, answer}
+      {_not_found_or_refused, _answer} -> outcome
+    end
+  end
+
+  defp recover_outcome(_scope, _company_id, _credentials, _document, outcome, _now), do: outcome
 
   # Once the authority has been unreachable for 72 hours since this
   # document's first failed attempt, the operator is told once, through an
@@ -404,7 +463,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       {:ok, answer} ->
         {:ok,
          write!(scope, company_id, fn ->
-           apply_status(scope, company_id, document, answer, now)
+           current = Documents.document_view(Documents.fetch(scope, company_id, document.id))
+           apply_status(scope, company_id, current, answer, now)
          end)}
 
       {:rate_limited, _answer} ->
@@ -513,6 +573,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
           })
         )
 
+        retry_transient_posting(scope, company_id, document.id)
         document.status
     end
   end
@@ -530,14 +591,126 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
       validated = Documents.document_view(Documents.fetch(scope, company_id, document.id))
       Posting.post(scope, company_id, validated)
+      retry_transient_posting(scope, company_id, document.id)
     end
 
+    :ok
+  end
+
+  # One more attempt at a posting that failed for a reason that may pass.
+  defp retry_transient_posting(scope, company_id, document_id) do
+    document = Documents.document_view(Documents.fetch(scope, company_id, document_id))
+    if Posting.retry_due?(document), do: Posting.post(scope, company_id, document)
     :ok
   end
 
   defp reverse_posting(scope, company_id, document_id, now) do
     document = Documents.document_view(Documents.fetch(scope, company_id, document_id))
     Posting.reverse(scope, company_id, document, now)
+  end
+
+  ## Ledger follow-up
+
+  @type retry_result ::
+          {:ok, map()}
+          | {:error, :document_not_found | :not_postable | :not_reversible}
+          | {:error, {:failed, String.t()}}
+
+  @doc """
+  Posts the entry of a validated document whose posting failed or was
+  never attempted. A document that already has its entry is returned
+  unchanged. A posting that fails again is recorded by `Posting` and is
+  `{:error, {:failed, reason}}`; either way an audit action names the try.
+  """
+  @spec retry_posting(Scope.t(), pos_integer(), term()) :: retry_result()
+  def retry_posting(%Scope{} = scope, company_id, document_id) do
+    retry(scope, company_id, document_id, "posting", fn
+      %{ledger_entry_id: entry_id} when not is_nil(entry_id) -> :noop
+      %{status: "valid"} = document -> {:run, Posting.post(scope, company_id, document)}
+      _document -> {:error, :not_postable}
+    end)
+  end
+
+  @doc """
+  Reverses the entry of a cancelled document whose reversal failed or was
+  never attempted. A document without an entry, or already reversed, is
+  returned unchanged.
+  """
+  @spec retry_reversal(Scope.t(), pos_integer(), term(), DateTime.t()) :: retry_result()
+  def retry_reversal(%Scope{} = scope, company_id, document_id, %DateTime{} = now) do
+    retry(scope, company_id, document_id, "reversal", fn
+      %{ledger_entry_id: nil} ->
+        :noop
+
+      %{reversal_entry_id: entry_id} when not is_nil(entry_id) ->
+        :noop
+
+      %{status: "cancelled"} = document ->
+        {:run, Posting.reverse(scope, company_id, document, now)}
+
+      _document ->
+        {:error, :not_reversible}
+    end)
+  end
+
+  # The document is read under the company's lock, so two tries cannot both
+  # see it unposted. A failed try still commits: its event and the audit
+  # action are the record.
+  defp retry(scope, company_id, document_id, operation, decide) do
+    write!(scope, company_id, fn ->
+      case Documents.fetch(scope, company_id, document_id) do
+        nil ->
+          {:error, :document_not_found}
+
+        fetched ->
+          document = Documents.document_view(fetched)
+
+          case decide.(document) do
+            :noop ->
+              {:ok, document}
+
+            {:error, reason} ->
+              {:error, reason}
+
+            {:run, result} ->
+              retried(scope, company_id, document, operation, result)
+          end
+      end
+    end)
+  end
+
+  defp retried(scope, company_id, document, operation, result) do
+    {outcome, reason} =
+      case result do
+        {:ok, _entry} -> {"succeeded", nil}
+        {:error, message} -> {"failed", message}
+        :noop -> {"unchanged", nil}
+      end
+
+    Documents.record_action!(
+      scope,
+      company_id,
+      "finance.einvoice.posting.retried",
+      Map.reject(
+        %{
+          "document_id" => document.id,
+          "code_number" => document.code_number,
+          "environment" => document.environment,
+          "operation" => operation,
+          "outcome" => outcome,
+          "reason" => reason
+        },
+        fn {_key, value} -> is_nil(value) end
+      )
+    )
+
+    case result do
+      {:error, message} ->
+        {:error, {:failed, message}}
+
+      _done ->
+        {:ok, Documents.document_view(Documents.fetch(scope, company_id, document.id))}
+    end
   end
 
   ## Cancelling

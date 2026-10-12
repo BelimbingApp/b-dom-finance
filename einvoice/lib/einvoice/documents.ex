@@ -154,9 +154,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   defp escape_like(text), do: Regex.replace(~r/[\\%_]/, text, "\\\\\\0")
 
   @doc """
-  Valid documents without a ledger entry, and documents no longer valid
-  whose entry was not reversed, each as a summary with the entry IDs and
-  the reason the last posting or reversal failed.
+  Valid documents without a ledger entry, and cancelled documents whose
+  entry was not reversed, each as a summary with the entry IDs and the
+  reason the last posting or reversal failed. A rejected document is
+  still valid at the authority, so its entry stands.
   """
   def reconciliation(%Scope{} = scope, company_id) do
     postings =
@@ -185,8 +186,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
           do: id
 
     unreversed_ids =
-      for {id, status} <- valid_ids,
-          status != "valid",
+      for {id, "cancelled"} <- valid_ids,
           not is_nil(find_entry(postings[id], "posted")),
           is_nil(find_entry(postings[id], "posting_reversed")),
           do: id
