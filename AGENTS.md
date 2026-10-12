@@ -24,10 +24,18 @@ here; they govern this code and are not copied here.
   fails. Namespaces are `Bilimbi.Finance.<Module>` with OTP app
   `:bilimbi_finance_<folder>`.
 - Domain code uses only meta-terms: book, account, account type, entry, line,
-  debit, credit. A country's tax rules, a fixed chart of accounts, or a
-  currency is a company's data, never a code identifier, schema constant,
-  inclusion list, or default. The five account types are the one fixed
-  classification.
+  debit, credit, fiscal document, party, submission, status event. A fixed
+  chart of accounts or a currency is a company's data, never a code
+  identifier, schema constant, inclusion list, or default. The five account
+  types are the one fixed classification. A tax authority's own rules,
+  formats, and code lists live only behind `Bilimbi.Finance.Einvoice.Authority`
+  in that authority's namespace (`einvoice/lib/einvoice/my_invois/`).
+- Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
+  with plain attributes, never by writing its tables: it derives every amount
+  and records the `issued` event the status reads from.
+- Write UBL JSON through `MyInvois.Json` (`einvoice/lib/einvoice/my_invois/json.ex`),
+  not `Jason.encode!/1` of a map: the authority signs exact bytes, so key
+  order and each number's written form must survive.
 - Post to the ledger through `Bilimbi.Finance.Ledger`'s facade, from Finance
   modules and other Domains alike; never write or read its tables. A posted
   entry is corrected with `reverse_entry/4`, never edited. Its `entry_date`
