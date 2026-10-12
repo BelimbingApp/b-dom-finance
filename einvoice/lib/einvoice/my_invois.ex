@@ -58,21 +58,21 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois do
   # Supplier settings and buyer details alike are checked against these.
   defp format(:tax_id),
     do: %{
-      pattern: ~r/^[A-Z]{1,2}[0-9]{8,12}$/,
+      pattern: ~r/\A[A-Z]{1,2}[0-9]{8,12}\z/,
       message: "must be one or two capital letters and 8 to 12 digits"
     }
 
   defp format(:phone),
     do: %{
-      pattern: ~r/^\+[0-9]{8,19}$/,
+      pattern: ~r/\A\+[0-9]{8,19}\z/,
       message: "must be a plus sign and 8 to 20 digits, 20 characters at most"
     }
 
-  defp format(:industry_code), do: %{pattern: ~r/^[0-9]{5}$/, message: "must be five digits"}
-  defp format(:state_code), do: %{pattern: ~r/^[0-9]{2}$/, message: "must be two digits"}
+  defp format(:industry_code), do: %{pattern: ~r/\A[0-9]{5}\z/, message: "must be five digits"}
+  defp format(:state_code), do: %{pattern: ~r/\A[0-9]{2}\z/, message: "must be two digits"}
 
   defp format(:country_code),
-    do: %{pattern: ~r/^[A-Z]{3}$/, message: "must be three capital letters"}
+    do: %{pattern: ~r/\A[A-Z]{3}\z/, message: "must be three capital letters"}
 
   @impl true
   def supplier_missing(supplier),

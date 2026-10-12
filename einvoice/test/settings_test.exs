@@ -88,7 +88,7 @@ defmodule Bilimbi.Finance.Einvoice.SettingsTest do
           assert apply(Einvoice.Configuration, field, [value])
         end
 
-        for value <- invalid do
+        for value <- invalid ++ [hd(valid) <> "\n"] do
           refute authority.valid_format?(kind, value), "#{kind} accepted #{value}"
           refute apply(Einvoice.Configuration, field, [value])
         end

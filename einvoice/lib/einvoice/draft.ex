@@ -62,7 +62,7 @@ defmodule Bilimbi.Finance.Einvoice.Draft do
     |> cast_embed(:lines, required: true)
     |> validate_required([:document_type, :code_number, :issued_at, :currency_code])
     |> validate_length(:code_number, min: 1, max: 50)
-    |> validate_format(:currency_code, ~r/^[A-Z]{3}$/)
+    |> validate_format(:currency_code, ~r/\A[A-Z]{3}\z/)
     |> validate_number(:exchange_rate, greater_than: 0)
     |> validate_length(:payment_terms, max: 300)
     |> validate_length(:billing_period_description, max: 50)

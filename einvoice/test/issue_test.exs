@@ -242,6 +242,8 @@ defmodule Bilimbi.Finance.Einvoice.IssueTest do
       refuse.(:phone, "+6012345")
       refuse.(:phone, "+" <> String.duplicate("1", 20))
       refuse.(:tax_id, "123")
+      refuse.(:tax_id, "EI00000000010\n")
+      refuse.(:phone, "+60123456789\n")
 
       attributes =
         TestFixtures.invoice_attributes()

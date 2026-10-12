@@ -96,7 +96,7 @@ defmodule Bilimbi.Finance.Einvoice.CodeLists do
       list not in lists(authority) ->
         {:error, :unknown_list}
 
-      not (code =~ ~r/^[A-Za-z0-9.\-]{1,16}$/) ->
+      not (code =~ ~r/\A[A-Za-z0-9.\-]{1,16}\z/) ->
         {:error,
          %CodeOverride{}
          |> Ecto.Changeset.change()

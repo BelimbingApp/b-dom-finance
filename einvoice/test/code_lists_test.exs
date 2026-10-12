@@ -98,6 +98,7 @@ defmodule Bilimbi.Finance.Einvoice.CodeListsTest do
     assert {:error, :unknown_list} = Einvoice.override_code(op, 73, "colours", "01", %{})
     assert {:error, :unknown_list} = Einvoice.list_codes(op, 73, "colours")
     assert {:error, %Ecto.Changeset{}} = Einvoice.override_code(op, 73, "unit", "a b", %{})
+    assert {:error, %Ecto.Changeset{}} = Einvoice.override_code(op, 73, "unit", "C62\n", %{})
 
     viewer = TestFixtures.sign_in!(scope, 73, 93, ["finance.einvoice.view"])
 

@@ -320,7 +320,7 @@ defmodule Bilimbi.Finance.Einvoice.MyInvois.Client do
 
   # Identifiers the authority issued; anything else never reaches a URL path.
   defp path_segment(value) when is_binary(value) do
-    if value =~ ~r/^[A-Za-z0-9\-]{1,64}$/, do: {:ok, value}, else: {:error, :invalid_identifier}
+    if value =~ ~r/\A[A-Za-z0-9\-]{1,64}\z/, do: {:ok, value}, else: {:error, :invalid_identifier}
   end
 
   defp path_segment(_value), do: {:error, :invalid_identifier}
