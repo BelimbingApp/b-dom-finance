@@ -2230,12 +2230,13 @@ defmodule Bilimbi.Finance.Ledger do
     where(query, [e], e.id in subquery(entry_ids))
   end
 
-  defp closing_bound(query, _scope, _company_id, false), do: query
+  @doc false
+  def closing_bound(query, _scope, _company_id, false), do: query
 
   # A year's close event names its closing entry in the same transaction that
   # posts it, so the set is the same at any `through_entry_number`; a reopen
   # posts the entry's reversal, which names it in `reverses_entry_id`.
-  defp closing_bound(query, scope, company_id, true) do
+  def closing_bound(query, scope, company_id, true) do
     closing_ids =
       from(c in Tenancy.scope_query(ClosingEvent, scope),
         where: c.company_id == ^company_id and not is_nil(c.entry_id),

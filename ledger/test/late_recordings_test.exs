@@ -88,6 +88,58 @@ defmodule Bilimbi.Finance.Ledger.LateRecordingsTest do
     assert [%{entry_date: _, posted_at: %DateTime{}, posted_by_user_id: 91} | _] = listed
   end
 
+  test "leaves out the year-end closing entry and its reopen reversal, and keeps a real late entry",
+       %{first_scope: first, poster: poster, reader: reader, reviewer: reviewer} do
+    closer =
+      TestFixtures.sign_in!(first, 73, 94, [
+        @view,
+        @manage,
+        @post,
+        @periods,
+        "finance.ledger.periods.reopen"
+      ])
+
+    {:ok, accounts} = Ledger.list_accounts(closer, 73)
+    cash = Enum.find(accounts, &(&1.code == "1000"))
+    income = Enum.find(accounts, &(&1.code == "4000"))
+
+    {:ok, _retained} =
+      Ledger.create_account(closer, 73, %{
+        code: "3900",
+        name: "Retained earnings",
+        account_type: "equity",
+        retained_earnings: true
+      })
+
+    {:ok, _sale} =
+      Ledger.post_entry(poster, 73, %{
+        entry_date: Date.new!(Date.utc_today().year - 1, 6, 1),
+        description: "Prior-year sale",
+        lines: [%{account_id: cash.id, debit: "10"}, %{account_id: income.id, credit: "10"}]
+      })
+
+    expected = ["Days 45", "Days 50", "Days 60", "Days 61", "Days 100", "Prior-year sale"]
+
+    assert {:ok, listed} = Ledger.list_late_recordings(reader, 73)
+    assert Enum.sort(Enum.map(listed, & &1.description)) == Enum.sort(expected)
+
+    {:ok, years} = Ledger.list_fiscal_years(closer, 73)
+    year = Enum.find(years, &(&1.start_date == first_year_start()))
+    assert {:ok, %{closing_entry_id: closing_id}} = Ledger.close_fiscal_year(closer, 73, year.id)
+    assert is_integer(closing_id)
+
+    assert {:ok, listed} = Ledger.list_late_recordings(reader, 73)
+    assert Enum.sort(Enum.map(listed, & &1.description)) == Enum.sort(expected)
+
+    assert {:error, :entry_not_found} =
+             Ledger.record_late_recording_review(reviewer, 73, closing_id, %{reason: "Year end"})
+
+    assert {:ok, _year} = Ledger.reopen_fiscal_year(closer, 73, year.id, %{reason: "Adjust"})
+
+    assert {:ok, listed} = Ledger.list_late_recordings(reader, 73)
+    assert Enum.sort(Enum.map(listed, & &1.description)) == Enum.sort(expected)
+  end
+
   test "filters by status and by review", %{
     reader: reader,
     reviewer: reviewer,

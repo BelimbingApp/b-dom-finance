@@ -346,6 +346,13 @@ posted entries recorded 45 or more days after their transaction dates, as
 so the report needs no company time zone. `late_recording_thresholds/0` gives
 the two numbers.
 
+The report leaves out the entries the ledger writes itself when a fiscal year
+closes or reopens: the year-end closing entry and its reversal, dated the
+year's last day and recorded whenever the close or reopen happens. They are
+the same entries `exclude_closing: true` leaves out of the figures, and the
+exclusion is in the facade, so every reader of the report agrees. They cannot
+be reviewed (`{:error, :entry_not_found}`).
+
 An independent reviewer records a `reason` for each late entry once with
 `record_late_recording_review/4`, the same way approval exceptions are
 reviewed: by someone who did not post the entry or impersonate its poster,

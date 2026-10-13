@@ -158,8 +158,9 @@ exceptions then list. Below it are the entries recorded 45 or more days after
 their transaction dates, approaching (45 to 60 days) or late (over 60), with
 who posted each and its review; an independent reviewer records the reason
 for each with `finance.ledger.late-recordings.review`, which the ledger's
-facade refuses from whoever posted the entry. The ledger's README describes
-both rules.
+facade refuses from whoever posted the entry. The list leaves out the
+year-end closing entries and reopen reversals the ledger writes itself, as
+the figures' `exclude_closing` does. The ledger's README describes both rules.
 
 `/finance/reports/approval-exceptions` (menu Finance › Approval
 exceptions, route capability `finance.ledger.view`) is the ledger's approval

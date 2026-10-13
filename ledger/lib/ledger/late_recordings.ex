@@ -3,7 +3,9 @@ defmodule Bilimbi.Finance.Ledger.LateRecordings do
 
   # Entries recorded late, and their independent reviews. An entry's days are
   # whole UTC days from its entry date (its transaction date) to the day the
-  # database stamped it. The facade authorizes and takes the company lock.
+  # database stamped it. The facade authorizes and takes the company lock. A
+  # year-end closing entry and its reopen reversal are dated the year's end by
+  # the ledger itself, so they are never listed.
 
   import Ecto.Query
 
@@ -11,6 +13,7 @@ defmodule Bilimbi.Finance.Ledger.LateRecordings do
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Actor
   alias Bilimbi.Base.Tenancy.Scope
+  alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Ledger.{Duties, Entry, LateRecordingReview}
 
   @approaching_days 45
@@ -137,8 +140,12 @@ defmodule Bilimbi.Finance.Ledger.LateRecordings do
     |> Map.new(&{&1.entry_id, &1})
   end
 
-  defp entries_query(scope, company_id),
-    do: where(Tenancy.scope_query(Entry, scope), [e], e.company_id == ^company_id)
+  defp entries_query(scope, company_id) do
+    Entry
+    |> Tenancy.scope_query(scope)
+    |> where([e], e.company_id == ^company_id)
+    |> Ledger.closing_bound(scope, company_id, true)
+  end
 
   defp reviews_query(scope), do: Tenancy.scope_query(LateRecordingReview, scope)
 end
