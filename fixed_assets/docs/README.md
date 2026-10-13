@@ -2,9 +2,10 @@
 
 `finance/fixed_assets` owns a company's permanent asset register, category
 revisions, monthly depreciation runs with their items and exceptions, and
-disposal, void and reversal events. It depends on Ledger for the books and Payables for acquisition from
-posted supplier bills; Supply Chain remains optional behind Payables' own
-three-way-match seam. It reads and posts through both public facades.
+disposal, void and reversal events. It depends on Ledger for the books and
+Payables for acquisition from posted supplier bills; Supply Chain remains
+optional behind Payables' own three-way-match seam. It reads and posts through
+both public facades.
 
 ## Workflow
 
@@ -40,7 +41,6 @@ three-way-match seam. It reads and posts through both public facades.
    A reversed month's run stays recorded; the next new monthly run catches up
    outstanding scheduled depreciation. A disposal reversal restores the asset,
    and a later run catches up its remaining scheduled charges.
-
 6. When an acquisition entry is reversed in the ledger (for example by voiding
    the supplier bill), a depreciation run never stops for it: the asset is
    skipped, recorded as an exception on that run (shown in the run result and
