@@ -21,7 +21,9 @@ defmodule Bilimbi.Finance.Attachments.Migrations.CreateAttachments do
   `replaced` naming the attachment that took its place, or one `removed`;
   the database keeps at most one of those two per attachment. A retention
   extension, a legal hold placed, and a hold released are events too, each
-  with its reason. Every table here is append-only.
+  with its reason, and so is `retention_change_failed`, naming (once) the
+  extension or hold that Base Artifacts then refused, which no longer counts.
+  Every table here is append-only.
 
   The migration is self-contained, and `statements/1` is its one source:
   with `temporary: true` the tables are temporary and the functions live in
@@ -48,7 +50,7 @@ defmodule Bilimbi.Finance.Attachments.Migrations.CreateAttachments do
     finance_attachments_record_event
   )
 
-  @events ~w(replaced removed retention_extended hold_placed hold_released)
+  @events ~w(replaced removed retention_extended hold_placed hold_released retention_change_failed)
 
   def up, do: Enum.each(statements(), &execute/1)
 
@@ -170,18 +172,25 @@ defmodule Bilimbi.Finance.Attachments.Migrations.CreateAttachments do
         attachment_id bigint NOT NULL,
         event varchar(30) NOT NULL,
         replacement_id bigint,
+        failed_event_id bigint,
         retain_until timestamp(6),
         reason varchar(500),
         actor_user_id bigint NOT NULL,
         actor_impersonator_id bigint,
         occurred_at timestamp(6) NOT NULL,
+        CONSTRAINT finance_attachment_events_id_company_unique UNIQUE (id, company_id),
         CONSTRAINT finance_attachment_events_attachment_fkey
           FOREIGN KEY (attachment_id, company_id)
           REFERENCES finance_attachments (id, company_id) ON DELETE RESTRICT,
         CONSTRAINT finance_attachment_events_replacement_fkey
           FOREIGN KEY (replacement_id, company_id)
           REFERENCES finance_attachments (id, company_id) ON DELETE RESTRICT,
+        CONSTRAINT finance_attachment_events_failed_fkey
+          FOREIGN KEY (failed_event_id, company_id)
+          REFERENCES finance_attachment_events (id, company_id) ON DELETE RESTRICT,
         CONSTRAINT finance_attachment_events_event CHECK (event IN (#{events})),
+        CONSTRAINT finance_attachment_events_failed
+          CHECK ((event = 'retention_change_failed') = (failed_event_id IS NOT NULL)),
         CONSTRAINT finance_attachment_events_replacement
           CHECK ((event = 'replaced') = (replacement_id IS NOT NULL)),
         CONSTRAINT finance_attachment_events_not_self
@@ -197,6 +206,11 @@ defmodule Bilimbi.Finance.Attachments.Migrations.CreateAttachments do
       CREATE UNIQUE INDEX finance_attachment_events_standing_unique
         ON finance_attachment_events (attachment_id)
         WHERE event IN ('replaced', 'removed')
+      """,
+      """
+      CREATE UNIQUE INDEX finance_attachment_events_failed_unique
+        ON finance_attachment_events (failed_event_id)
+        WHERE failed_event_id IS NOT NULL
       """,
       """
       CREATE INDEX finance_attachment_events_attachment_index

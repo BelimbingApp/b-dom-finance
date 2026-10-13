@@ -50,15 +50,24 @@ captured it when, and never changed afterwards.
   selects them; a legal hold refuses deletion after it. `extend_retention/4`
   only moves a retain-until later, as a `retention_extended` event; the
   retain-until and `on_hold` a read shows follow the latest `retention_extended`
-  and hold events, and nothing shortens one. Base Artifacts changes first and
-  the event follows, so a failure between them leaves Base ahead of the
-  events; the same call again finds Base already there and records only the
-  event. A record whose date can change while it is not final (a draft
+  and hold events that Base Artifacts did not refuse, and nothing shortens
+  one. A change is recorded first under the company lock (what Base would
+  refuse is checked against the events there), then Base Artifacts makes it
+  outside any transaction; if Base refuses or fails, a
+  `retention_change_failed` event naming the first is appended and the change
+  no longer counts, so a read never shows a date or hold Base does not
+  enforce. A record whose date can change while it is not final (a draft
   invoice) may be re-dated after its attachments were kept; its module calls
   `refresh_retention/4` once the record is final, after its own transaction
   commits, which extends each standing attachment to what the final date says
-  (needs `finance.attachments.view` and `.create`; repeatable) and never
-  shortens one.
+  and never shortens one. That refresh asks the actor no attachments grant
+  (the owning module must read the record, the company must be live, and the
+  ledger's fiscal years need `finance.ledger.view`): it is a consequence of the
+  owning module's own authorized write, and the owner adapter accepts any
+  signed-in user of a live company for `:retain`, while the facade gates
+  every discretionary extension and hold with
+  `finance.attachments.retention.manage`. It is repeatable, so a failed refresh
+  is redone by calling it again.
 - **Standing.** An attachment row is append-only; its standing is its
   latest event. A record that is not final (a draft bill, a submitted
   journal, a draft invoice, an undecided payment request) can have an

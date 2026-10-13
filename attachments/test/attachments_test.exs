@@ -360,62 +360,83 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
                })
     end
 
-    test "a failed event after Base changed is repaired by the same call again", %{
+    test "a change Base Artifacts refuses is recorded as failed and never shown", %{
+      operator: operator
+    } do
+      {:ok, real} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      orphan_id = orphan!(real.id)
+
+      assert {:error, :not_found} =
+               Attachments.place_hold(operator, 73, orphan_id, %{reason: "case"})
+
+      assert {:error, :not_found} =
+               Attachments.extend_retention(operator, 73, orphan_id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "tax query"
+               })
+
+      assert {:ok, view} = Attachments.get_attachment(operator, 73, orphan_id)
+      refute view.on_hold
+      assert view.retain_until == real.retain_until
+
+      assert [
+               %{event: "hold_placed", id: held},
+               %{event: "retention_change_failed", failed_event_id: held},
+               %{event: "retention_extended", id: extended},
+               %{event: "retention_change_failed", failed_event_id: extended}
+             ] = view.events
+
+      # A refused change is not a standing one: the same change can be tried again.
+      assert {:error, :not_found} =
+               Attachments.place_hold(operator, 73, orphan_id, %{reason: "again"})
+
+      assert_agrees(operator, real.id)
+    end
+
+    test "each retention change leaves the view and Base Artifacts in agreement", %{
       operator: operator
     } do
       {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
       assert_agrees(operator, attachment.id)
 
-      reason = [reason: "partial"]
-      until = ~U[2041-01-01 23:59:59.999999Z]
-
-      {:ok, _} =
-        Artifacts.retain(operator, 73, ArtifactOwner, attachment.artifact_id, until, reason)
-
-      {:ok, _} = Artifacts.place_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
-
-      assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z], on_hold: false}} =
-               Attachments.get_attachment(operator, 73, attachment.id)
-
-      assert {:ok, %{retain_until: ^until}} =
+      assert {:ok, %{retain_until: ~U[2041-01-01 23:59:59.999999Z]}} =
                Attachments.extend_retention(operator, 73, attachment.id, %{
                  retain_until: ~D[2041-01-01],
-                 reason: "repair"
+                 reason: "tax query"
                })
-
-      assert {:error, :retention_not_extended} =
-               Attachments.extend_retention(operator, 73, attachment.id, %{
-                 retain_until: ~D[2041-01-01],
-                 reason: "again"
-               })
-
-      assert {:ok, %{on_hold: true}} =
-               Attachments.place_hold(operator, 73, attachment.id, %{reason: "repair"})
-
-      assert {:error, :already_on_hold} =
-               Attachments.place_hold(operator, 73, attachment.id, %{reason: "again"})
 
       assert_agrees(operator, attachment.id)
 
-      {:ok, _} =
-        Artifacts.release_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
+      assert {:error, :retention_not_extended} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2038-01-01],
+                 reason: "shorter"
+               })
+
+      assert {:ok, %{on_hold: true}} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "case"})
+
+      assert_agrees(operator, attachment.id)
 
       assert {:ok, %{on_hold: false}} =
-               Attachments.release_hold(operator, 73, attachment.id, %{reason: "repair"})
+               Attachments.release_hold(operator, 73, attachment.id, %{reason: "closed"})
 
       assert_agrees(operator, attachment.id)
     end
 
-    test "refresh_retention extends to the record's new date and never shortens", %{
-      operator: operator,
-      first_scope: scope
+    test "refresh_retention extends to the record's final date and never shortens", %{
+      operator: operator
     } do
       {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
       assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
 
+      assert {:error, :document_not_final} =
+               Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      StubSource.put_document!(1, %{final?: true})
       assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
 
-      StubSource.put_document!(1, %{date: ~D[2027-02-01]})
+      StubSource.put_document!(1, %{date: ~D[2027-02-01], final?: true})
 
       assert {:ok, [%{id: id, retain_until: ~U[2034-12-31 23:59:59.999999Z]}]} =
                Attachments.refresh_retention(operator, 73, StubSource, 1)
@@ -424,19 +445,36 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert_agrees(operator, attachment.id)
       assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
 
-      StubSource.put_document!(1, %{date: ~D[2026-02-01]})
+      StubSource.put_document!(1, %{date: ~D[2026-02-01], final?: true})
       assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
 
       assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
                Attachments.get_attachment(operator, 73, attachment.id)
+    end
+
+    test "refresh_retention asks the actor no attachments grant", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      StubSource.put_document!(1, %{date: ~D[2027-02-01], final?: true})
+
+      issuer = TestFixtures.sign_in!(scope, 73, 98, ~w(finance.ledger.view))
 
       assert {:error, :unauthorized} =
-               Attachments.refresh_retention(
-                 TestFixtures.sign_in!(scope, 73, 98, ~w(finance.attachments.view)),
-                 73,
-                 StubSource,
-                 1
-               )
+               Attachments.extend_retention(issuer, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "no"
+               })
+
+      assert {:ok, [%{retain_until: ~U[2034-12-31 23:59:59.999999Z]}]} =
+               Attachments.refresh_retention(issuer, 73, StubSource, 1)
+
+      assert_agrees(operator, attachment.id)
+      assert {:ok, %{events: events}} = Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert [%{event: "retention_extended", retain_until: ~U[2034-12-31 23:59:59.999999Z]}] =
+               events
     end
 
     test "a legal hold is placed and released with reasons", %{operator: operator} do
@@ -660,6 +698,25 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
         )
       end
     end
+  end
+
+  defp orphan!(attachment_id) do
+    %{rows: [[id]]} =
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO finance_attachments (tenant_id, company_id, source, source_module, document_id,
+          document_label, document_date, artifact_id, file_name, content_type, byte_size, sha256,
+          retention_years, retain_until, captured_by_user_id)
+        SELECT tenant_id, company_id, source, source_module, document_id, document_label,
+          document_date, gen_random_uuid(), file_name, content_type, byte_size, sha256,
+          retention_years, retain_until, captured_by_user_id
+        FROM finance_attachments WHERE id = $1 RETURNING id
+        """,
+        [attachment_id]
+      )
+
+    id
   end
 
   defp assert_agrees(scope, attachment_id) do

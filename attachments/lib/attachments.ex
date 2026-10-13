@@ -335,10 +335,13 @@ defmodule Bilimbi.Finance.Attachments do
 
   @doc """
   Moves an attachment's retain-until later, to the end of `retain_until`
-  (a date) in UTC, with a `reason`: Base Artifacts refuses an equal or
-  earlier date (`{:error, :retention_not_extended}`) and keeps the change
-  with its own history; this records the event too. Any attachment, standing
-  or not.
+  (a date) in UTC, with a `reason`: an equal or earlier date than the
+  attachment's own is `{:error, :retention_not_extended}`. The
+  `retention_extended` event is recorded first, under the company lock; then
+  Base Artifacts moves the artifact's retain-until and keeps the change with
+  its own history. If Base refuses or fails, a `retention_change_failed`
+  event naming the first is recorded and the extension no longer counts, so
+  what a read shows is what Base enforces. Any attachment, standing or not.
   """
   @spec extend_retention(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | term()}
@@ -348,7 +351,14 @@ defmodule Bilimbi.Finance.Attachments do
          {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id),
          {:ok, %Date{} = date} <- dated(fetch(attributes, :retain_until)),
          {:ok, reason} <- event_reason(attributes) do
-      extend(scope, company_id, @manage_retention, attachment, Retention.end_of_day(date), reason)
+      extend(
+        scope,
+        company_id,
+        @manage_retention,
+        attachment.id,
+        Retention.end_of_day(date),
+        reason
+      )
     end
   end
 
@@ -356,35 +366,34 @@ defmodule Bilimbi.Finance.Attachments do
   Extends the retention of every standing attachment of the record
   `document_id` that `source` describes to what the record's date says now,
   for a record whose date can change while it is not final (a draft invoice
-  re-dated before it is issued). Counts the company's retention years from
+  re-dated before it is issued). The record must be final
+  (`{:error, :document_not_final}`). Counts the company's retention years from
   the end of the financial year the record's date falls in; an attachment
   already kept that long is left, and none is ever shortened. Records
-  `retention_extended` on each it extends and answers them. A module calls
-  it once the record is final, after its own transaction commits (Base
-  Artifacts stores outside any); it needs `finance.attachments.view` and
-  `finance.attachments.create`, and can be repeated until it has run.
+  `retention_extended` on each it extends and answers them.
+
+  It is the consequence of the owning module's own authorized write, so it
+  asks no attachments grant: the source must read the record with the
+  caller's scope, the company must be live, and the date's financial year is
+  read from the ledger (`finance.ledger.view`). A module calls it once the
+  record is final, after its own transaction commits (Base Artifacts stores
+  outside any); repeating it after a failure is safe.
   """
   @spec refresh_retention(Scope.t(), term(), module(), term()) ::
           {:ok, [map()]} | {:error, write_refusal() | term()}
   def refresh_retention(%Scope{} = scope, company_id, source, document_id) do
-    with :ok <- authorize(scope, company_id, @view),
-         :ok <- authorize(scope, company_id, @create),
-         {:ok, source} <- valid_source(source),
+    with {:ok, source} <- valid_source(source),
          {:ok, document} <- source_document(scope, company_id, source, document_id),
-         {:ok, until} <-
-           Retention.retain_until(
-             scope,
-             company_id,
-             document.date,
-             retention_years(latest_retention_change(scope, company_id))
-           ) do
+         :ok <- finalised(document),
+         true <- Company.live_company?(scope, company_id) || {:error, :company_not_found},
+         attachments = standing_attachments(scope, company_id, source, id(document_id)),
+         {:ok, until} <- refreshed_until(scope, company_id, document, attachments) do
       reason = "#{source.source_id()}: record now dated #{document.date}"
 
-      scope
-      |> standing_attachments(company_id, source, id(document_id))
-      |> Enum.filter(&(DateTime.compare(until, effective_retain_until(&1)) == :gt))
+      attachments
+      |> Enum.filter(&later?(until, effective_retain_until(&1)))
       |> Enum.reduce_while({:ok, []}, fn attachment, {:ok, extended} ->
-        case extend(scope, company_id, @create, attachment, until, reason) do
+        case extend(scope, company_id, nil, attachment.id, until, reason) do
           {:ok, view} -> {:cont, {:ok, [view | extended]}}
           {:error, :retention_not_extended} -> {:cont, {:ok, extended}}
           {:error, _reason} = error -> {:halt, error}
@@ -397,10 +406,25 @@ defmodule Bilimbi.Finance.Attachments do
     end
   end
 
+  defp finalised(%{final?: true}), do: :ok
+  defp finalised(%{final?: false}), do: {:error, :document_not_final}
+
+  defp refreshed_until(_scope, _company_id, _document, []), do: {:ok, nil}
+
+  defp refreshed_until(scope, company_id, document, _attachments) do
+    Retention.retain_until(
+      scope,
+      company_id,
+      document.date,
+      retention_years(latest_retention_change(scope, company_id))
+    )
+  end
+
   @doc """
   Places a legal hold on an attachment's bytes with a `reason`: Base
   Artifacts refuses their deletion past retain-until until the hold is
-  released (`{:error, :already_on_hold}` for a second hold).
+  released (`{:error, :already_on_hold}` for a second hold). Recorded as
+  `extend_retention/4` is.
   """
   @spec place_hold(Scope.t(), term(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | term()}
@@ -418,23 +442,21 @@ defmodule Bilimbi.Finance.Attachments do
   defp hold(scope, company_id, attachment_id, attributes, operation, event) do
     with :ok <- authorize(scope, company_id, @manage_retention),
          {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id),
-         {:ok, reason} <- event_reason(attributes),
-         {:ok, base} <- base_state(scope, company_id, attachment) do
+         {:ok, reason} <- event_reason(attributes) do
       change_retention(
         scope,
         company_id,
         @manage_retention,
-        attachment,
-        %{reason: reason},
+        attachment.id,
         event,
+        %{reason: reason},
         [],
-        hold_state(operation, base.legal_hold, on_hold?(attachment)),
-        fn ->
+        fn artifact_id ->
           apply(Artifacts, operation, [
             scope,
             company_id,
             ArtifactOwner,
-            attachment.artifact_id,
+            artifact_id,
             [reason: reason]
           ])
         end
@@ -442,113 +464,76 @@ defmodule Bilimbi.Finance.Attachments do
     end
   end
 
-  defp extend(scope, company_id, capability, attachment, until, reason) do
-    with {:ok, base} <- base_state(scope, company_id, attachment) do
-      state =
-        case DateTime.compare(until, base.retain_until) do
-          :gt ->
-            :apply
-
-          :eq ->
-            if later?(until, effective_retain_until(attachment)),
-              do: :record,
-              else: refused(:retention_not_extended)
-
-          :lt ->
-            refused(:retention_not_extended)
-        end
-
-      change_retention(
-        scope,
-        company_id,
-        capability,
-        attachment,
-        %{reason: reason},
-        "retention_extended",
-        [retain_until: until],
-        state,
-        fn ->
-          Artifacts.retain(scope, company_id, ArtifactOwner, attachment.artifact_id, until,
-            reason: reason
-          )
-        end
-      )
-    end
+  defp extend(scope, company_id, capability, attachment_id, until, reason) do
+    change_retention(
+      scope,
+      company_id,
+      capability,
+      attachment_id,
+      "retention_extended",
+      %{reason: reason},
+      [retain_until: until],
+      fn artifact_id ->
+        Artifacts.retain(scope, company_id, ArtifactOwner, artifact_id, until, reason: reason)
+      end
+    )
   end
 
   defp later?(left, right), do: DateTime.compare(left, right) == :gt
-  defp refused(reason), do: {:error, reason}
 
-  defp hold_state(:place_hold, true, true), do: refused(:already_on_hold)
-  defp hold_state(:place_hold, true, false), do: :record
-  defp hold_state(:place_hold, false, _recorded), do: :apply
-  defp hold_state(:release_hold, false, false), do: refused(:not_on_hold)
-  defp hold_state(:release_hold, false, true), do: :record
-  defp hold_state(:release_hold, true, _recorded), do: :apply
-
-  # Base Artifacts changes first, outside any transaction; the event follows
-  # under the company lock. If that second step fails, Base holds the change
-  # and the events do not, and the same call again finds Base already there
-  # and records only the event, so the two agree once it succeeds.
+  # The event is recorded first, with what Base would refuse checked against
+  # the events under the company lock; Base Artifacts then changes the
+  # artifact outside any transaction. A refusal or failure from Base is
+  # recorded as a `retention_change_failed` event naming the first, which the
+  # reads leave out, so they never show a change Base does not enforce.
   defp change_retention(
          scope,
          company_id,
          capability,
-         attachment,
-         attributes,
+         attachment_id,
          event,
+         attributes,
          extra,
-         state,
          base_call
        ) do
-    case state do
-      {:error, _reason} = error ->
-        error
+    with {:ok, {attachment, recorded}} <-
+           write(scope, company_id, capability, fn ->
+             with {:ok, attachment} <- any_attachment(scope, company_id, attachment_id),
+                  :ok <- retention_change(attachment, event, extra),
+                  {:ok, recorded} <- insert_event(scope, attachment, event, attributes, extra) do
+               {:ok, {attachment, recorded}}
+             end
+           end) do
+      case base_call.(attachment.artifact_id) do
+        {:ok, _stored} ->
+          {:ok, attachment_view(fetch_attachment(scope, company_id, attachment.id))}
 
-      :record ->
-        record_retention_event(
-          scope,
-          company_id,
-          capability,
-          attachment,
-          event,
-          attributes,
-          extra
-        )
-
-      :apply ->
-        with {:ok, _stored} <- base_call.() do
-          record_retention_event(
-            scope,
-            company_id,
-            capability,
-            attachment,
-            event,
-            attributes,
-            extra
-          )
-        end
-    end
-  end
-
-  defp base_state(scope, company_id, attachment) do
-    with {:ok, history} <-
-           Artifacts.retention_history(scope, company_id, ArtifactOwner, attachment.artifact_id) do
-      case List.last(history) do
-        %{retain_until: until, legal_hold: legal_hold} ->
-          {:ok, %{retain_until: until, legal_hold: legal_hold}}
-
-        nil ->
-          {:error, :not_retained}
+        {:error, reason} ->
+          record_failure(scope, company_id, capability, attachment, recorded, reason)
+          {:error, reason}
       end
     end
   end
 
-  defp record_retention_event(scope, company_id, capability, attachment, event, attributes, extra) do
+  defp retention_change(attachment, "retention_extended", extra) do
+    if later?(Keyword.fetch!(extra, :retain_until), effective_retain_until(attachment)),
+      do: :ok,
+      else: {:error, :retention_not_extended}
+  end
+
+  defp retention_change(attachment, "hold_placed", _extra),
+    do: if(on_hold?(attachment), do: {:error, :already_on_hold}, else: :ok)
+
+  defp retention_change(attachment, "hold_released", _extra),
+    do: if(on_hold?(attachment), do: :ok, else: {:error, :not_on_hold})
+
+  defp record_failure(scope, company_id, capability, attachment, recorded, reason) do
+    failure = %{reason: String.slice("#{recorded.event} refused: #{inspect(reason)}", 0, 500)}
+
     write(scope, company_id, capability, fn ->
-      with {:ok, _event} <- insert_event(scope, attachment, event, attributes, extra) do
-        {:ok, attachment_view(fetch_attachment(scope, company_id, attachment.id))}
-      end
+      insert_event(scope, attachment, "retention_change_failed", failure,
+        failed_event_id: recorded.id
+      )
     end)
   end
 
@@ -727,6 +712,7 @@ defmodule Bilimbi.Finance.Attachments do
       attachment_id: attachment.id,
       event: event,
       replacement_id: Keyword.get(extra, :replacement_id),
+      failed_event_id: Keyword.get(extra, :failed_event_id),
       retain_until: Keyword.get(extra, :retain_until),
       actor_user_id: user_id,
       actor_impersonator_id: impersonator_id
@@ -996,18 +982,25 @@ defmodule Bilimbi.Finance.Attachments do
 
   defp effective_retain_until(%Attachment{events: events} = attachment) do
     events
+    |> counted_events()
     |> Enum.filter(&(&1.event == "retention_extended"))
     |> Enum.map(& &1.retain_until)
     |> Enum.reduce(attachment.retain_until, fn until, latest ->
-      if DateTime.compare(until, latest) == :gt, do: until, else: latest
+      if later?(until, latest), do: until, else: latest
     end)
   end
 
   defp on_hold?(%Attachment{events: events}) do
     events
+    |> counted_events()
     |> Enum.filter(&(&1.event in ~w(hold_placed hold_released)))
     |> List.last()
     |> then(&(&1 != nil and &1.event == "hold_placed"))
+  end
+
+  defp counted_events(events) do
+    failed = MapSet.new(for %{failed_event_id: id} when id != nil <- events, do: id)
+    Enum.reject(events, &MapSet.member?(failed, &1.id))
   end
 
   defp event_view(%AttachmentEvent{} = event) do
@@ -1015,6 +1008,7 @@ defmodule Bilimbi.Finance.Attachments do
       :id,
       :event,
       :replacement_id,
+      :failed_event_id,
       :retain_until,
       :reason,
       :actor_user_id,
@@ -1056,8 +1050,13 @@ defmodule Bilimbi.Finance.Attachments do
     end
   end
 
+  defp authorize_write(_scope, _company_id, nil), do: :ok
+
+  defp authorize_write(scope, company_id, capability),
+    do: authorize(scope, company_id, capability)
+
   defp write(scope, company_id, capability, fun) do
-    with :ok <- authorize(scope, company_id, capability) do
+    with :ok <- authorize_write(scope, company_id, capability) do
       Repo.transact(fn ->
         case Company.lock_writable_company(scope, company_id) do
           {:ok, _proof} -> fun.()

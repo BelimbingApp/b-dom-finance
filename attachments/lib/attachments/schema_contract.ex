@@ -101,6 +101,7 @@ defmodule Bilimbi.Finance.Attachments.SchemaContract do
             "attachment_id" => column(:bigint, false),
             "event" => column({:varchar, 30}, false),
             "replacement_id" => column(:bigint, true),
+            "failed_event_id" => column(:bigint, true),
             "retain_until" => column({:timestamp, 6}, true),
             "reason" => column({:varchar, 500}, true),
             "actor_user_id" => column(:bigint, false),
@@ -109,6 +110,12 @@ defmodule Bilimbi.Finance.Attachments.SchemaContract do
           }),
         indexes: %{
           "finance_attachment_events_pkey" => index(["id"], true),
+          "finance_attachment_events_id_company_unique" => index(["id", "company_id"], true),
+          "finance_attachment_events_failed_unique" => %{
+            columns: ["failed_event_id"],
+            unique: true,
+            where: "(failed_event_id IS NOT NULL)"
+          },
           "finance_attachment_events_standing_unique" => %{
             columns: ["attachment_id"],
             unique: true,
@@ -123,12 +130,21 @@ defmodule Bilimbi.Finance.Attachments.SchemaContract do
           "finance_attachment_events_attachment_fkey" =>
             company_reference("attachment_id", "finance_attachments"),
           "finance_attachment_events_replacement_fkey" =>
-            company_reference("replacement_id", "finance_attachments")
+            company_reference("replacement_id", "finance_attachments"),
+          "finance_attachment_events_failed_fkey" =>
+            company_reference("failed_event_id", "finance_attachment_events")
         },
         checks: %{
           "finance_attachment_events_event" =>
             check(
-              one_of("event", ~w(replaced removed retention_extended hold_placed hold_released))
+              one_of(
+                "event",
+                ~w(replaced removed retention_extended hold_placed hold_released retention_change_failed)
+              )
+            ),
+          "finance_attachment_events_failed" =>
+            check(
+              "(((event)::text = 'retention_change_failed'::text) = (failed_event_id IS NOT NULL))"
             ),
           "finance_attachment_events_replacement" =>
             check("(((event)::text = 'replaced'::text) = (replacement_id IS NOT NULL))"),

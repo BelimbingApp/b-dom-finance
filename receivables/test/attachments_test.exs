@@ -70,33 +70,17 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
 
   test "issuing a re-dated draft extends its attachments to the issue date's retention",
        context do
-    {:ok, draft} =
-      Receivables.create_draft(context.operator, 73, %{
-        kind: "invoice",
-        series_id: context.invoice_series.id,
-        customer_id: context.customer.id,
-        issue_date: ~D[2026-03-01],
-        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
-      })
-
-    {:ok, attachment} =
-      Attachments.attach(
-        context.operator,
-        73,
-        Document,
-        draft.id,
-        AttachmentsFixtures.file("contract.txt")
-      )
-
+    issuer = issuer!(context, TestFixtures.ledger_capabilities())
+    {:ok, draft, attachment} = draft_with_contract!(context)
     assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
 
     {:ok, _draft} =
-      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+      Receivables.update_draft(issuer, 73, draft.id, %{issue_date: ~D[2027-02-01]})
 
     assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
              Attachments.get_attachment(context.operator, 73, attachment.id)
 
-    {:ok, _issued} = Receivables.issue_document(context.operator, 73, draft.id)
+    assert {:ok, %{retention_refresh: :ok}} = Receivables.issue_document(issuer, 73, draft.id)
 
     assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
              Attachments.get_attachment(context.operator, 73, attachment.id)
@@ -110,6 +94,29 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
                Bilimbi.Finance.Attachments.ArtifactOwner,
                attachment.artifact_id
              )
+  end
+
+  test "a refresh Base Artifacts refuses is reported and logged, and what it extended stays",
+       context do
+    {:ok, draft, attachment} = draft_with_contract!(context)
+    orphan!(attachment.id)
+
+    {:ok, _draft} =
+      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %{status: "issued", retention_refresh: {:error, :not_found}}} =
+                 Receivables.issue_document(context.operator, 73, draft.id)
+      end)
+
+    assert log =~ "source documents of receivables document #{draft.id}"
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+
+    assert {:error, :not_found} =
+             Attachments.refresh_retention(context.operator, 73, Document, draft.id)
   end
 
   test "a payment received is final from the start", context do
@@ -177,5 +184,52 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
     assert {:error, :document_not_found} = Document.document(context.operator, 73, 999)
     assert {:error, :payment_not_found} = Payment.document(context.operator, 73, 999)
     assert {:error, :unauthorized} = Document.document(context.first_scope, 73, 1)
+  end
+
+  defp issuer!(context, extra) do
+    TestFixtures.sign_in!(
+      context.first_scope,
+      73,
+      99,
+      TestFixtures.receivables_capabilities() ++ extra
+    )
+  end
+
+  defp draft_with_contract!(context) do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-03-01],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    {:ok, attachment} =
+      Attachments.attach(
+        context.operator,
+        73,
+        Document,
+        draft.id,
+        AttachmentsFixtures.file("contract.txt")
+      )
+
+    {:ok, draft, attachment}
+  end
+
+  defp orphan!(attachment_id) do
+    Ecto.Adapters.SQL.query!(
+      Bilimbi.Base.Repo,
+      """
+      INSERT INTO finance_attachments (tenant_id, company_id, source, source_module, document_id,
+        document_label, document_date, artifact_id, file_name, content_type, byte_size, sha256,
+        retention_years, retain_until, captured_by_user_id)
+      SELECT tenant_id, company_id, source, source_module, document_id, document_label,
+        document_date, gen_random_uuid(), file_name, content_type, byte_size, sha256,
+        retention_years, retain_until, captured_by_user_id
+      FROM finance_attachments WHERE id = $1
+      """,
+      [attachment_id]
+    )
   end
 end

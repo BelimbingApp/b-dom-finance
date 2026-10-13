@@ -30,6 +30,8 @@ defmodule Bilimbi.Finance.Receivables do
   Results are plain maps; the schemas stay private to this module.
   """
 
+  require Logger
+
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
@@ -306,10 +308,16 @@ defmodule Bilimbi.Finance.Receivables do
   and each tax code's account; a credit note posts the reverse, against the
   receivable account its invoice recorded. The document records that
   account (`receivable_account_id`), the entry's ID and number, and who
-  issued it; the database stamps when. Once the issue commits, the document's
-  source documents are given the retention its issue date says
-  (`Bilimbi.Finance.Attachments.refresh_retention/4`), if the issuer holds the
-  attachments capabilities it needs.
+  issued it; the database stamps when.
+
+  Call it outside a transaction, as `Bilimbi.Finance.Reconciliation.import_statement/4`
+  is (`{:error, :inside_transaction}` otherwise, before anything is issued):
+  once the issue commits, the document's source documents are given the
+  retention its issue date says
+  (`Bilimbi.Finance.Attachments.refresh_retention/4`, which asks the issuer no
+  attachments grant). The issued document answers `retention_refresh`, `:ok` or
+  `{:error, reason}` (also logged); calling `refresh_retention/4` again redoes
+  a failed one.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -318,20 +326,33 @@ defmodule Bilimbi.Finance.Receivables do
              | context_refusal()
              | :document_not_found
              | :not_a_draft
+             | :inside_transaction
              | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, document_id) do
-    with {:ok, document} <-
-           write(scope, company_id, @issue_documents, fn ->
-             Documents.issue(scope, company_id, document_id)
-           end) do
-      refresh_attachments(scope, company_id, document)
-      {:ok, document}
+    if Repo.in_transaction?() do
+      {:error, :inside_transaction}
+    else
+      with {:ok, document} <-
+             write(scope, company_id, @issue_documents, fn ->
+               Documents.issue(scope, company_id, document_id)
+             end) do
+        {:ok,
+         Map.put(document, :retention_refresh, refresh_attachments(scope, company_id, document))}
+      end
     end
   end
 
   defp refresh_attachments(scope, company_id, document) do
-    unless Repo.in_transaction?() do
-      Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id)
+    case Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id) do
+      {:ok, _extended} ->
+        :ok
+
+      {:error, reason} = error ->
+        Logger.warning(
+          "source documents of receivables document #{document.id} kept short of its issue date: #{inspect(reason)}"
+        )
+
+        error
     end
   end
 

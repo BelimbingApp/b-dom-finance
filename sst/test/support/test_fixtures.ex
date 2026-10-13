@@ -23,6 +23,7 @@ defmodule Bilimbi.Finance.Sst.TestFixtures do
   alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
+  alias Bilimbi.Finance.Attachments.TestFixtures, as: AttachmentsFixtures
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Payables
@@ -76,9 +77,10 @@ defmodule Bilimbi.Finance.Sst.TestFixtures do
     %{first_scope: first, second_scope: second}
   end
 
-  @doc "The ledger's, receivables', payables', and SST tables."
+  @doc "The ledger's, attachments', receivables', payables', and SST tables."
   def create_tables! do
     LedgerFixtures.create_ledger_tables!()
+    AttachmentsFixtures.create_attachments_tables!()
     ReceivablesFixtures.create_receivables_tables!()
     PayablesFixtures.create_payables_tables!()
     create_sst_tables!()
