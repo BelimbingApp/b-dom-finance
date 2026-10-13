@@ -264,6 +264,39 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       assert decimal?(billed, 10)
     end
 
+    test "counts the bill's own earlier lines naming the same order line", context do
+      %{operator: operator, accounts: accounts} = context
+
+      split =
+        approved_bill!(context, "INV-1", [
+          order_line(accounts.stock, "15.00", 10, "6"),
+          order_line(accounts.stock, "15.00", 10, "6")
+        ])
+
+      assert {:ok, %{status: "held", match_events: [%{lines: [first, second]}]}} =
+               Payables.post_document(operator, 73, split.id)
+
+      assert first.exceptions == []
+      assert decimal?(second.previously_billed_quantity, 6)
+
+      assert [
+               %{code: "quantity_exceeds_ordered", detail: "12 billed in all against 10 ordered"},
+               %{
+                 code: "quantity_exceeds_received",
+                 detail: "6 billed against 4 received and not yet billed"
+               }
+             ] = second.exceptions
+
+      fits =
+        approved_bill!(context, "INV-2", [
+          order_line(accounts.stock, "15.00", 10, "6"),
+          order_line(accounts.stock, "10.00", 10, "4")
+        ])
+
+      assert {:ok, %{status: "posted", match_status: "matched"}} =
+               Payables.post_document(operator, 73, fits.id)
+    end
+
     test "holds on a received quantity short of the bill, a closed or replaced line, or another currency",
          context do
       %{operator: operator, accounts: accounts} = context
@@ -483,6 +516,80 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
       assert {:ok, %{match_status: "exception_approved"}} =
                Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Still fine"})
+
+      assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
+               Payables.post_document(operator, 73, bill.id)
+    end
+  end
+
+  describe "an approval covers the figures the approver saw" do
+    setup context do
+      bill =
+        approved_bill!(context, "INV-A", [order_line(context.accounts.stock, "30.00", 10, "12")])
+
+      {:ok, %{status: "held"}} = Payables.post_document(context.operator, 73, bill.id)
+      approver = TestFixtures.sign_in!(context.first_scope, 73, 98, [@approve_exceptions])
+      %{bill: bill, approver: approver}
+    end
+
+    test "holds again when another bill took more of the order line meanwhile", context do
+      %{operator: operator, accounts: accounts, bill: bill, approver: approver} = context
+
+      assert {:ok, %{match_status: "exception_approved"}} =
+               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Over-delivery"})
+
+      other = approved_bill!(context, "INV-B", [order_line(accounts.stock, "12.50", 10, "5")])
+      assert {:ok, %{status: "posted"}} = Payables.post_document(operator, 73, other.id)
+
+      assert {:ok, held} = Payables.post_document(operator, 73, bill.id)
+      assert %{status: "held", match_status: "held"} = held
+      assert [_, _, %{event: "held", lines: [match_line]}] = held.match_events
+      assert decimal?(match_line.previously_billed_quantity, 5)
+
+      assert [
+               %{code: "quantity_exceeds_ordered", detail: ordered},
+               %{code: "quantity_exceeds_received"}
+             ] =
+               match_line.exceptions
+
+      assert ordered == "17 billed in all against 10 ordered"
+
+      assert {:ok, %{match_status: "exception_approved"}} =
+               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Seen at 17"})
+
+      assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
+               Payables.post_document(operator, 73, bill.id)
+    end
+
+    test "posts over an approval when the exceptions are the same or smaller", context do
+      %{operator: operator, bill: bill, approver: approver} = context
+
+      {:ok, _} =
+        Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Over-delivery"})
+
+      assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
+               Payables.post_document(operator, 73, bill.id)
+    end
+
+    test "holds again when the price gap widened", context do
+      %{operator: operator, accounts: accounts, approver: approver} = context
+      bill = approved_bill!(context, "INV-C", [order_line(accounts.stock, "350", 11, "3")])
+      {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
+      {:ok, _} = Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Dearer"})
+
+      StubOrderSource.put!(%{id: 11, quantity: "4", unit_price: "90", received_quantity: "3"})
+
+      assert {:ok, %{status: "held", match_status: "held"}} =
+               Payables.post_document(operator, 73, bill.id)
+    end
+
+    test "posts over an approval when a shortfall narrowed but remains", context do
+      %{operator: operator, accounts: accounts, approver: approver} = context
+      bill = approved_bill!(context, "INV-D", [order_line(accounts.stock, "400", 11, "4")])
+      {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
+      {:ok, _} = Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Short"})
+
+      StubOrderSource.put!(%{id: 11, quantity: "4", unit_price: "100", received_quantity: "3.5"})
 
       assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
                Payables.post_document(operator, 73, bill.id)

@@ -46,13 +46,69 @@ defmodule Bilimbi.Finance.Payables.Matching do
     billed = billed_quantities(scope, company_id, ids, document.id)
     tolerances = tolerances(settings)
 
-    Enum.reduce_while(lines, {:ok, []}, fn line, {:ok, results} ->
+    lines
+    |> Enum.reduce_while({:ok, [], billed}, fn line, {:ok, results, billed} ->
       case match_line(scope, company_id, line, billed, tolerances, book) do
-        {:ok, result} -> {:cont, {:ok, results ++ [result]}}
-        {:error, reason} -> {:halt, {:error, {:order_source, reason}}}
+        {:ok, result} ->
+          billed =
+            Map.update(billed, line.order_line_id, line.quantity, &Decimal.add(&1, line.quantity))
+
+          {:cont, {:ok, results ++ [result], billed}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:order_source, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, results, _billed} -> {:ok, results}
+      error -> error
+    end
+  end
+
+  @doc """
+  Whether an approval covers a fresh match: `approved` is the match lines of
+  the hold that was approved, `lines` the fresh results. Each exception must
+  be one the approved line had, with figures no worse than the approver saw.
+  """
+  def covered?(approved, lines) do
+    Enum.all?(lines, fn line ->
+      case Enum.find(approved, &same_line?(&1, line)) do
+        nil -> line.exceptions == []
+        seen -> Enum.all?(line.exceptions, &no_worse?(&1.code, seen, line, seen_codes(seen)))
       end
     end)
   end
+
+  defp same_line?(seen, line),
+    do: seen.line_number == line.line_number and seen.order_line_id == line.order_line_id
+
+  defp seen_codes(seen), do: Enum.map(seen.exceptions, & &1.code)
+
+  defp no_worse?(code, seen, line, seen_codes) do
+    code in seen_codes and
+      case code do
+        "quantity_exceeds_ordered" -> Decimal.compare(overrun(line), overrun(seen)) != :gt
+        "quantity_exceeds_received" -> Decimal.compare(shortfall(line), shortfall(seen)) != :gt
+        "price_differs" -> Decimal.compare(price_gap(line), price_gap(seen)) != :gt
+        _other -> true
+      end
+  end
+
+  defp overrun(line) do
+    line.previously_billed_quantity
+    |> Decimal.add(line.billed_quantity)
+    |> Decimal.sub(line.ordered_quantity)
+  end
+
+  defp shortfall(line) do
+    line.received_quantity
+    |> Decimal.sub(line.previously_billed_quantity)
+    |> Decimal.sub(line.billed_quantity)
+    |> Decimal.negate()
+  end
+
+  defp price_gap(line),
+    do: line.billed_unit_price |> Decimal.sub(line.ordered_unit_price) |> Decimal.abs()
 
   @doc """
   The quantity billed against each order line, by ID: the quantities of

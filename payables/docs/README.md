@@ -164,8 +164,13 @@ held: nothing posts to the ledger, it takes no number, and `post_document/3`
 returns the held document. A user holding `finance.payables.match.approve`
 approves the exceptions with a reason (`approve_match_exception/4`); the
 next posting matches afresh and posts when every exception it finds is
-one the approval covers, or when it finds none, as when the goods arrived
-meanwhile. A fresh exception holds the bill again for a new approval.
+one the approval covers with figures no worse than the approver saw (the
+hold it follows records them), or when it finds none, as when the goods
+arrived meanwhile. A fresh exception, or the same one with more billed over
+the order, less received, or a wider price gap, holds the bill again for a
+new approval. A bill naming one order line on several lines is matched
+cumulatively: each line counts the quantities of the bill's earlier lines
+as already billed.
 
 Every attempt is a match event, append-only, with the actor, any
 impersonator, the database's time, and for a hold or a posting one match

@@ -472,7 +472,7 @@ defmodule Bilimbi.Finance.Payables do
   also holds the source's view capabilities; the source refusing is
   `{:error, {:order_source, reason}}`. Every line within tolerance, or every
   exception found covered by an approval (`approve_match_exception/4`) of
-  the bill's last hold, posts the bill and records a `posted` match event
+  the bill's last hold, with figures no worse than that hold recorded, posts the bill and records a `posted` match event
   with the figures compared. Otherwise the bill is not posted: it becomes
   (or stays) `held`, a `held` event records each line's figures and
   exceptions, and the result is `{:ok, document}` with `status` `held` and
@@ -515,13 +515,11 @@ defmodule Bilimbi.Finance.Payables do
       with {:ok, settings} <- fetch_settings(scope, company_id),
            {:ok, book} <- Ledger.get_book(scope, company_id),
            {:ok, lines} <- Matching.evaluate(scope, company_id, document, settings, book) do
-        found = exception_set(lines)
-
         cond do
-          found == MapSet.new() ->
+          Enum.all?(lines, &(&1.exceptions == [])) ->
             {:ok, {:post, lines}}
 
-          MapSet.subset?(found, approved_exceptions(scope, company_id, document)) ->
+          Matching.covered?(approved_lines(scope, company_id, document), lines) ->
             {:ok, {:post, lines}}
 
           true ->
@@ -535,23 +533,17 @@ defmodule Bilimbi.Finance.Payables do
 
   defp match_for_posting(_scope, _company_id, _debit_note), do: {:ok, {:post, nil}}
 
-  defp exception_set(lines) do
-    for line <- lines, exception <- line.exceptions, into: MapSet.new() do
-      {line.line_number, exception.code}
-    end
-  end
-
-  # The exceptions the bill's latest approval covers: those of the hold it
-  # approved, or none when the latest event is not an approval.
-  defp approved_exceptions(scope, company_id, document) do
+  # The lines of the hold the bill's latest approval covers, with the figures
+  # the approver saw, or none when the latest event is not an approval.
+  defp approved_lines(scope, company_id, document) do
     events = scope |> match_events(company_id, [document.id]) |> Map.get(document.id, [])
 
     case Enum.reverse(events) do
       [%MatchEvent{event: "exception_approved"}, %MatchEvent{event: "held"} = held | _earlier] ->
-        exception_set(held.lines)
+        held.lines
 
       _other ->
-        MapSet.new()
+        []
     end
   end
 
@@ -596,8 +588,10 @@ defmodule Bilimbi.Finance.Payables do
   @doc """
   Approves a held bill's match exceptions with a `reason` (required): the
   exceptions its last hold recorded may then be posted over. The bill stays
-  held until `post_document/3` posts it, matching afresh; a fresh exception
-  the approval does not cover holds it again, for a new approval. Anything
+  held until `post_document/3` posts it, matching afresh; an exception the
+  approval does not cover, or one whose figures are worse than the hold the
+  approver saw (more billed over the order, less received, a wider price
+  gap), holds it again, for a new approval. Anything
   but a held bill is `{:error, :not_held}`; one whose last hold is already
   approved is `{:error, :already_approved}`. The approval is a match event
   naming the approver, with any impersonator, and the database's time.
