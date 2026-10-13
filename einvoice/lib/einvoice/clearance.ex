@@ -263,10 +263,12 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     end
   end
 
-  # The submissions stored since the document last became submittable whose
-  # final answer is missing (a crash, an outage, or a search that could not
-  # answer): any of them may have been accepted. Newest first.
-  defp unresolved_attempts(scope, company_id, document) do
+  @doc """
+  The submissions stored since the document last became submittable whose
+  final answer is missing (a crash, an outage, or a search that could not
+  answer): any of them may have been accepted. Newest first.
+  """
+  def unresolved_attempts(scope, company_id, document) do
     last_status =
       document.events
       |> Enum.filter(&(&1.event in Documents.status_events()))

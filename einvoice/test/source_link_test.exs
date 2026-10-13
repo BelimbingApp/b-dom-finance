@@ -506,6 +506,33 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
       assert length(Repo.all(Submission)) == 2
     end
 
+    test "lets an operator resubmit a document with an unresolved attempt",
+         %{operator: op, accounts: accounts} do
+      entry = sale_entry!(op, accounts, "document:17")
+      first = linked_invoice!(op, entry, "document:17")
+      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", "/api/v1.0/documentsubmissions/"} => &Req.Test.transport_error(&1, :timeout),
+        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
+      })
+
+      assert {:retry, :authority_unavailable} =
+               SubmitWorker.handle_job(args(first), execution(op))
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", "/api/v1.0/documentsubmissions/"} =>
+          &TestFixtures.accepted_response(&1, "INV-2"),
+        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
+      })
+
+      assert :ok = SubmitWorker.handle_job(args(second), execution(op))
+
+      assert {:ok, %{job_id: _}} = Einvoice.submit_document(op, 73, first.id)
+    end
+
     test "cancels the source when the earlier attempt is not at the authority",
          %{operator: op, accounts: accounts} do
       entry = sale_entry!(op, accounts, "document:17")
