@@ -34,7 +34,9 @@ defmodule Bilimbi.Finance.Attachments do
   stored once, hashed, and retained until the company's retention years
   (`get_retention/2`; seven until the company lengthens it) have passed
   after the end of the financial year the record's date falls in, the
-  ledger's fiscal year when one covers the date, else the calendar year.
+  ledger's fiscal year when one covers the date, else the company's year end
+  projected in twelve-month steps from its nearest opened year (a company with
+  no fiscal year at all takes 31 December).
   Base refuses to delete the bytes before then, and a legal hold refuses it
   after. A change of retention (`extend_retention/4`, `place_hold/4`,
   `release_hold/4`) is made in Base Artifacts first, after a short
@@ -192,8 +194,10 @@ defmodule Bilimbi.Finance.Attachments do
   @doc """
   The retain-until a document dated `date` gets now: the company's retention
   years after the end of the financial year the date falls in (the ledger's
-  fiscal year covering it when the company has opened one, else the calendar
-  year), at the end of that day in UTC. Reads the ledger's fiscal years, so
+  fiscal year covering it when the company has opened one, else the company's
+  year end projected in twelve-month steps from its nearest opened year, and
+  31 December only for a company with no fiscal year), at the end of that day
+  in UTC. Reads the ledger's fiscal years, so
   it also needs `finance.ledger.view`.
   """
   @spec retain_until(Scope.t(), term(), Date.t()) ::

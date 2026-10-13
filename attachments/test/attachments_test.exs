@@ -67,7 +67,23 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert {:ok, ~U[2034-06-30 23:59:59.999999Z]} =
                Attachments.retain_until(operator, 73, ~D[2027-03-15])
 
-      # A date no fiscal year covers falls back to its calendar year.
+      # A date after the last opened year takes the company's own year end.
+      assert {:ok, ~U[2035-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2027-08-15])
+
+      assert {:ok, ~U[2036-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2029-01-10])
+
+      # A date before the first opened year projects backward from it.
+      assert {:ok, ~U[2032-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2025-02-01])
+
+      assert {:ok, ~U[2033-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2026-06-30])
+    end
+
+    test "a company without a fiscal year counts from the calendar year's end",
+         %{operator: operator} do
       assert {:ok, ~U[2032-12-31 23:59:59.999999Z]} =
                Attachments.retain_until(operator, 73, ~D[2025-02-01])
     end

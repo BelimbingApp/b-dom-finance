@@ -45,7 +45,9 @@ captured it when, and never changed afterwards.
   until the company lengthens it; `set_retention/3` refuses fewer or the
   same, and so does the database) after the end of the financial year its
   record's date falls in: the ledger's fiscal year covering the date when
-  the company has opened one, else the calendar year; the day ends in UTC.
+  the company has opened one, else the company's year end projected in
+  twelve-month steps from its nearest opened year (31 December only for a
+  company with no fiscal year at all); the day ends in UTC.
   The years and the original retain-until are kept on the attachment. Base
   refuses to delete the bytes before retain-until, and `purge_expired` never
   selects them; a legal hold refuses deletion after it. `extend_retention/4`
