@@ -16,7 +16,8 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
   match event with the figures it compared, line by line, and the exceptions
   it found: `held` when a line fell outside tolerance, `posted` when the bill
   posted, and `exception_approved` when a user approved the recorded
-  exceptions with a reason. Events, their lines, and their exceptions are
+  exceptions with a reason, naming the `held` event it approved
+  (`held_event_id`). Events, their lines, and their exceptions are
   append-only, name the actor, and are stamped by the database. The
   document's transition trigger is replaced so that a held bill posts only
   after an approval later than its last hold, unless the posting match found
@@ -201,6 +202,7 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
         document_id bigint NOT NULL,
         event varchar(20) NOT NULL,
         reason varchar(500),
+        held_event_id bigint,
         actor_user_id bigint NOT NULL,
         actor_impersonator_id bigint,
         occurred_at timestamp(6) NOT NULL,
@@ -210,12 +212,20 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
         CONSTRAINT finance_payables_match_events_event
           CHECK (event IN ('held', 'exception_approved', 'posted')),
         CONSTRAINT finance_payables_match_events_reason
-          CHECK (event <> 'exception_approved' OR reason IS NOT NULL)
+          CHECK (event <> 'exception_approved' OR reason IS NOT NULL),
+        CONSTRAINT finance_payables_match_events_held_event
+          CHECK (held_event_id IS NULL OR event = 'exception_approved')
       )
       """,
       """
       CREATE UNIQUE INDEX finance_payables_match_events_id_company_unique
         ON finance_payables_match_events (id, company_id)
+      """,
+      """
+      ALTER TABLE finance_payables_match_events
+        ADD CONSTRAINT finance_payables_match_events_held_event_fkey
+          FOREIGN KEY (held_event_id, company_id)
+          REFERENCES finance_payables_match_events (id, company_id) ON DELETE RESTRICT
       """,
       """
       CREATE INDEX finance_payables_match_events_document_index
@@ -318,7 +328,7 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
     [
       # A match event is recorded for a bill in the status its kind expects,
       # and the database stamps its time. An approval needs a hold to
-      # approve and approves it once; a posting of a held bill needs that
+      # approve, names that hold, and approves it once; a posting of a held bill needs that
       # approval unless it found no exception (the transition trigger reads
       # the exceptions, which land after the event).
       """
@@ -327,11 +337,12 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
       DECLARE
         document record;
         latest text;
+        latest_id bigint;
       BEGIN
         SELECT document_type, status INTO document
         FROM finance_payables_documents WHERE id = NEW.document_id;
 
-        SELECT event INTO latest FROM finance_payables_match_events
+        SELECT event, id INTO latest, latest_id FROM finance_payables_match_events
         WHERE document_id = NEW.document_id ORDER BY id DESC LIMIT 1;
 
         IF document.document_type <> 'bill' THEN
@@ -349,6 +360,12 @@ defmodule Bilimbi.Finance.Payables.Migrations.AddMatching do
         IF NEW.event = 'exception_approved'
            AND (document.status <> 'held' OR latest IS DISTINCT FROM 'held') THEN
           RAISE EXCEPTION 'payables document % has no held match exception to approve',
+            NEW.document_id
+            USING ERRCODE = 'restrict_violation';
+        END IF;
+
+        IF NEW.event = 'exception_approved' AND NEW.held_event_id IS DISTINCT FROM latest_id THEN
+          RAISE EXCEPTION 'payables document % approval must name its latest hold',
             NEW.document_id
             USING ERRCODE = 'restrict_violation';
         END IF;

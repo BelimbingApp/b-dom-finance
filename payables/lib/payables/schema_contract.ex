@@ -417,6 +417,7 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
             "document_id" => column(:bigint, false),
             "event" => column({:varchar, 20}, false),
             "reason" => column({:varchar, 500}, true),
+            "held_event_id" => column(:bigint, true),
             "actor_user_id" => column(:bigint, false),
             "actor_impersonator_id" => column(:bigint, true),
             "occurred_at" => column({:timestamp, 6}, false)
@@ -430,7 +431,9 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
         },
         foreign_keys: %{
           "finance_payables_match_events_document_fkey" =>
-            company_reference("document_id", "finance_payables_documents")
+            company_reference("document_id", "finance_payables_documents"),
+          "finance_payables_match_events_held_event_fkey" =>
+            company_reference("held_event_id", "finance_payables_match_events")
         },
         checks: %{
           "finance_payables_match_events_event" =>
@@ -439,7 +442,9 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
                 "'exception_approved'::character varying, 'posted'::character varying])::text[])"
             ),
           "finance_payables_match_events_reason" =>
-            check("((event)::text <> 'exception_approved'::text) OR (reason IS NOT NULL)")
+            check("((event)::text <> 'exception_approved'::text) OR (reason IS NOT NULL)"),
+          "finance_payables_match_events_held_event" =>
+            check("(held_event_id IS NULL) OR ((event)::text = 'exception_approved'::text)")
         }
       },
       %{

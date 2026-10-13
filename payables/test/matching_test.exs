@@ -27,6 +27,16 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     approved
   end
 
+  defp approve(context, approver, bill, reason) do
+    {:ok, %{match_events: events}} = Payables.get_document(context.operator, 73, bill.id)
+    held = events |> Enum.filter(&(&1.event == "held")) |> List.last()
+
+    Payables.approve_match_exception(approver, 73, bill.id, %{
+      reason: reason,
+      held_event_id: held.id
+    })
+  end
+
   defp tolerances!(context, attributes) do
     {:ok, settings} =
       Payables.put_settings(
@@ -442,6 +452,36 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
                Payables.approve_match_exception(operator, 73, -1, %{reason: "Fine"})
     end
 
+    test "names the hold approved, and refuses a hold it did not see", context do
+      %{first_scope: system, operator: operator, bill: bill} = context
+      approver = TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
+      {:ok, %{match_events: [%{id: seen}]}} = Payables.get_document(operator, 73, bill.id)
+
+      assert {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
+
+      assert {:error, :stale_hold} =
+               Payables.approve_match_exception(approver, 73, bill.id, %{
+                 reason: "Short",
+                 held_event_id: seen
+               })
+
+      assert {:error, changeset} =
+               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Short"})
+
+      assert %{held_event_id: ["can't be blank"]} = errors_on(changeset)
+
+      {:ok, %{match_events: [%{id: ^seen}, %{id: current, event: "held"}]}} =
+        Payables.get_document(operator, 73, bill.id)
+
+      assert {:ok, %{match_events: [_, _, approval]}} =
+               Payables.approve_match_exception(approver, 73, bill.id, %{
+                 reason: "Short",
+                 held_event_id: current
+               })
+
+      assert %{event: "exception_approved", held_event_id: ^current} = approval
+    end
+
     test "records the approver and reason, then posts over the approved exceptions", context do
       %{first_scope: system, operator: operator, bill: bill} = context
       TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
@@ -453,9 +493,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
         )
 
       assert {:ok, approved} =
-               Payables.approve_match_exception(approver, 73, bill.id, %{
-                 reason: " Short delivery agreed with the party "
-               })
+               approve(context, approver, bill, " Short delivery agreed with the party ")
 
       assert %{status: "held", match_status: "exception_approved"} = approved
 
@@ -472,7 +510,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
              ] = approved.match_events
 
       assert {:error, :already_approved} =
-               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Again"})
+               approve(context, approver, bill, "Again")
 
       assert {:ok, posted} = Payables.post_document(operator, 73, bill.id)
 
@@ -499,7 +537,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       approver = TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
 
       {:ok, _} =
-        Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Short delivery agreed"})
+        approve(context, approver, bill, "Short delivery agreed")
 
       StubOrderSource.put!(%{
         id: 11,
@@ -515,7 +553,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       assert [%{code: "order_not_open"}, %{code: "quantity_exceeds_received"}] = exceptions
 
       assert {:ok, %{match_status: "exception_approved"}} =
-               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Still fine"})
+               approve(context, approver, bill, "Still fine")
 
       assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
                Payables.post_document(operator, 73, bill.id)
@@ -536,7 +574,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       %{operator: operator, accounts: accounts, bill: bill, approver: approver} = context
 
       assert {:ok, %{match_status: "exception_approved"}} =
-               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Over-delivery"})
+               approve(context, approver, bill, "Over-delivery")
 
       other = approved_bill!(context, "INV-B", [order_line(accounts.stock, "12.50", 10, "5")])
       assert {:ok, %{status: "posted"}} = Payables.post_document(operator, 73, other.id)
@@ -555,7 +593,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       assert ordered == "17 billed in all against 10 ordered"
 
       assert {:ok, %{match_status: "exception_approved"}} =
-               Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Seen at 17"})
+               approve(context, approver, bill, "Seen at 17")
 
       assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
                Payables.post_document(operator, 73, bill.id)
@@ -565,7 +603,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       %{operator: operator, bill: bill, approver: approver} = context
 
       {:ok, _} =
-        Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Over-delivery"})
+        approve(context, approver, bill, "Over-delivery")
 
       assert {:ok, %{status: "posted", match_status: "posted_with_exceptions"}} =
                Payables.post_document(operator, 73, bill.id)
@@ -575,7 +613,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       %{operator: operator, accounts: accounts, approver: approver} = context
       bill = approved_bill!(context, "INV-C", [order_line(accounts.stock, "350", 11, "3")])
       {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
-      {:ok, _} = Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Dearer"})
+      {:ok, _} = approve(context, approver, bill, "Dearer")
 
       StubOrderSource.put!(%{id: 11, quantity: "4", unit_price: "90", received_quantity: "3"})
 
@@ -587,7 +625,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       %{operator: operator, accounts: accounts, approver: approver} = context
       bill = approved_bill!(context, "INV-D", [order_line(accounts.stock, "400", 11, "4")])
       {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
-      {:ok, _} = Payables.approve_match_exception(approver, 73, bill.id, %{reason: "Short"})
+      {:ok, _} = approve(context, approver, bill, "Short")
 
       StubOrderSource.put!(%{id: 11, quantity: "4", unit_price: "100", received_quantity: "3.5"})
 

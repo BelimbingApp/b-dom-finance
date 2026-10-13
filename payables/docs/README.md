@@ -26,7 +26,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `approve_document/3` | `finance.payables.documents.approve` | Approves a draft |
 | `void_document/4` | `finance.payables.documents.approve` | Voids a draft or approved document with a `void_reason` |
 | `post_document/3` | `finance.payables.documents.post` | Posts an approved or held document to the ledger and numbers it; a bill naming order lines is matched first, and held instead when outside tolerance |
-| `approve_match_exception/4` | `finance.payables.match.approve` | Approves a held bill's match exceptions with a `reason`, so it may be posted over them |
+| `approve_match_exception/4` | `finance.payables.match.approve` | Approves a held bill's match exceptions with a `reason` and the `held_event_id` of the hold seen (`:stale_hold` when a newer hold exists), so it may be posted over them |
 | `get_document/3`, `list_documents/3`, `page_documents/3` | `finance.payables.view` | Documents with lines, tax lines, `debit_note_ids`, `match_status`, and `match_events`; a posted bill shows `outstanding`; `page_documents/3` pages newest first for a list |
 | `billed_quantities/3` | `finance.payables.view` | The quantity posted bills billed against each order line, less posted debit notes |
 | `post_payment/3` | `finance.payables.payments.post` | Posts a payment allocated to one party's posted bills |
@@ -162,8 +162,9 @@ quantity rule and to the price rule; none means an exact match. Every
 line within tolerance posts the bill as any other. Otherwise the bill is
 held: nothing posts to the ledger, it takes no number, and `post_document/3`
 returns the held document. A user holding `finance.payables.match.approve`
-approves the exceptions with a reason (`approve_match_exception/4`); the
-next posting matches afresh and posts when every exception it finds is
+approves the exceptions with a reason and the id of the hold seen
+(`approve_match_exception/4`; a hold recorded since is `:stale_hold`, and the
+page reloads the new figures); the next posting matches afresh and posts when every exception it finds is
 one the approval covers with figures no worse than the approver saw (the
 hold it follows records them), or when it finds none, as when the goods
 arrived meanwhile. A fresh exception, or the same one with more billed over
@@ -183,7 +184,7 @@ or `posted_with_exceptions`. The database refuses a held bill posting
 without an approval later than its last hold unless the posting match found
 no exception, a bill naming order lines posting without its `posted` match
 record in the same transaction, an approval of anything but a held bill
-whose last event is a hold, and any change to a match record.
+whose last event is a hold or that does not name that hold, and any change to a match record.
 
 The billed quantity is this module's own record: the quantities of posted
 bill lines naming an order line, less those of posted debit note lines
@@ -312,7 +313,8 @@ the rules the facade checks, so no other writer can break them:
 - a check keeps a line's order line and quantity together, and each
   tolerance kind with its value;
 - a trigger records a match event only for a bill in the status its kind
-  expects (an approval only for a held bill whose last event is a hold),
+  expects (an approval only for a held bill whose last event is a hold, which
+  it names),
   stamps its time, and refuses a match line or exception added to an event
   recorded in an earlier transaction; a check lists the exception codes;
 - a trigger refuses a line or tax line added to a document in a later

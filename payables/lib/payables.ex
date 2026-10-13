@@ -586,15 +586,18 @@ defmodule Bilimbi.Finance.Payables do
     do: record_match_event(scope, document, "posted", lines, %{})
 
   @doc """
-  Approves a held bill's match exceptions with a `reason` (required): the
-  exceptions its last hold recorded may then be posted over. The bill stays
-  held until `post_document/3` posts it, matching afresh; an exception the
+  Approves a held bill's match exceptions with a `reason` and the
+  `held_event_id` of the hold the approver saw (both required; the hold's
+  `id` in `match_events`): the exceptions that hold recorded may then be
+  posted over. A hold recorded since is `{:error, :stale_hold}`. The bill
+  stays held until `post_document/3` posts it, matching afresh; an exception the
   approval does not cover, or one whose figures are worse than the hold the
   approver saw (more billed over the order, less received, a wider price
-  gap), holds it again, for a new approval. Anything
-  but a held bill is `{:error, :not_held}`; one whose last hold is already
-  approved is `{:error, :already_approved}`. The approval is a match event
-  naming the approver, with any impersonator, and the database's time.
+  gap), holds it again, for a new approval. Anything but a held bill is
+  `{:error, :not_held}`; one whose last hold is already approved is
+  `{:error, :already_approved}`. The approval is a match event
+  naming the approver, with any impersonator, the hold, and the database's
+  time.
   """
   @spec approve_match_exception(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -603,32 +606,44 @@ defmodule Bilimbi.Finance.Payables do
              | :document_not_found
              | :not_held
              | :already_approved
+             | :stale_hold
              | Changeset.t()}
   def approve_match_exception(%Scope{} = scope, company_id, document_id, attributes)
       when is_map(attributes) do
     write(scope, company_id, @approve_match_exceptions, fn ->
       with {:ok, document} <- fetch_document(scope, company_id, document_id),
            :ok <- require_status(document, "held", :not_held),
-           :ok <- hold_unapproved(scope, company_id, document),
+           {:ok, held} <- latest_hold(scope, company_id, document),
+           :ok <- require_seen_hold(held, attributes),
            {:ok, _event} <-
              record_match_event(
                scope,
                document,
                "exception_approved",
                [],
-               Map.take(attributes, [:reason, "reason"])
+               Map.take(attributes, [:reason, "reason", :held_event_id, "held_event_id"])
              ) do
         {:ok, hd(document_views(scope, company_id, [document]))}
       end
     end)
   end
 
-  defp hold_unapproved(scope, company_id, document) do
+  defp latest_hold(scope, company_id, document) do
     events = scope |> match_events(company_id, [document.id]) |> Map.get(document.id, [])
 
     case List.last(events) do
-      %MatchEvent{event: "held"} -> :ok
+      %MatchEvent{event: "held"} = held -> {:ok, held}
       _other -> {:error, :already_approved}
+    end
+  end
+
+  # A missing or malformed id is left to the event's changeset to refuse.
+  defp require_seen_hold(held, attributes) do
+    seen = Map.get(attributes, :held_event_id, Map.get(attributes, "held_event_id"))
+
+    case Ecto.Type.cast(:integer, seen) do
+      {:ok, id} when is_integer(id) and id != held.id -> {:error, :stale_hold}
+      _seen -> :ok
     end
   end
 
@@ -1945,7 +1960,15 @@ defmodule Bilimbi.Finance.Payables do
 
   defp match_event_view(event) do
     event
-    |> Map.take([:id, :event, :reason, :actor_user_id, :actor_impersonator_id, :occurred_at])
+    |> Map.take([
+      :id,
+      :event,
+      :reason,
+      :held_event_id,
+      :actor_user_id,
+      :actor_impersonator_id,
+      :occurred_at
+    ])
     |> Map.put(
       :lines,
       Enum.map(event.lines, fn line ->

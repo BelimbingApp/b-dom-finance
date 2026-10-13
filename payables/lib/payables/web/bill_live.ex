@@ -105,7 +105,7 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
              scope(socket),
              socket.assigns.company_id,
              socket.assigns.document_id,
-             %{reason: reason}
+             %{reason: reason, held_event_id: held_event_id(socket.assigns.last_match)}
            ) do
         {:ok, _document} ->
           socket
@@ -136,6 +136,9 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
 
     {:noreply, load(socket)}
   end
+
+  defp held_event_id(%{event: "held", id: id}), do: id
+  defp held_event_id(_last_match), do: nil
 
   defp scope(socket), do: socket.assigns.current_scope.scope
 
@@ -206,6 +209,10 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
 
   defp exception_message(:not_held), do: "Only a held bill has exceptions to approve."
   defp exception_message(:already_approved), do: "These exceptions are already approved."
+
+  defp exception_message(:stale_hold),
+    do:
+      "The bill was matched again since this page loaded. Review the new figures and approve again."
 
   defp exception_message(:unauthorized),
     do: "You do not have permission to approve match exceptions."

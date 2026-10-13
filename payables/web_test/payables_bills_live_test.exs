@@ -186,6 +186,36 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
                Payables.get_document(keeper, 73, held.id)
     end
 
+    test "refuses an approval of a hold recorded after the page loaded", %{
+      conn: conn,
+      keeper: keeper,
+      accounts: accounts
+    } do
+      grant_capabilities!([@view, @post, @approve_exceptions | @ledger])
+      held = held_bill!(keeper, accounts)
+
+      {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills/#{held.id}")
+      view |> element("#payables-bill-open-approve-exception") |> render_click()
+
+      {:ok, %{status: "held"}} = Payables.post_document(keeper, 73, held.id)
+
+      view
+      |> form("#payables-bill-approve-exception-form", dialog: %{reason: "Short delivery agreed"})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", "matched again")
+      assert has_element?(view, "#payables-bill-match-status", "held")
+      assert has_element?(view, "#payables-bill-open-approve-exception")
+
+      view |> element("#payables-bill-open-approve-exception") |> render_click()
+
+      view
+      |> form("#payables-bill-approve-exception-form", dialog: %{reason: "Short delivery agreed"})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-success", "approved")
+    end
+
     test "approves a draft and voids a held bill with a reason", %{
       conn: conn,
       keeper: keeper,

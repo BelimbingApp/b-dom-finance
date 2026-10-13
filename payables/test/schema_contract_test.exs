@@ -174,8 +174,8 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
         "UPDATE finance_payables_documents SET status = 'approved', approved_by_user_id = 1 WHERE id = 1"
       ])
 
-    event = fn id, event, reason ->
-      "INSERT INTO finance_payables_match_events (id, tenant_id, company_id, document_id, event, reason, actor_user_id, occurred_at) VALUES (#{id}, 1, 1, 1, '#{event}', #{reason}, 1, '2000-01-01')"
+    event = fn id, event, reason, held ->
+      "INSERT INTO finance_payables_match_events (id, tenant_id, company_id, document_id, event, reason, held_event_id, actor_user_id, occurred_at) VALUES (#{id}, 1, 1, 1, '#{event}', #{reason}, #{held}, 1, '2000-01-01')"
     end
 
     match_line = fn id, event_id ->
@@ -192,7 +192,7 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
     # A hold, recorded whole and stamped by the database.
     assert {:ok, _} =
              in_transaction.([
-               event.(1, "held", "NULL"),
+               event.(1, "held", "NULL", "NULL"),
                match_line.(1, 1),
                exception.(1),
                "UPDATE finance_payables_documents SET status = 'held' WHERE id = 1"
@@ -211,30 +211,42 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
 
     # Held, with exceptions again and no approval: not posted.
     assert_raise Postgrex.Error, ~r/match exceptions are not approved/, fn ->
-      in_transaction.([event.(2, "posted", "NULL"), match_line.(3, 2), exception.(3), post])
+      in_transaction.([event.(2, "posted", "NULL", "NULL"), match_line.(3, 2), exception.(3), post])
     end
 
     assert_raise Postgrex.Error, ~r/no held match exception to approve/, fn ->
       in_transaction.([
         "UPDATE finance_payables_documents SET status = 'voided', voided_by_user_id = 1, void_reason = 'x' WHERE id = 1",
-        event.(3, "exception_approved", "'x'")
+        event.(3, "exception_approved", "'x'", "1")
       ])
     end
 
     assert_raise Postgrex.Error, ~r/finance_payables_match_events_reason/, fn ->
-      in_transaction.([event.(3, "exception_approved", "NULL")])
+      in_transaction.([event.(3, "exception_approved", "NULL", "1")])
     end
 
-    assert {:ok, _} = in_transaction.([event.(3, "exception_approved", "'agreed'")])
+    assert_raise Postgrex.Error, ~r/must name its latest hold/, fn ->
+      in_transaction.([event.(3, "exception_approved", "'agreed'", "NULL")])
+    end
+
+    assert_raise Postgrex.Error, ~r/must name its latest hold/, fn ->
+      in_transaction.([event.(3, "exception_approved", "'agreed'", "99")])
+    end
+
+    assert_raise Postgrex.Error, ~r/finance_payables_match_events_held_event"/, fn ->
+      in_transaction.([event.(3, "held", "NULL", "1")])
+    end
+
+    assert {:ok, _} = in_transaction.([event.(3, "exception_approved", "'agreed'", "1")])
 
     assert_raise Postgrex.Error, ~r/no held match exception to approve/, fn ->
-      in_transaction.([event.(4, "exception_approved", "'again'")])
+      in_transaction.([event.(4, "exception_approved", "'again'", "1")])
     end
 
     # Approved: posts with its match record, over the same exception.
     assert {:ok, _} =
              in_transaction.([
-               event.(4, "posted", "NULL"),
+               event.(4, "posted", "NULL", "NULL"),
                match_line.(4, 4),
                exception.(4),
                post
