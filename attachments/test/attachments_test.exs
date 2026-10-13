@@ -423,6 +423,30 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
     end
   end
 
+  describe "list_sources/2" do
+    test "lists each kind of record with attachments once, whatever its standing", %{
+      operator: operator,
+      viewer: viewer,
+      first_scope: scope
+    } do
+      assert {:ok, []} = Attachments.list_sources(operator, 73)
+
+      {:ok, first} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))
+      {:ok, _} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("b.txt"))
+      {:ok, _} = Attachments.remove(operator, 73, first.id, %{reason: "duplicate"})
+
+      assert {:ok, [%{source: "finance/test/record", source_label: "Test record"}]} =
+               Attachments.list_sources(viewer, 73)
+
+      blind = TestFixtures.sign_in!(scope, 73, 96, ~w(finance.attachments.view))
+      assert {:ok, []} = Attachments.list_sources(blind, 73)
+
+      none = TestFixtures.sign_in!(scope, 73, 97, ~w(finance.ledger.view))
+      assert {:error, :unauthorized} = Attachments.list_sources(none, 73)
+      assert {:error, :unauthorized} = Attachments.list_sources(operator, 74)
+    end
+  end
+
   describe "reading" do
     test "lists by record and by company, newest page after a number", %{operator: operator} do
       {:ok, a} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))

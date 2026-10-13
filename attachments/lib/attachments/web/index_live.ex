@@ -51,12 +51,9 @@ defmodule Bilimbi.Finance.Attachments.Web.IndexLive do
       end
 
     sources =
-      case Attachments.list_company_attachments(scope, company_id, status: "all", limit: 500) do
-        {:ok, all} ->
-          all
-          |> Enum.map(&{&1.source_label || &1.source, &1.source})
-          |> Enum.uniq()
-          |> Enum.sort()
+      case Attachments.list_sources(scope, company_id) do
+        {:ok, sources} ->
+          sources |> Enum.map(&{&1.source_label || &1.source, &1.source}) |> Enum.sort()
 
         {:error, _reason} ->
           []

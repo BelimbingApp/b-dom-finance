@@ -16,8 +16,8 @@ captured it when, and never changed afterwards.
   record is not final; `extend_retention/4`, `place_hold/4`, and
   `release_hold/4`; the company's `get_retention/2`, `set_retention/3`, and
   `list_retention_changes/2`; `retain_until/3`; and the reads
-  `list_attachments/4`, `list_company_attachments/3`, `get_attachment/3`,
-  and `read_attachment/3`.
+  `list_attachments/4`, `list_company_attachments/3`, `list_sources/2`,
+  `get_attachment/3`, and `read_attachment/3`.
 - `Bilimbi.Finance.Attachments.Source`, the behaviour a Finance module
   implements once per kind of record it keeps source documents for. The
   module names the record (`source_id/0`, `source_label/0`), names the

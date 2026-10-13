@@ -471,6 +471,33 @@ defmodule Bilimbi.Finance.Attachments do
   end
 
   @doc """
+  The kinds of record the company has attachments for, whatever their
+  standing, as `%{source, source_label}` by source ID: the filter options of
+  `list_company_attachments/3`'s `source`. Leaves out the sources the caller
+  cannot read.
+  """
+  @spec list_sources(Scope.t(), term()) ::
+          {:ok, [%{source: String.t(), source_label: String.t() | nil}]} | {:error, refusal()}
+  def list_sources(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok,
+       scope
+       |> attachments_query(company_id)
+       |> where([a], a.source_module in ^readable_source_modules(scope, company_id))
+       |> distinct(true)
+       |> select([a], {a.source, a.source_module})
+       |> Repo.all()
+       |> Enum.map(fn {source, name} ->
+         %{
+           source: source,
+           source_label: (module = Source.from_name(name)) && module.source_label()
+         }
+       end)
+       |> Enum.sort_by(& &1.source)}
+    end
+  end
+
+  @doc """
   One attachment: the record it supports (`source`, `source_label`,
   `document_id`, `document_label`, `document_date`), the file (`file_name`,
   `content_type`, `byte_size`, `sha256`), its retention (`retention_years`,
