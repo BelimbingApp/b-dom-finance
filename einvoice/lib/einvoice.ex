@@ -568,6 +568,7 @@ defmodule Bilimbi.Finance.Einvoice do
     write(scope, company_id, @submit, fn _company ->
       with {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
            {:ok, _prepared} <- Clearance.prepare(scope, company_id, document),
+           :ok <- source_free_to_submit(scope, company_id, document),
            :ok <- not_queued(company_id, document.id),
            {:ok, job} <-
              Queue.enqueue_for(scope, SubmitWorker, %{
@@ -584,6 +585,12 @@ defmodule Bilimbi.Finance.Einvoice do
         {:ok, %{job_id: job.id}}
       end
     end)
+  end
+
+  defp source_free_to_submit(scope, company_id, document) do
+    if Documents.source_taken?(scope, company_id, document),
+      do: {:error, :source_taken},
+      else: :ok
   end
 
   defp not_queued(company_id, document_id) do

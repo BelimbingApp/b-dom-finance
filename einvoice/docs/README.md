@@ -283,9 +283,11 @@ a note whose original is linked and that names no `source` is refused with
 a `source` changeset error, so the owner's correction is the only one.
 A document is not submitted while another standing document links one of
 its sources: `submit_document/3` refuses it (`{:error, :source_taken}`), and
-a job that finds the source taken since records an `unsendable` event with
-the reason and stops (`{:cancel, :source_taken}`); it is submitted once the
-other document no longer stands.
+a job that is about to send, under the company lock, and finds the source
+taken since records an `unsendable` event with the reason and stops
+(`{:cancel, :source_taken}`); it is submitted once the other document no
+longer stands. An earlier attempt that never got an answer is looked up at
+the authority first, and recorded if the authority holds it.
 A consolidated document whose sources are all linked carries their links
 and never posts either; sources with links and without do not consolidate
 together (`{:error, :mixed_source_links}`). A document issued without a
