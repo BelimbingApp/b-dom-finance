@@ -37,11 +37,16 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
     {:ok, _book} = Ledger.open_book(keeper, 73, %{currency_code: "XTS", minor_units: 2})
 
     accounts =
-      for {key, code, type} <- [stock: {"1200", "asset"}, payable: {"2000", "liability"}]
-                               |> Enum.map(fn {key, {code, type}} -> {key, code, type} end),
+      for {key, code, type} <-
+            [stock: {"1200", "asset"}, payable: {"2000", "liability"}]
+            |> Enum.map(fn {key, {code, type}} -> {key, code, type} end),
           into: %{} do
         {:ok, account} =
-          Ledger.create_account(keeper, 73, %{code: code, name: "Account #{code}", account_type: type})
+          Ledger.create_account(keeper, 73, %{
+            code: code,
+            name: "Account #{code}",
+            account_type: type
+          })
 
         {key, account}
       end
@@ -95,7 +100,10 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       accounts: accounts
     } do
       grant_capabilities!(@view)
-      plain = bill!(keeper, "INV-1", [%{description: "Fee", account_id: accounts.stock.id, amount: "5"}])
+
+      plain =
+        bill!(keeper, "INV-1", [%{description: "Fee", account_id: accounts.stock.id, amount: "5"}])
+
       held = held_bill!(keeper, accounts)
 
       {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills")
@@ -222,7 +230,10 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       accounts: accounts
     } do
       grant_capabilities!([@view, @approve])
-      draft = bill!(keeper, "INV-1", [%{description: "Fee", account_id: accounts.stock.id, amount: "5"}])
+
+      draft =
+        bill!(keeper, "INV-1", [%{description: "Fee", account_id: accounts.stock.id, amount: "5"}])
+
       held = held_bill!(keeper, accounts)
 
       {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills/#{draft.id}")

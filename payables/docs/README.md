@@ -183,8 +183,8 @@ tolerances in force, and the exceptions found with a plain-language detail.
 or `posted_with_exceptions`. The database refuses a held bill posting
 without an approval later than its last hold unless the posting match found
 no exception, a bill naming order lines posting without its `posted` match
-record in the same transaction, an approval of anything but a held bill
-whose last event is a hold or that does not name that hold, and any change to a match record.
+record in the same transaction, an approval that does not name the last
+hold of a held bill, and any change to a match record.
 
 The billed quantity is this module's own record: the quantities of posted
 bill lines naming an order line, less those of posted debit note lines

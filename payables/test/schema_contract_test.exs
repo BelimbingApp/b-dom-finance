@@ -211,7 +211,12 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
 
     # Held, with exceptions again and no approval: not posted.
     assert_raise Postgrex.Error, ~r/match exceptions are not approved/, fn ->
-      in_transaction.([event.(2, "posted", "NULL", "NULL"), match_line.(3, 2), exception.(3), post])
+      in_transaction.([
+        event.(2, "posted", "NULL", "NULL"),
+        match_line.(3, 2),
+        exception.(3),
+        post
+      ])
     end
 
     assert_raise Postgrex.Error, ~r/no held match exception to approve/, fn ->
