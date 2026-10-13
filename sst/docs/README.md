@@ -197,8 +197,8 @@ are computed from the rounded boxes.
 mapped to a rated box of another rate, or to a value box with tax. Either
 list keeps the return from finalising.
 
-**Ledger reconciliation.** For each tax account a code of the form posts
-to, the figures compare the account's ledger debits and credits over the
+**Ledger reconciliation.** For each tax account a code of the form (or an
+unmapped code) posted to in the period, the figures compare the account's ledger debits and credits over the
 period with what every document posted to it: receivables invoices credit
 their tax and credit notes debit it; payables bills debit theirs and debit
 notes credit it. The `difference`, ledger credits less debits less the
@@ -247,7 +247,9 @@ whether they equal it: posted documents never change and later ones carry
 later entry numbers, so they do.
 
 A finalised return also shows `posted_since`: the boxes that documents
-dated in its period and posted after it would change. A document a period
+dated in its period and posted after it would change (nil for an actor
+without the receivables, payables, and ledger view grants, who still reads
+the snapshot). A document a period
 missed is never silently left out; it is reported by an amendment.
 
 `discard_return/4` closes an open return with a reason instead; it stays on

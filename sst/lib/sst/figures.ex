@@ -54,23 +54,26 @@ defmodule Bilimbi.Finance.Sst.Figures do
          {:ok, receivables} <- Receivables.tax_totals(scope, company_id, window),
          {:ok, payables} <- Payables.tax_totals(scope, company_id, window),
          {:ok, received} <- received(scope, company_id, window, payment_basis?),
-         {:ok, accounts} <- Ledger.list_accounts(scope, company_id),
-         {:ok, codes} <- tax_codes(scope, company_id) do
+         {:ok, accounts} <- Ledger.list_accounts(scope, company_id) do
       mappings = Mappings.at(scope, company_id, mapping_number)
 
       accrual =
         Enum.map(receivables, &receivables_row/1) ++ Enum.map(payables, &payables_row/1)
 
+      # On the payment basis, receivables' codes mapped to service tax
+      # boxes count what was received instead of what was invoiced.
       read =
         if payment_basis?,
           do:
             Enum.reject(accrual, &(&1.source == "receivables" and service?(&1, mappings))) ++
-              Enum.map(received, &received_row/1),
+              (received |> Enum.map(&received_row/1) |> Enum.filter(&service?(&1, mappings))),
           else: accrual
 
       routed = Enum.map(read, &route(&1, mappings, tax_type))
       sources = for {:counted, row} <- routed, do: row
-      unmapped = for {:unmapped, row} <- routed, do: row
+
+      unmapped =
+        for({:unmapped, row} <- routed, do: row) |> Enum.uniq_by(&{&1.source, &1.tax_code_id})
 
       sums = sums(sources, adjustments)
 
@@ -93,7 +96,7 @@ defmodule Bilimbi.Finance.Sst.Figures do
            |> Enum.map(fn {row, n} -> Map.put(row, :line_number, n) end),
          unmapped: unmapped,
          rate_mismatches: Enum.filter(sources, & &1.rate_mismatch),
-         accounts: reconcile(accrual, tax_type, mappings, codes, totals.rows, accounts)
+         accounts: reconcile(accrual, tax_type, mappings, totals.rows, accounts)
        }}
     end
   end
@@ -107,15 +110,6 @@ defmodule Bilimbi.Finance.Sst.Figures do
         company_id,
         window ++ [unpaid_months: @unpaid_months]
       )
-
-  defp tax_codes(scope, company_id) do
-    with {:ok, receivables} <- Receivables.list_tax_codes(scope, company_id),
-         {:ok, payables} <- Payables.list_tax_codes(scope, company_id) do
-      {:ok,
-       Enum.map(receivables, &Map.put(&1, :source, "receivables")) ++
-         Enum.map(payables, &Map.put(&1, :source, "payables"))}
-    end
-  end
 
   # Source rows in one shape: what a document carried, signed by whether it
   # adds to its box (`sign`) or deducts.
@@ -264,27 +258,15 @@ defmodule Bilimbi.Finance.Sst.Figures do
     end)
   end
 
-  # Each tax account a code of this form (or an unmapped code) posts to,
-  # its debits and credits over the period against what every document
-  # posted to it: receivables' invoices credit their tax and credit notes
-  # debit it; payables' bills debit theirs and debit notes credit it.
-  defp reconcile(accrual, tax_type, mappings, codes, ledger_rows, accounts) do
-    form_code? = fn source, tax_code_id ->
-      case Map.get(mappings, {source, tax_code_id}) do
-        nil -> true
-        %{box: nil} -> false
-        %{box: box} -> Form.mapped_tax_type(box) == tax_type
-      end
-    end
-
+  # Each tax account a code of this form (or an unmapped code) posted to
+  # in the period, its debits and credits over the period against what
+  # every document posted to it: receivables' invoices credit their tax and
+  # credit notes debit it; payables' bills debit theirs and debit notes
+  # credit it. Only the period's own rows name the accounts, so a finalised
+  # return's reconciliation reproduces whatever tax codes say later.
+  defp reconcile(accrual, tax_type, mappings, ledger_rows, accounts) do
     account_ids =
-      (for(row <- accrual, form_code?.(row.source, row.tax_code_id), do: row.account_id) ++
-         for(
-           code <- codes,
-           match?(%{box: box} when is_binary(box), Map.get(mappings, {code.source, code.id})),
-           form_code?.(code.source, code.id),
-           do: code.account_id
-         ))
+      for(row <- accrual, form_code?(row, mappings, tax_type), do: row.account_id)
       |> Enum.uniq()
 
     by_id = Map.new(accounts, &{&1.id, &1})
@@ -313,6 +295,14 @@ defmodule Bilimbi.Finance.Sst.Figures do
     |> Enum.sort_by(& &1.account_code)
     |> Enum.with_index(1)
     |> Enum.map(fn {row, n} -> Map.put(row, :line_number, n) end)
+  end
+
+  defp form_code?(row, mappings, tax_type) do
+    case Map.get(mappings, {row.source, row.tax_code_id}) do
+      nil -> true
+      %{box: nil} -> false
+      %{box: box} -> Form.mapped_tax_type(box) == tax_type
+    end
   end
 
   defp document_sides(accrual, account_id) do

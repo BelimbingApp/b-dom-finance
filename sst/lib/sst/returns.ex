@@ -165,13 +165,14 @@ defmodule Bilimbi.Finance.Sst.Returns do
         period_ended: period_ended?(tax_return)
       })
 
-    with {:ok, figures} <- figures(scope, company_id, tax_return, registration, status),
-         {:ok, posted_since} <-
-           posted_since(scope, company_id, tax_return, registration, status, figures) do
+    with {:ok, figures} <- figures(scope, company_id, tax_return, registration, status) do
       {:ok,
        base
        |> Map.put(:figures, figures)
-       |> Map.put(:posted_since, posted_since)
+       |> Map.put(
+         :posted_since,
+         posted_since(scope, company_id, tax_return, registration, status, figures)
+       )
        |> Map.put(:amends, amends(scope, company_id, tax_return, figures))}
     end
   end
@@ -277,30 +278,35 @@ defmodule Bilimbi.Finance.Sst.Returns do
 
   # What the documents dated in a finalised return's period show now,
   # under the same mappings and adjustments: each box that differs, so a
-  # document posted after finalising is never silently left out.
+  # document posted after finalising is never silently left out. Nil when
+  # the actor may not read the documents; the snapshot itself needs only
+  # the SST grant.
   defp posted_since(scope, company_id, tax_return, registration, "finalised", figures) do
     event = finalised_event(tax_return)
 
-    with {:ok, now} <-
-           Figures.compute(
-             scope,
-             company_id,
-             tax_return,
-             registration,
-             standing(tax_return.adjustments, event.through_adjustment_number),
-             through_mapping_number: event.through_mapping_number
-           ) do
-      changed =
-        if now.through_entry_number == figures.through_entry_number,
-          do: [],
-          else: box_differences(now.boxes, figures.boxes)
+    case Figures.compute(
+           scope,
+           company_id,
+           tax_return,
+           registration,
+           standing(tax_return.adjustments, event.through_adjustment_number),
+           through_mapping_number: event.through_mapping_number
+         ) do
+      {:ok, now} ->
+        changed =
+          if now.through_entry_number == figures.through_entry_number,
+            do: [],
+            else: box_differences(now.boxes, figures.boxes)
 
-      {:ok, %{through_entry_number: now.through_entry_number, boxes: changed}}
+        %{through_entry_number: now.through_entry_number, boxes: changed}
+
+      {:error, _reason} ->
+        nil
     end
   end
 
   defp posted_since(_scope, _company_id, _tax_return, _registration, _status, _figures),
-    do: {:ok, nil}
+    do: nil
 
   # An amendment's figures against the finalised figures of the return it
   # amends, box by box.

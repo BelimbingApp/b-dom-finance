@@ -325,6 +325,15 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
 
       assert {:ok, %{reproduced: true}} = Sst.reproduce_return(operator, 73, tax_return.id)
 
+      # The snapshot reads with the SST grant alone; what posted since needs
+      # the documents' grants.
+      viewer = TestFixtures.sign_in!(context.first_scope, 73, 93, ["finance.sst.view"])
+
+      assert {:ok, %{figures: figures, posted_since: nil}} =
+               Sst.get_return(viewer, 73, tax_return.id)
+
+      assert figures == report.figures
+
       assert {:error, :return_finalised} =
                Sst.add_adjustment(operator, 73, tax_return.id, %{
                  box: "13d",

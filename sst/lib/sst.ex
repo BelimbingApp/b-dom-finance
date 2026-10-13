@@ -308,7 +308,8 @@ defmodule Bilimbi.Finance.Sst do
   `currency_code`, `minor_units`, and the `through_entry_number` and
   `through_mapping_number` read at. An open return's figures are read now;
   a finalised one's are its stored snapshot, with `posted_since`, the boxes
-  documents posted after it would change. An amendment shows `amends`,
+  documents posted after it would change (nil when the actor may not read
+  the documents; the snapshot needs only `finance.sst.view`). An amendment shows `amends`,
   the amended return and the boxes that changed.
   """
   @spec get_return(Scope.t(), term(), term()) ::
