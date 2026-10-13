@@ -108,8 +108,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   """
   @spec prepare(Scope.t(), pos_integer(), map()) ::
           {:ok, map()}
-          | {:error,
-             :not_submittable | :source_taken | :missing_credentials | :signing_key_required}
+          | {:error, :not_submittable | :missing_credentials | :signing_key_required}
   def prepare(%Scope{} = scope, company_id, document) do
     credentials = Configuration.credentials(scope, company_id, document.environment)
     version = Configuration.document_version(scope, company_id)
@@ -124,9 +123,6 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       document.status in Consolidation.releasing_events() and
           Consolidation.consolidated?(document) ->
         {:error, :not_submittable}
-
-      Documents.source_taken?(scope, company_id, document) ->
-        {:error, :source_taken}
 
       is_nil(credentials.client_id) or is_nil(credentials.client_secret) ->
         {:error, :missing_credentials}
