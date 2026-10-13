@@ -24,11 +24,14 @@ here; they govern this code and are not copied here.
   fails. Namespaces are `Bilimbi.Finance.<Module>` with OTP app
   `:bilimbi_finance_<folder>`.
 - Domain code uses only meta-terms: book, account, account type, entry, line,
-  debit, credit, fiscal document, party, submission, status event, and receivables'
-  customer, series, tax code, invoice, credit note, payment, allocation. A fixed
-  chart of accounts or a currency is a company's data, never a code
-  identifier, schema constant, inclusion list, or default. The five account
-  types are the one fixed classification. A tax authority's own rules,
+  debit, credit, fiscal document, party, submission, status event, receivables'
+  customer, series, tax code, invoice, credit note, payment, allocation, and
+  reconciliation's bank account, statement, statement line, match,
+  reconciliation. A fixed chart of accounts or a currency is a company's data,
+  never a code identifier, schema constant, inclusion list, or default; so is
+  a bank's CSV layout, which is a bank account's `import_mapping`
+  (`reconciliation/lib/reconciliation/mapping.ex`), never a parser per bank.
+  The five account types are the one fixed classification. A tax authority's own rules,
   formats, and code lists live only behind `Bilimbi.Finance.Einvoice.Authority`
   in that authority's namespace (`einvoice/lib/einvoice/my_invois/`).
 - Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
@@ -56,6 +59,15 @@ here; they govern this code and are not copied here.
   a broadcast inside a caller's transaction announces uncommitted entries.
   A sandboxed test cannot commit; deliver the notice itself
   (`ledger/test/postings_test.exs`).
+- Match a statement line to a ledger entry, and undo it, only through
+  `Bilimbi.Finance.Reconciliation.match/4` and `unmatch/4`: a match's
+  standing is its latest event, never a column, and the database refuses a
+  line or entry in two standing matches. Read a finalised reconciliation
+  from its stored figures and items (`get_reconciliation/3`); reproduce
+  them with `preview_reconciliation/5` at the three `through_*` numbers it
+  recorded, never by recomputing without them. A statement's CSV bytes are
+  read once at import and not kept; the statement is the record, and its
+  `file_sha256` and line fingerprints are what refuse a repeat.
 - Base Menu already declares the `finance` menu root; a module contributes
   its items with `parent: "finance"` and never declares the root, or boot
   fails on a duplicate id.

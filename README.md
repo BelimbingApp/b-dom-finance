@@ -11,6 +11,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
 | [`reports/`](reports/docs/README.md) | `finance/reports` | profit and loss, balance sheet, cash position, and headline figures read live from the ledger, with the entries behind each figure |
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
+| [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference and kept with their figures |
 
 The ledger is the first module. Other Finance modules, such as receivables,
 payables, e-invoicing, and reports, sit beside it as sibling module folders
@@ -19,7 +20,10 @@ API. The ledger, receivables, and payables expose their APIs with no pages,
 menu entries, or agent operations. E-invoicing issues documents through its
 own facade, posts validated ones through the ledger's, and has pages for its
 documents, its reconciliation, and its setup. Reports reads the ledger's
-figures and has the financial reports pages. Each module's "Standards
+figures and has the financial reports pages. Bank reconciliation imports
+bank statements, matches their lines to the ledger's postings, posts bank
+charges and interest through the ledger's facade, and has pages for its
+bank accounts, statements, matching, and reconciliations. Each module's "Standards
 addressed" section says which bookkeeping and audit standards it meets.
 
 ## Mount
