@@ -94,14 +94,24 @@ here; they govern this code and are not copied here.
   `Retry-After`.
 - Reach an optional Domain only through a seam that finds its modules by
   descriptor ID at run time, as `payables/lib/payables/order_source.ex` does
-  for Supply Chain; never alias a `Bilimbi.SupplyChain.*` module or declare
-  the edge: Bilimbi's `graph_edges.exs` fails an undeclared alias, and a
-  declared edge makes Finance fail to compose without that Domain. Module
-  tests substitute the seam (`test/support/stub_order_source.ex`); the
-  last test in `payables/web_test/` proves the real one with both Domains
-  mounted. Until Receiving stops declaring the authz verb `post` that
-  Ledger owns, the Web host refuses to boot with both mounted and that test
-  only runs its unmounted branch.
+  for Supply Chain and `payroll/lib/payroll/people_source.ex` for People;
+  never alias a `Bilimbi.SupplyChain.*` or `Bilimbi.People.*` module or
+  declare the edge: Bilimbi's `graph_edges.exs` fails an undeclared alias,
+  and a declared edge makes Finance fail to compose without that Domain.
+  Module tests substitute the seam (`test/support/stub_order_source.ex`,
+  `test/support/stub_people_source.ex`); the last test in each module's
+  `web_test/` proves the real one with both Domains mounted. Until
+  Receiving stops declaring the authz verb `post` that Ledger owns, the Web
+  host refuses to boot with both mounted and the payables test only runs
+  its unmounted branch. Declare no new authz verb in a Finance module
+  (`view` and `manage` are Base's, `post` is Ledger's): a verb two mounted
+  Domains both declare is that boot failure.
+- Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
+  `post_payroll_run/3` and `post_claim/3`, and undo one with
+  `reverse_posting/4`: a source's standing is its latest posting event,
+  and the database keeps one `posted` and one `reversed` event per source.
+  People has no void or reversal event, so a reversal is a user's decision
+  with a reason, never a reaction to the source.
 - A module's later migration is self-contained (a database that ran the
   earlier ones loads only its file), ships its own `statements/1`, and its
   fixtures run every migration's statements in version order

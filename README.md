@@ -12,6 +12,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | [`reports/`](reports/docs/README.md) | `finance/reports` | profit and loss, balance sheet, cash position, and headline figures read live from the ledger, with the entries behind each figure |
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
 | [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference and kept with their figures |
+| [`payroll/`](payroll/docs/README.md) | `finance/payroll` | each company's mapping of payroll components and claim categories to ledger accounts with its change history, one balanced entry per finalised payroll run and per approved staff claim posted once through the ledger, reversals with reasons, and the append-only record of every attempt; the runs and claims come from the People Domain when it is mounted |
 
 The ledger is the first module. Other Finance modules, such as receivables,
 payables, e-invoicing, and reports, sit beside it as sibling module folders
@@ -24,8 +25,12 @@ documents, its reconciliation, and its setup. Reports reads the ledger's
 figures and has the financial reports pages. Bank reconciliation imports
 bank statements, matches their lines to the ledger's postings, posts bank
 charges and interest through the ledger's facade, and has pages for its
-bank accounts, statements, matching, and reconciliations. Each module's "Standards
-addressed" section says which bookkeeping and audit standards it meets.
+bank accounts, statements, matching, and reconciliations. Payroll posting
+reads finalised payroll runs and approved claims from the People Domain
+through a seam that finds it at run time, posts them through the ledger's
+facade, and has pages for its postings and its account mappings. Each
+module's "Standards addressed" section says which bookkeeping and audit
+standards it meets.
 
 ## Mount
 
