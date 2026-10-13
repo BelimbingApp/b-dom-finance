@@ -26,6 +26,8 @@ maps; the schemas are private.
 | `get_payment/3`, `list_payments/3` | view | Payments with their allocations and reversal |
 | `aged_receivables/4` | view | What each customer owes as of a date, by days past due |
 | `tie_out_control_accounts/4` | view | The receivable accounts' subledger balance against the ledger's, with every posting this module did not make |
+| `tax_totals/3` | view | Issued documents' tax per kind and tax code over a date window |
+| `received_tax_totals/3` | view | The tax share of payments received in a window, and of invoices unpaid past a period |
 
 The Tenant Owner role holds every receivables capability.
 
@@ -227,6 +229,27 @@ for that sale, so a sale entered here is recognised once. Its correction
 is this module's too: a credit note or a payment reversal posts here, and
 the credit note e-invoice links to the credit note's record.
 
+## For tax returns
+
+A module that reports tax to an authority, such as `finance/sst`, reads it
+here and never from the tables. `tax_totals/3` sums, in PostgreSQL, the
+tax lines of issued documents dated in a window per document kind, tax
+code, rate, and tax account, flagging a credit note whose invoice was
+issued before the window (`credits_prior_period`). For tax due when payment is received,
+`received_tax_totals/3` gives the tax share of each payment allocated in
+the window (less the share of payments reversed in it), of each invoice
+still owing on the day after `unpaid_months` months from its issue date
+have run, and of credit notes issued after that day. Service tax is due when
+payment is received (section 11(1) of the Service Tax Act 2018), or, on
+what is still unpaid twelve months after the invoice date, on the day after
+(section 11(2)). A reversal therefore reduces the tax only in the window it
+falls in and only when it is dated before the invoice's due day; one dated
+on or after it leaves the unpaid balance, already taxed under section
+11(2), alone. Every reading takes
+`through_entry_number` and counts each document, payment, and reversal by
+the ledger entry it posted, so a reading pinned to an entry number
+reproduces exactly.
+
 ## Database
 
 The migration `20261012214517` is `:bilimbi_only` and creates
@@ -307,11 +330,12 @@ sales ledger is held to. What this slice covers:
   be kept is law, not code.
 
 Tax rules themselves (which rate applies to what, rounding a tax authority
-prescribes beyond half up per line, reporting returns) are a company's
-configuration or later modules. The ledger refuses to reverse a receivables
-entry anywhere but through this module (see Ledger ownership); a manual
-journal posted straight to the receivable account still bypasses these
-records, and `tie_out_control_accounts/4` shows it as a difference.
+prescribes beyond half up per line) are a company's configuration;
+reporting a tax return is another module's, such as `finance/sst` (see For
+tax returns). The ledger refuses to reverse a receivables entry anywhere
+but through this module (see Ledger ownership); a manual journal posted
+straight to the receivable account still bypasses these records, and
+`tie_out_control_accounts/4` shows it as a difference.
 
 ## Tests
 

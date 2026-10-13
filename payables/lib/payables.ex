@@ -74,6 +74,7 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.TaxCode
   alias Bilimbi.Finance.Payables.TaxCodeChange
   alias Bilimbi.Finance.Payables.TaxLine
+  alias Bilimbi.Finance.Payables.TaxReport
   alias Bilimbi.Finance.Payables.TieOut
   alias Ecto.Changeset
 
@@ -793,6 +794,24 @@ defmodule Bilimbi.Finance.Payables do
              {:error, :invalid_option} do
       {:ok, Matching.billed_quantities(scope, company_id, order_line_ids, nil)}
     end
+  end
+
+  @doc """
+  The tax on posted documents, summed by PostgreSQL per `document_type`,
+  tax code, rate, and tax account: `%{document_type, tax_code_id,
+  tax_code, rate, account_id, document_count, taxable_amount,
+  tax_amount}`, each amount as the document carries it (a debit note's
+  positive). Options: `from` and `to`, document dates (inclusive), and
+  `through_entry_number`, which counts only documents whose ledger entry
+  is numbered up to it, so a reading pinned to a ledger entry number
+  reproduces exactly. A module reporting tax to an authority reads it; a
+  malformed option is `{:error, :invalid_option}`.
+  """
+  @spec tax_totals(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def tax_totals(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         do: TaxReport.totals(scope, company_id, options)
   end
 
   @doc """
