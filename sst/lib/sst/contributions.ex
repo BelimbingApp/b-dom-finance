@@ -21,11 +21,13 @@ defmodule Bilimbi.Finance.Sst.Contributions do
         capabilities: @capabilities,
         roles: %{"tenant_owner" => %{capabilities: @capabilities}}
       },
+      # Menu icons come from the Web host's safelist in apps/web/assets/css/app.css;
+      # an icon outside it is not emitted and fails the host's safelist test.
       menu: [
         %{
           id: "finance.sst",
           label: "SST returns",
-          icon: "document-text",
+          icon: "shield-check",
           parent: "finance",
           route: "/finance/sst",
           capability: @view,
@@ -34,7 +36,7 @@ defmodule Bilimbi.Finance.Sst.Contributions do
         %{
           id: "finance.sst.setup",
           label: "SST setup",
-          icon: "adjustments-horizontal",
+          icon: "cog-6-tooth",
           parent: "finance",
           route: "/finance/sst/setup",
           capability: @view,
