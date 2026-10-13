@@ -12,6 +12,7 @@
     "base/tenancy",
     "base/ui",
     "core/company",
+    "finance/attachments",
     "finance/ledger"
   ],
   migrations: "priv/repo/migrations",

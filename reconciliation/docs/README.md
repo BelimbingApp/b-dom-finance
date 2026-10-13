@@ -98,9 +98,17 @@ marker.
 
 ## Statements
 
-`import_statement/4` takes the file's name and bytes, reads it with the
-account's mapping, and records one numbered statement with its lines in one
-transaction; the file itself is not kept, the statement is. A statement
+`import_statement/4` takes the file's name and bytes (and its content type,
+`text/csv` unless given), reads it with the account's mapping, keeps the
+file whole as the statement's source document through
+`Bilimbi.Finance.Attachments` (`StatementSource`; a records-grade document
+retained for the company's retention years after the end of the financial
+year the statement ends in, so the import also needs
+`finance.attachments.create`), and records one numbered statement with its
+lines and the mapping it was read through (`import_mapping`) in one
+transaction. Every check below runs before the file is stored, and the
+store runs before the transaction, as Base Artifacts asks; a refused import
+stores nothing, and a storage refusal imports nothing. A statement
 line's `amount` is signed from the account holder's side, money in positive
 and money out negative, which is the sign of a debit less a credit on the
 asset account it is matched against. A row whose amount is zero is skipped
@@ -245,7 +253,7 @@ figure with a manual journal and match that.
 | Route | Capability | Page |
 | --- | --- | --- |
 | `/finance/reconciliation` | `finance.reconciliation.view` | Bank accounts and the form that adds or changes one |
-| `/finance/reconciliation/accounts/:id` | `finance.reconciliation.view` | One account: statement import (a file upload read once), its statements, its reconciliations, and the form that opens the next |
+| `/finance/reconciliation/accounts/:id` | `finance.reconciliation.view` | One account: statement import (a file upload read once and kept as the statement's source document), its statements each with a download of the bank's file, its reconciliations, and the form that opens the next |
 | `/finance/reconciliation/accounts/:id/matching` | `finance.reconciliation.view` | Unmatched lines beside unmatched entries, suggestions, matching of a selection, and unmatching with a reason |
 | `/finance/reconciliation/reconciliations/:id` | `finance.reconciliation.view` | A reconciliation's figures, items, posting of charges and interest, finalising, abandoning, and history |
 
@@ -260,7 +268,9 @@ The migration `20261014090000` is `:bilimbi_only` and creates
 `finance_reconciliation_bank_accounts`, `_bank_account_changes`,
 `_statements`, `_statement_lines`, `_matches`, `_match_lines`,
 `_match_entries`, `_match_events`, `_reconciliations`,
-`_reconciliation_events`, and `_reconciliation_items`. Rows of one company
+`_reconciliation_events`, and `_reconciliation_items`; `20261017090100`
+adds `import_mapping` to the statements, the mapping each was read through
+(null for a statement imported before it). Rows of one company
 reference each other through composite `(id, company_id)` foreign keys;
 ledger account and entry IDs are plain columns. PostgreSQL enforces the
 rules the facade checks, so no other writer can break them:

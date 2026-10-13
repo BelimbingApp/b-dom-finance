@@ -452,7 +452,7 @@ later file drops still names what recorded documents carry.
 
 ## Database
 
-The migrations `20261012200000`, `20261013090000`, `20261013143000`
+The migrations `20261012200000`, `20261013090100`, `20261013143000`
 (one `posted` and one `posting_reversed` event per document),
 `20261013221500` (consolidation), `20261015150300` (claims the entries
 this module posted before the ledger recorded owners, through the ledger's

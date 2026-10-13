@@ -44,8 +44,10 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
     finance.reconciliation.statement-lines.manage
   )
 
-  @doc "Every ledger and reconciliation capability the case grants."
-  def all_capabilities, do: @ledger ++ @reconciliation
+  @attachments ~w(finance.attachments.view finance.attachments.create)
+
+  @doc "Every ledger, attachments, and reconciliation capability the case grants."
+  def all_capabilities, do: @ledger ++ @attachments ++ @reconciliation
 
   @doc "The reconciliation capabilities alone."
   def reconciliation_capabilities, do: @reconciliation
@@ -54,6 +56,7 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
   def setup_company(_context) do
     context = TestFixtures.setup_reconciliation!()
     on_exit(&ContributionRegistry.clear_for_test!/0)
+    Bilimbi.Finance.Attachments.TestFixtures.put_artifacts_root!()
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, all_capabilities())
     reviewer = TestFixtures.sign_in!(context.first_scope, 73, 96, all_capabilities())

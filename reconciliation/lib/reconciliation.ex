@@ -40,6 +40,7 @@ defmodule Bilimbi.Finance.Reconciliation do
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Attachments
   alias Bilimbi.Finance.Ledger
 
   alias Bilimbi.Finance.Reconciliation.{
@@ -51,7 +52,8 @@ defmodule Bilimbi.Finance.Reconciliation do
     Reconciliations,
     Records,
     Statement,
-    StatementLine
+    StatementLine,
+    StatementSource
   }
 
   alias Ecto.Changeset
@@ -175,10 +177,19 @@ defmodule Bilimbi.Finance.Reconciliation do
   ## Statements
 
   @doc """
-  Imports a bank statement: `file_name` and `content`, the CSV file's bytes,
-  read through the bank account's import mapping into a numbered,
-  immutable statement with its lines. Needs `finance.ledger.view` for the
-  book's currency precision.
+  Imports a bank statement: `file_name` and `content`, the CSV file's bytes
+  (and its `content_type`, `text/csv` unless given), read through the bank
+  account's import mapping into a numbered, immutable statement with its
+  lines, which keeps that mapping as `import_mapping`. The file itself is
+  kept whole as a source document of the statement through
+  `Bilimbi.Finance.Attachments` (`Bilimbi.Finance.Reconciliation.StatementSource`),
+  retained as the company's retention says from the statement's end date,
+  so the lines reproduce from it; the import needs
+  `finance.attachments.create` for that, and `finance.ledger.view` for the
+  book's currency precision. The file is stored only once the statement
+  passes every check below, before the transaction that records both, and
+  a storage refusal (`{:error, :retention_not_configured}` until an operator
+  sets Base Artifacts' storage root) imports nothing.
 
   Refused whole with `{:error, {:duplicate_file, statement_number}}` for a
   file already imported, `{:error, {:duplicate_lines, [...]}}` naming each
@@ -202,11 +213,32 @@ defmodule Bilimbi.Finance.Reconciliation do
              | term()}
   def import_statement(%Scope{} = scope, company_id, bank_account_id, attributes)
       when is_map(attributes) do
-    write(scope, company_id, @import_statements, fn ->
-      with {:ok, account} <- active_bank_account(scope, company_id, bank_account_id),
-           {:ok, book} <- Ledger.get_book(scope, company_id),
-           do: Import.import_statement(scope, company_id, account, book, attributes)
-    end)
+    with :ok <- authorize(scope, company_id, @import_statements),
+         {:ok, account} <- active_bank_account(scope, company_id, bank_account_id),
+         {:ok, book} <- Ledger.get_book(scope, company_id),
+         {:ok, prepared} <- Import.prepare(scope, company_id, account, book, attributes),
+         {:ok, capture} <-
+           Attachments.capture_file(
+             scope,
+             company_id,
+             StatementSource,
+             Map.take(prepared, [:file_name, :content, :content_type]),
+             prepared.end_date
+           ) do
+      write(scope, company_id, @import_statements, fn ->
+        with {:ok, statement} <- Import.insert(scope, company_id, prepared),
+             {:ok, _attachment} <-
+               Attachments.attach_capture(
+                 scope,
+                 company_id,
+                 StatementSource,
+                 statement.id,
+                 capture
+               ) do
+          {:ok, statement}
+        end
+      end)
+    end
   end
 
   @doc "The bank account's statements, oldest first, without their lines; `limit` and `after` page them."

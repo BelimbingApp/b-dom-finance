@@ -9,7 +9,9 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
 
   The record is read-first; nothing on it is edited. Every action is a
   facade call that re-asks its capability, and the `can_*` assigns only
-  decide which controls show.
+  decide which controls show. The source documents behind the record (the
+  party's invoice, the delivery record) are the attachments panel's,
+  `Bilimbi.Finance.Attachments.Web.Panel`.
   """
 
   use Bilimbi.Base.UI, :live_view
@@ -549,6 +551,16 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
               </:col>
             </.table>
           </.card>
+
+          <.live_component
+            module={Bilimbi.Finance.Attachments.Web.Panel}
+            id="payables-bill-attachments"
+            current_scope={@current_scope}
+            company_id={@company_id}
+            source={Bilimbi.Finance.Payables.Attachments.Bill}
+            document_id={@document.id}
+            final?={@document.status != "draft"}
+          />
 
           <.modal
             :if={@dialog == "approve_exception"}
