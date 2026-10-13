@@ -1,14 +1,16 @@
 defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
   use ExUnit.Case, async: true
 
-  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice}
+  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst}
 
   @owners [
     {:bilimbi_finance_ledger, Ledger.Evidence},
     {:bilimbi_finance_receivables, Receivables.Evidence},
     {:bilimbi_finance_payables, Payables.Evidence},
     {:bilimbi_finance_reconciliation, Reconciliation.Evidence},
-    {:bilimbi_finance_einvoice, Einvoice.Evidence}
+    {:bilimbi_finance_einvoice, Einvoice.Evidence},
+    {:bilimbi_finance_payroll, Payroll.Evidence},
+    {:bilimbi_finance_sst, Sst.Evidence}
   ]
 
   @excluded %{
@@ -16,20 +18,24 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
       "the pack writes it itself as issued-reports.csv, with the stored snapshot content"
   }
 
-  test "every table of the Finance modules the pack covers is exported or excluded with a reason" do
+  test "every table of every Finance module is exported by the pack or excluded with a reason" do
+    for {app, evidence} <- @owners do
+      assert Application.load(app) in [:ok, {:error, {:already_loaded, app}}]
+      assert schema_tables(app) != [], "#{app} has no schema to check"
+      assert evidence.tables() != [], "#{app} exports no table"
+    end
+
+    assert Application.load(:bilimbi_finance_reports) in [
+             :ok,
+             {:error, {:already_loaded, :bilimbi_finance_reports}}
+           ]
+
     exported = Enum.flat_map(@owners, fn {_app, evidence} -> evidence.tables() end)
+    assert exported == Enum.uniq(exported)
 
     tables =
-      for app <- [:bilimbi_finance_reports | Keyword.keys(@owners)],
-          :ok == ensure_loaded(app),
-          module <- Application.spec(app, :modules),
-          Code.ensure_loaded?(module),
-          function_exported?(module, :__schema__, 1),
-          source = module.__schema__(:source),
-          do: source
-
-    assert "finance_ledger_journal_events" in tables
-    assert "finance_payables_payment_request_events" in tables
+      [:bilimbi_finance_reports | Enum.map(@owners, &elem(&1, 0))]
+      |> Enum.flat_map(&schema_tables/1)
 
     missing = Enum.sort(tables -- (exported ++ Map.keys(@excluded)))
     assert missing == [], "tables neither in the auditor pack nor excluded: #{inspect(missing)}"
@@ -40,13 +46,19 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
       refute table in exported
     end
 
-    assert exported == Enum.uniq(exported)
+    for table <- exported, do: assert(table in tables)
   end
 
-  defp ensure_loaded(app) do
-    case Application.load(app) do
-      result when result in [:ok, {:error, {:already_loaded, ^app}}] -> :ok
-      other -> other
-    end
+  test "the pack reads every module that owns Finance tables" do
+    assert Enum.sort(Bilimbi.Finance.Reports.AuditorPack.sources()) ==
+             Enum.sort([Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst])
+  end
+
+  defp schema_tables(app) do
+    for module <- Application.spec(app, :modules),
+        Code.ensure_loaded?(module),
+        function_exported?(module, :__schema__, 1),
+        source = module.__schema__(:source),
+        do: source
   end
 end

@@ -10,6 +10,8 @@ Code.ensure_loaded!(Bilimbi.Finance.Receivables.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Finance.Payables.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Finance.Reconciliation.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Finance.Einvoice.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Finance.Payroll.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Finance.Sst.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Base.Audit.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Base.Artifacts.TestFixtures)
 

@@ -19,7 +19,9 @@
     "finance/receivables",
     "finance/payables",
     "finance/reconciliation",
-    "finance/einvoice"
+    "finance/einvoice",
+    "finance/payroll",
+    "finance/sst"
   ],
   migrations: "priv/repo/migrations",
   migration_dispositions: %{20_261_015_100_000 => :bilimbi_only},

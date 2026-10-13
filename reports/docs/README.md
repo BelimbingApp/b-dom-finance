@@ -235,10 +235,15 @@ SHA-256; their original bytes are not retained. Exact authority submission
 payloads are included with their hashes. No source uploads exist for the current
 AR/AP document APIs.
 
-The pack covers the Ledger, Receivables, Payables, Reconciliation and E-invoice
-modules; Payroll and SST records are not in it. A test lists every table of
-those modules and fails unless the pack exports it or an exclusion names it
-with a reason, so a new table cannot be left out unnoticed.
+The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
+Payroll and SST modules: each facade's `evidence_page/4` exports every table of
+the module, including payroll posting events, mapping and settings changes,
+and SST registrations, mappings, returns, return events, boxes, accounts,
+sources and adjustments. The manifest's `filters.evidence` names these modules.
+A test lists every table of those modules and fails unless the pack exports it
+or an exclusion names it with a reason (the only exclusion is the issued
+report table, which the pack writes as `issued-reports.csv`), so a new table
+cannot be left out unnoticed.
 
 `manifest.json` records the company/tenant, database snapshot, ledger cutoff,
 filters, UTC timezone, generator version, actor/time, file hashes, CSV row counts
