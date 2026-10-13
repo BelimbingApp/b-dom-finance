@@ -262,6 +262,7 @@ The archive includes line-level ledger entries/lines and chart, trial balance,
 AR/AP documents, lines, tax, payments and allocations, payment requests with
 their events, fiscal closing events, manual journals with their lines and
 decisions, approval exceptions with their reviews, duty-separation changes,
+controlled-bookkeeping changes, late-recording reviews,
 e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own
