@@ -56,22 +56,6 @@ defmodule Bilimbi.Finance.Payables.TaxReportTest do
 
     assert %{document_type: "debit_note", document_count: 1} = notes
     assert {money(notes.taxable_amount), money(notes.tax_amount)} == {"25.00", "2.00"}
-
-    assert {:ok, lines} =
-             Payables.list_tax_lines(operator, 73,
-               from: ~D[2026-10-01],
-               to: ~D[2026-10-31],
-               limit: 2
-             )
-
-    assert [%{party_document_number: "B-1"}, %{document_type: "bill"}] = lines
-
-    assert {:ok, [%{document_type: "debit_note"}]} =
-             Payables.list_tax_lines(operator, 73,
-               from: ~D[2026-10-01],
-               to: ~D[2026-10-31],
-               after: List.last(lines).id
-             )
   end
 
   test "reproduces a reading pinned to a ledger entry number", context do
@@ -104,11 +88,9 @@ defmodule Bilimbi.Finance.Payables.TaxReportTest do
     assert {:error, :invalid_option} =
              Payables.tax_totals(context.operator, 73, from: ~D[2026-10-02], to: ~D[2026-10-01])
 
-    assert {:error, :invalid_option} = Payables.list_tax_lines(context.operator, 73, limit: 0)
 
     viewer = TestFixtures.sign_in!(context.first_scope, 73, 93, [])
     assert {:error, :unauthorized} = Payables.tax_totals(viewer, 73)
-    assert {:error, :unauthorized} = Payables.list_tax_lines(viewer, 73)
   end
 
   defp money(amount), do: amount |> Decimal.round(2) |> Decimal.to_string()

@@ -1,10 +1,10 @@
 defmodule Bilimbi.Finance.Receivables.TaxReport do
   @moduledoc false
   # The tax issued documents carry, for a module that reports it to a tax
-  # authority: sums per document kind and tax code, the tax lines behind
-  # them, and the tax share of what customers paid. Every document, payment,
-  # and reversal counts by its own date and the ledger entry it posted, so a
-  # reading pinned to an entry number reproduces.
+  # authority: sums per document kind and tax code, and the tax share of what
+  # customers paid. Every document, payment, and reversal counts by its own
+  # date and the ledger entry it posted, so a reading pinned to an entry
+  # number reproduces.
 
   import Ecto.Query
 
@@ -86,39 +86,6 @@ defmodule Bilimbi.Finance.Receivables.TaxReport do
     end
   end
 
-  def lines(scope, company_id, options) do
-    with {:ok, from, to, through} <- window(options),
-         {:ok, limit, cursor} <- Records.page_options(options),
-         {:ok, tax_code_id} <- tax_code_option(options) do
-      rows =
-        scope
-        |> issued_lines(company_id, from, to, through)
-        |> tax_code_bound(tax_code_id)
-        |> cursor_bound(cursor)
-        |> order_by([l], asc: l.id)
-        |> limit(^limit)
-        |> select([l, d], %{
-          id: l.id,
-          document_id: d.id,
-          kind: d.kind,
-          document_reference: d.document_reference,
-          issue_date: d.issue_date,
-          party_name: d.party_name,
-          credited_document_id: d.credited_document_id,
-          ledger_entry_number: d.ledger_entry_number,
-          tax_code_id: l.tax_code_id,
-          tax_code: l.tax_code,
-          tax_rate: l.tax_rate,
-          account_id: l.account_id,
-          taxable_amount: l.taxable_amount,
-          tax_amount: l.tax_amount
-        })
-        |> Repo.all()
-
-      {:ok, rows}
-    end
-  end
-
   @doc """
   The tax share of invoices settled in the window, for tax due when payment
   is received. An invoice's due day under the unpaid-period rule is the day
@@ -127,7 +94,8 @@ defmodule Bilimbi.Finance.Receivables.TaxReport do
 
   - `received`: each allocation of a payment dated in the window before
     its invoice's due day, as that allocation's share of the invoice total,
-    less the same share of every such payment reversed in the window;
+    less the same share of every such payment reversed in the window before
+    that day (a later reversal leaves the unpaid balance to `unpaid`);
   - `unpaid`: each invoice whose due day falls in the window, as the share
     of its total it still owed the day before;
   - `credited_after_due`: the tax lines of credit notes issued in the
@@ -168,6 +136,7 @@ defmodule Bilimbi.Finance.Receivables.TaxReport do
         on: r.payment_id == p.id
       )
       |> where([l, d, a, p, r], r.reversal_date >= ^from and r.reversal_date <= ^to)
+      |> where([l, d, a, p, r], r.reversal_date < due_day(d.issue_date, ^months))
       |> where([l, d, a, p, r], r.ledger_entry_number <= ^through)
       |> select([l, d, a, p], {l, d.id, a.amount, d.total})
       |> Repo.all()
@@ -296,12 +265,6 @@ defmodule Bilimbi.Finance.Receivables.TaxReport do
   defp through_bound(query, nil), do: query
   defp through_bound(query, through), do: where(query, [d], d.ledger_entry_number <= ^through)
 
-  defp tax_code_bound(query, nil), do: query
-  defp tax_code_bound(query, id), do: where(query, [l], l.tax_code_id == ^id)
-
-  defp cursor_bound(query, nil), do: query
-  defp cursor_bound(query, cursor), do: where(query, [l], l.id > ^cursor)
-
   defp window(options) do
     from = Keyword.get(options, :from)
     to = Keyword.get(options, :to)
@@ -328,14 +291,6 @@ defmodule Bilimbi.Finance.Receivables.TaxReport do
   defp months_option(options) do
     case Keyword.get(options, :unpaid_months, 12) do
       months when is_integer(months) and months in 1..120 -> {:ok, months}
-      _other -> {:error, :invalid_option}
-    end
-  end
-
-  defp tax_code_option(options) do
-    case Keyword.get(options, :tax_code_id) do
-      nil -> {:ok, nil}
-      id when is_integer(id) and id in 1..@max_bigint -> {:ok, id}
       _other -> {:error, :invalid_option}
     end
   end

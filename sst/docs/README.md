@@ -177,7 +177,9 @@ entry number:
 - for service tax on the payment basis, `Receivables.received_tax_totals/3`
   at the same number instead of receivables' invoices: the tax share of
   each payment received in the period before its invoice fell due under
-  the twelve-month rule, less the share of payments reversed in the period;
+  the twelve-month rule, less the share of payments reversed in the period
+  before that day (a reversal on or after it leaves the unpaid balance,
+  already taxed under section 11(2), alone);
   the share each invoice still owed when its twelve months ran out in the
   period; and credit notes issued after that on tax already due.
 

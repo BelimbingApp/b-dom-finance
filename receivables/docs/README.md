@@ -25,7 +25,7 @@ maps; the schemas are private.
 | `record_payment/3`, `reverse_payment/4` | `finance.receivables.payments.post` | Payments received, allocated to invoices, and their reversal |
 | `get_payment/3`, `list_payments/3` | view | Payments with their allocations and reversal |
 | `aged_receivables/4` | view | What each customer owes as of a date, by days past due |
-| `tax_totals/3`, `list_tax_lines/3` | view | Issued documents' tax per kind and tax code over a date window, and the tax lines behind it |
+| `tax_totals/3` | view | Issued documents' tax per kind and tax code over a date window |
 | `received_tax_totals/3` | view | The tax share of payments received in a window, and of invoices unpaid past a period |
 
 The Tenant Owner role holds every receivables capability.
@@ -201,12 +201,17 @@ A module that reports tax to an authority, such as `finance/sst`, reads it
 here and never from the tables. `tax_totals/3` sums, in PostgreSQL, the
 tax lines of issued documents dated in a window per document kind, tax
 code, rate, and tax account, flagging a credit note whose invoice was
-issued before the window (`credits_prior_period`); `list_tax_lines/3` lists
-the lines behind it. For tax due when payment is received,
+issued before the window (`credits_prior_period`). For tax due when payment is received,
 `received_tax_totals/3` gives the tax share of each payment allocated in
 the window (less the share of payments reversed in it), of each invoice
 still owing on the day after `unpaid_months` months from its issue date
-have run, and of credit notes issued after that day. Every reading takes
+have run, and of credit notes issued after that day. Service tax is due when
+payment is received (section 11(1) of the Service Tax Act 2018), or, on
+what is still unpaid twelve months after the invoice date, on the day after
+(section 11(2)). A reversal therefore reduces the tax only in the window it
+falls in and only when it is dated before the invoice's due day; one dated
+on or after it leaves the unpaid balance, already taxed under section
+11(2), alone. Every reading takes
 `through_entry_number` and counts each document, payment, and reversal by
 the ledger entry it posted, so a reading pinned to an entry number
 reproduces exactly.

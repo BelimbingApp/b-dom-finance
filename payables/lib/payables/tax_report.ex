@@ -1,10 +1,9 @@
 defmodule Bilimbi.Finance.Payables.TaxReport do
   @moduledoc false
   # The tax posted documents carry, for a module that reports it to a tax
-  # authority: sums per document type and tax code, and the tax lines behind
-  # them. Only posted documents count, each by its document date and the
-  # ledger entry it posted, so a reading pinned to an entry number
-  # reproduces.
+  # authority: sums per document type and tax code. Only posted documents
+  # count, each by its document date and the ledger entry it posted, so a
+  # reading pinned to an entry number reproduces.
 
   import Ecto.Query
 
@@ -42,40 +41,6 @@ defmodule Bilimbi.Finance.Payables.TaxReport do
     end
   end
 
-  def lines(scope, company_id, options) do
-    with {:ok, from, to, through} <- window(options),
-         {:ok, limit, cursor} <- page_options(options),
-         {:ok, tax_code_id} <- id_option(options, :tax_code_id) do
-      rows =
-        scope
-        |> posted_lines(company_id, from, to, through)
-        |> tax_code_bound(tax_code_id)
-        |> cursor_bound(cursor)
-        |> order_by([l], asc: l.id)
-        |> limit(^limit)
-        |> select([l, d], %{
-          id: l.id,
-          document_id: d.id,
-          document_type: d.document_type,
-          document_number: d.document_number,
-          party_document_number: d.party_document_number,
-          document_date: d.document_date,
-          party_name: d.party_name,
-          corrects_document_id: d.corrects_document_id,
-          entry_number: d.entry_number,
-          tax_code_id: l.tax_code_id,
-          tax_code: l.tax_code,
-          rate: l.rate,
-          account_id: l.account_id,
-          taxable_amount: l.taxable_amount,
-          tax_amount: l.tax_amount
-        })
-        |> Repo.all()
-
-      {:ok, rows}
-    end
-  end
-
   defp posted_lines(scope, company_id, from, to, through) do
     documents =
       from(d in Tenancy.scope_query(Document, scope),
@@ -101,12 +66,6 @@ defmodule Bilimbi.Finance.Payables.TaxReport do
   defp through_bound(query, nil), do: query
   defp through_bound(query, through), do: where(query, [d], d.entry_number <= ^through)
 
-  defp tax_code_bound(query, nil), do: query
-  defp tax_code_bound(query, id), do: where(query, [l], l.tax_code_id == ^id)
-
-  defp cursor_bound(query, nil), do: query
-  defp cursor_bound(query, cursor), do: where(query, [l], l.id > ^cursor)
-
   defp window(options) do
     from = Keyword.get(options, :from)
     to = Keyword.get(options, :to)
@@ -124,25 +83,6 @@ defmodule Bilimbi.Finance.Payables.TaxReport do
 
       true ->
         {:ok, from, to, through}
-    end
-  end
-
-  defp page_options(options) do
-    limit = Keyword.get(options, :limit, 100)
-
-    with true <- is_integer(limit) and limit in 1..500,
-         {:ok, cursor} <- id_option(options, :after) do
-      {:ok, limit, cursor}
-    else
-      _invalid -> {:error, :invalid_option}
-    end
-  end
-
-  defp id_option(options, key) do
-    case Keyword.get(options, key) do
-      nil -> {:ok, nil}
-      id when is_integer(id) and id in 1..@max_bigint -> {:ok, id}
-      _other -> {:error, :invalid_option}
     end
   end
 

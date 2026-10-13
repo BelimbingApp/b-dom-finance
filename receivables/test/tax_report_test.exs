@@ -66,11 +66,6 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
 
       assert {:ok, [%{tax_amount: now}]} = Receivables.tax_totals(operator, 73, window)
       assert {money(pinned), money(now)} == {"10.00", "16.00"}
-
-      assert {:ok, [line]} =
-               Receivables.list_tax_lines(operator, 73, window ++ [through_entry_number: through])
-
-      assert %{kind: "invoice", tax_code: "T10", issue_date: ~D[2026-09-02]} = line
     end
 
     test "refuses malformed options and an actor without the view grant", context do
@@ -85,7 +80,6 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
 
       viewer = TestFixtures.sign_in!(context.first_scope, 73, 93, [])
       assert {:error, :unauthorized} = Receivables.tax_totals(viewer, 73)
-      assert {:error, :unauthorized} = Receivables.list_tax_lines(viewer, 73)
       assert {:error, :unauthorized} = Receivables.received_tax_totals(viewer, 73, [])
     end
   end
@@ -168,6 +162,33 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
                Receivables.received_tax_totals(operator, 73,
                  from: ~D[2026-09-11],
                  to: ~D[2026-09-11]
+               )
+    end
+
+    test "leaves a reversal on or after the due day to the unpaid balance already taxed",
+         context do
+      %{operator: operator, reduced_tax: reduced} = context
+      invoice = issue!(context, "invoice", ~D[2026-01-01], [taxed("100", reduced)])
+      {:ok, payment} = pay(context, invoice, "106", ~D[2026-02-01])
+
+      {:ok, _reversed} =
+        Receivables.reverse_payment(operator, 73, payment.id, %{
+          reversal_date: ~D[2027-03-01],
+          reason: "Cheque returned"
+        })
+
+      assert {:ok, [%{measure: "received"} = received]} =
+               Receivables.received_tax_totals(operator, 73,
+                 from: ~D[2026-02-01],
+                 to: ~D[2026-02-28]
+               )
+
+      assert money(received.tax_amount) == "6.00"
+
+      assert {:ok, []} =
+               Receivables.received_tax_totals(operator, 73,
+                 from: ~D[2027-03-01],
+                 to: ~D[2027-03-31]
                )
     end
 

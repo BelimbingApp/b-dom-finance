@@ -809,21 +809,6 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   @doc """
-  The tax lines behind `tax_totals/3`, one per posted document and tax
-  code, ordered by ID: `%{id, document_id, document_type, document_number,
-  party_document_number, document_date, party_name, corrects_document_id,
-  entry_number, tax_code_id, tax_code, rate, account_id, taxable_amount,
-  tax_amount}`. Takes `tax_totals/3`'s options, `tax_code_id`, `limit` (1
-  to 500, default 100), and `after`, the last ID already read.
-  """
-  @spec list_tax_lines(Scope.t(), term(), keyword()) ::
-          {:ok, [map()]} | {:error, refusal() | :invalid_option}
-  def list_tax_lines(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
-    with :ok <- authorize(scope, company_id, @view),
-         do: TaxReport.lines(scope, company_id, options)
-  end
-
-  @doc """
   Documents with their lines, ordered by document date and then ID.
   Options: `document_type`, `status`, `party_key`, `from` and `to` dates
   (inclusive), `limit` (1 to #{@max_limit}, default #{@default_limit}), and
