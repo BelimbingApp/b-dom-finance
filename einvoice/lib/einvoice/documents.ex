@@ -14,7 +14,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.Consolidation
-  alias Bilimbi.Finance.Einvoice.{Document, Line, StatusEvent, SubmitWorker}
+  alias Bilimbi.Finance.Einvoice.{Document, Line, SourceLink, StatusEvent, SubmitWorker}
 
   @max_bigint 9_223_372_036_854_775_807
   @reason_length 300
@@ -27,6 +27,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   # Statuses in which the authority still holds the document as valid: a
   # buyer's rejection request leaves it so until it is cancelled.
   @valid_statuses ~w(valid rejected)
+
+  # Statuses in which a document stands for its source transaction: the
+  # authority holds it, or will (see the source links migration).
+  @standing_statuses ~w(submitted valid rejected consolidated)
 
   @doc "The events that move a document's status, in no particular order."
   def status_events, do: @status_events
@@ -77,7 +81,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
     from(d in Tenancy.scope_query(Document, scope), where: d.company_id == ^company_id)
   end
 
-  @doc "A document with its ordered lines and events, or `nil`."
+  @doc "A document with its ordered lines, events, and source links, or `nil`."
   def fetch(%Scope{} = scope, company_id, document_id)
       when is_integer(document_id) and document_id > 0 and document_id <= @max_bigint do
     lines = order_by(Tenancy.scope_query(Line, scope), [l], asc: l.line_number)
@@ -88,12 +92,67 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
     |> preload(lines: ^lines)
     |> Repo.one()
     |> case do
-      nil -> nil
-      document -> {document, events(scope, company_id, document.id)}
+      nil ->
+        nil
+
+      document ->
+        links = scope |> source_links_of(company_id, [document.id]) |> Map.get(document.id, [])
+        {document, events(scope, company_id, document.id), links}
     end
   end
 
   def fetch(_scope, _company_id, _document_id), do: nil
+
+  @doc "Each document's source links, by document ID, in link order."
+  def source_links_of(_scope, _company_id, []), do: %{}
+
+  def source_links_of(%Scope{} = scope, company_id, document_ids) do
+    from(l in Tenancy.scope_query(SourceLink, scope),
+      where: l.company_id == ^company_id and l.document_id in ^document_ids,
+      order_by: [asc: l.id]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.document_id, &source_link_view/1)
+  end
+
+  @doc """
+  The document that stands for the source (its latest status is one of
+  `#{inspect(@standing_statuses)}`) among those linking it, or `nil`;
+  `except` names documents to leave out (one about to be recorded, and the
+  documents a consolidated one covers).
+  """
+  def standing_source_document(%Scope{} = scope, company_id, module, record, except \\ []) do
+    ids =
+      from(l in Tenancy.scope_query(SourceLink, scope),
+        where:
+          l.company_id == ^company_id and l.source_module == ^module and
+            l.source_record == ^record and l.document_id not in ^except,
+        select: l.document_id
+      )
+      |> Repo.all()
+
+    scope
+    |> statuses(company_id, ids)
+    |> Enum.filter(fn {_id, status} -> status in @standing_statuses end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.min(fn -> nil end)
+  end
+
+  @doc "Records a source link for the document, in the transaction that records it."
+  def record_source_link!(%Scope{} = scope, company_id, document_id, link) do
+    Repo.insert!(%SourceLink{
+      tenant_id: Scope.tenant_id(scope),
+      company_id: company_id,
+      document_id: document_id,
+      source_module: link.module,
+      source_record: link.record,
+      ledger_entry_id: link.ledger_entry_id
+    })
+  end
+
+  defp source_link_view(%SourceLink{} = link),
+    do: %{module: link.source_module, record: link.source_record, ledger_entry_id: link.ledger_entry_id}
+
 
   @doc "A document's events in recording order."
   def events(%Scope{} = scope, company_id, document_id) do
@@ -226,14 +285,20 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
       )
       |> Repo.all()
 
+    # A document linked to its source never posts: its accounting is the
+    # source module's, so it is never unposted or unreversed here.
+    linked = scope |> source_links_of(company_id, Enum.map(valid_ids, &elem(&1, 0))) |> Map.keys()
+
     unposted_ids =
       for {id, status} <- valid_ids,
           status in @valid_statuses,
+          id not in linked,
           is_nil(find_entry(postings[id], "posted")),
           do: id
 
     unreversed_ids =
       for {id, "cancelled"} <- valid_ids,
+          id not in linked,
           not is_nil(find_entry(postings[id], "posted")),
           is_nil(find_entry(postings[id], "posting_reversed")),
           do: id
@@ -494,7 +559,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   instant and link, the ledger entries posted and reversed, the end of the
   cancellation window, the latest PDF, and the flags that need attention.
   """
-  def document_view({document, events}) do
+  def document_view({document, events, source_links}) do
     status = events |> Enum.filter(&(&1.event in @status_events)) |> List.last()
     valid = latest(events, "valid")
     submitted = latest(events, "submitted")
@@ -520,8 +585,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
         validated_at && DateTime.add(validated_at, cancellation_window_hours() * 3600, :second),
       ledger_entry_id: posted && posted.ledger_entry_id,
       reversal_entry_id: reversed && reversed.ledger_entry_id,
+      source_links: source_links,
+      recognised_by_source?: source_links != [],
       pdf_artifact_id: pdf && pdf.response["artifact_id"],
-      attention: attention(events, status, posted, reversed),
+      attention: attention(events, status, posted, reversed, source_links != []),
       lines: Enum.map(document.lines, &Map.take(&1, @line_fields)),
       events: Enum.map(events, &Map.take(&1, @event_fields))
     })
@@ -539,22 +606,23 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   # What an operator should look at: a submission still unsent past the
   # authority's outage allowance, a buyer's rejection request, a validated document
   # without its ledger entry, a posting that failed, or a cancelled
-  # document whose entry was not reversed.
-  defp attention(events, status, posted, reversed) do
+  # document whose entry was not reversed. A document linked to its source
+  # never posts, so its ledger side needs no attention here.
+  defp attention(events, status, posted, reversed, linked?) do
     since_status = events |> Enum.reverse() |> Enum.take_while(&(&1.event not in @status_events))
     name = status && status.event
     posting_failed? = not is_nil(latest(events, "posting_failed"))
     reversal_failed? = not is_nil(latest(events, "reversal_failed"))
+    unposted? = not linked? and name in @valid_statuses and is_nil(posted)
+    unreversed? = not linked? and name == "cancelled" and not is_nil(posted) and is_nil(reversed)
 
     flags = [
       {Enum.any?(since_status, &(&1.event == "overdue")), :overdue},
       {name == "rejected", :rejection_requested},
-      {name in @valid_statuses and is_nil(posted) and posting_failed?, :posting_failed},
-      {name in @valid_statuses and is_nil(posted) and not posting_failed?, :unposted},
-      {name == "cancelled" and not is_nil(posted) and is_nil(reversed) and reversal_failed?,
-       :reversal_failed},
-      {name == "cancelled" and not is_nil(posted) and is_nil(reversed) and not reversal_failed?,
-       :unreversed}
+      {unposted? and posting_failed?, :posting_failed},
+      {unposted? and not posting_failed?, :unposted},
+      {unreversed? and reversal_failed?, :reversal_failed},
+      {unreversed? and not reversal_failed?, :unreversed}
     ]
 
     for {true, flag} <- flags, do: flag

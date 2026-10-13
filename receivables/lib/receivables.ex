@@ -35,7 +35,7 @@ defmodule Bilimbi.Finance.Receivables do
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
-  alias Bilimbi.Finance.Receivables.{Payments, Records, Series}
+  alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TieOut}
   alias Ecto.Changeset
 
   @view "finance.receivables.view"
@@ -448,6 +448,42 @@ defmodule Bilimbi.Finance.Receivables do
          {:ok, through, bucket_days} <- aging_options(options),
          {:ok, book} <- Ledger.get_book(scope, company_id) do
       {:ok, Aging.report(scope, company_id, book, as_of, through, bucket_days)}
+    end
+  end
+
+  @doc """
+  The control-account tie-out as of a date: for each receivable account
+  (every one an issued document recorded, the setup's, and any this module
+  posted to), what this module's records say is still owed on it
+  (`subledger_balance`, the aged receivables' total for the account), what
+  the ledger holds on it (`ledger_balance`, debits less credits over every
+  entry dated through `as_of`), the part of that this module posted
+  (`owned_balance`), and every other posting on the account
+  (`other_postings`, one per owner module, `nil` for an entry with no
+  owner, with `legacy` for one posted before owners were recorded), each
+  with its balance. `difference` is `subledger_balance` less
+  `ledger_balance`, and `tied_out?` whether every account's is zero: an
+  entry reversed outside this module, a manual journal on the account, a
+  sale posted by another module as well, each shows here as a difference
+  with its posting, never netted away.
+
+  All figures are read at one ledger entry number, named
+  `through_entry_number`; passing it back reproduces the tie-out exactly.
+  Reads the ledger, so it also needs `finance.ledger.view`. A malformed
+  option is `{:error, :invalid_option}`.
+  """
+  @spec tie_out_control_accounts(Scope.t(), term(), Date.t(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def tie_out_control_accounts(%Scope{} = scope, company_id, %Date{} = as_of, options \\ [])
+      when is_list(options) do
+    through = Keyword.get(options, :through_entry_number)
+
+    with :ok <- authorize(scope, company_id, @view),
+         true <-
+           (Keyword.keys(options) -- [:through_entry_number] == [] and
+              (is_nil(through) or (is_integer(through) and through in 0..Records.max_bigint()))) ||
+             {:error, :invalid_option} do
+      TieOut.report(scope, company_id, as_of, through)
     end
   end
 

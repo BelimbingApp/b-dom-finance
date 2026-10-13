@@ -780,8 +780,12 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     end
 
     test "keeps the exception codes the match applies" do
-      assert Payables.match_exception_codes() ==
-               apply(elem(List.last(TestFixtures.migrations()), 1), :exception_codes, [])
+      {_version, matching} =
+        Enum.find(TestFixtures.migrations(), fn {version, _module} ->
+          version == 20_261_014_100_000
+        end)
+
+      assert Payables.match_exception_codes() == apply(matching, :exception_codes, [])
     end
   end
 end

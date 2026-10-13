@@ -13,7 +13,14 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
 
   @doc "The migrations that build this contract, in order."
   def migration_versions,
-    do: [20_261_012_200_000, 20_261_013_090_000, 20_261_013_143_000, 20_261_013_221_500]
+    do: [
+      20_261_012_200_000,
+      20_261_013_090_000,
+      20_261_013_143_000,
+      20_261_013_221_500,
+      20_261_015_150_300,
+      20_261_015_150_400
+    ]
 
   def migration_version, do: List.last(migration_versions())
 
@@ -33,6 +40,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
       submissions(),
       status_events(),
       consolidated_sources(),
+      source_links(),
       code_overrides()
     ]
   end
@@ -290,6 +298,40 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
       checks: %{
         "finance_einvoice_consolidated_sources_not_own_source" =>
           check("source_document_id <> document_id")
+      }
+    }
+  end
+
+  defp source_links do
+    table = "finance_einvoice_source_links"
+
+    %{
+      name: table,
+      columns:
+        owned_columns(table)
+        |> Map.merge(%{
+          "document_id" => column(:bigint, false),
+          "source_module" => column({:varchar, 100}, false),
+          "source_record" => column({:varchar, 100}, false),
+          "ledger_entry_id" => column(:bigint, false)
+        }),
+      indexes: %{
+        "finance_einvoice_source_links_pkey" => index(["id"], true),
+        "finance_einvoice_source_links_unique" =>
+          index(["document_id", "source_module", "source_record"], true),
+        "finance_einvoice_source_links_source_index" =>
+          index(["company_id", "source_module", "source_record"])
+      },
+      foreign_keys: %{
+        "finance_einvoice_source_links_document_fkey" =>
+          company_reference("document_id", "finance_einvoice_documents")
+      },
+      checks: %{
+        "finance_einvoice_source_links_source_module" =>
+          check("(source_module)::text ~ '^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$'::text"),
+        "finance_einvoice_source_links_source_record" =>
+          check("(source_record)::text ~ '^[a-z][a-z0-9_]*:[1-9][0-9]*$'::text"),
+        "finance_einvoice_source_links_ledger_entry_id" => check("ledger_entry_id > 0")
       }
     }
   end

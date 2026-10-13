@@ -58,6 +58,32 @@ defmodule Bilimbi.Finance.Reconciliation.PostingTest do
 
     assert {:error, :statement_line_matched} =
              Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+    # The entry is the line's own: the ledger refuses a direct reversal of it,
+    # and once the line is unmatched it is matched to that entry again, never
+    # posted twice.
+    assert {:ok, %{owner: %{module: "finance/reconciliation", record: record}}} =
+             Ledger.get_entry(operator, 73, entry.id)
+
+    assert record == "statement_line:#{fee.id}"
+
+    assert {:error, {:owned_by, %{module: "finance/reconciliation"}}} =
+             Ledger.reverse_entry(operator, 73, entry.id, %{
+               entry_date: ~D[2026-10-21],
+               description: "Undo"
+             })
+
+    assert {:ok, %{status: "unmatched"}} =
+             Reconciliation.unmatch(operator, 73, match.id, %{reason: "Wrong kind"})
+
+    assert {:error, :statement_line_posted} =
+             Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+    assert {:ok, %{status: "matched"}} =
+             Reconciliation.match(operator, 73, bank_account.id, %{
+               statement_line_ids: [fee.id],
+               entry_ids: [entry.id]
+             })
   end
 
   test "refuses the wrong kind, a missing counter account, and a closed period, recording nothing",

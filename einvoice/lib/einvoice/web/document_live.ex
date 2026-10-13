@@ -249,6 +249,12 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
 
   defp pdf_message(reason), do: "The PDF could not be generated (#{inspect(reason)})."
 
+  # A linked document's accounting lives with its source: name it and the
+  # entry that record posted.
+  defp source_links_text(links) do
+    Enum.map_join(links, "; ", &"#{&1.module} #{&1.record} (entry ##{&1.ledger_entry_id})")
+  end
+
   defp attention_text(:overdue),
     do:
       "Not submitted within #{Configuration.authority().outage_notice_hours()} hours of the authority becoming unavailable; the submission keeps retrying."
@@ -477,6 +483,11 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
                   {if @document.reversal_entry_id,
                     do: " (reversed by ##{@document.reversal_entry_id})",
                     else: ""}
+                </:item>
+                <:item :if={@document.recognised_by_source?} title="Recognised by">
+                  <span id="einvoice-document-source-links">
+                    {source_links_text(@document.source_links)}
+                  </span>
                 </:item>
               </.list>
               <div

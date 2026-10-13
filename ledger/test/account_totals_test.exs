@@ -119,6 +119,64 @@ defmodule Bilimbi.Finance.Ledger.AccountTotalsTest do
     end
   end
 
+  describe "account_totals_by_owner/3" do
+    test "splits each account's totals by the module that posted them", context do
+      %{operator: operator, accounts: accounts} = context
+      owner = %{module: "finance/receivables", record: "document:5"}
+
+      {:ok, _owned} =
+        Ledger.post_entry(
+          operator,
+          73,
+          %{
+            entry_date: ~D[2026-10-09],
+            description: "Invoice",
+            lines: [
+              %{account_id: accounts["1000"].id, debit: "30"},
+              %{account_id: accounts["4000"].id, credit: "30"}
+            ]
+          },
+          owner: owner
+        )
+
+      assert {:ok, totals} =
+               Ledger.account_totals_by_owner(operator, 73, from: ~D[2026-10-01], to: ~D[2026-10-31])
+
+      assert %{through_entry_number: 4, currency_code: "XTS", minor_units: 2} = totals
+
+      assert [
+               %{code: "1000", owner_module: nil, legacy: false} = manual_cash,
+               %{code: "1000", owner_module: "finance/receivables", legacy: false} = owned_cash,
+               %{code: "4000", owner_module: nil} = manual_income,
+               %{code: "4000", owner_module: "finance/receivables"} = owned_income
+             ] = totals.rows
+
+      assert Decimal.equal?(manual_cash.debits, 120) and Decimal.equal?(owned_cash.debits, 30)
+      assert Decimal.equal?(manual_income.credits, 120)
+      assert Decimal.equal?(owned_income.credits, 30)
+
+      # The split adds up to the account's totals at the same entry number.
+      assert {:ok, %{rows: [cash | _]}} =
+               Ledger.account_totals(operator, 73,
+                 from: ~D[2026-10-01],
+                 to: ~D[2026-10-31],
+                 through_entry_number: 4
+               )
+
+      assert Decimal.equal?(cash.debits, Decimal.add(manual_cash.debits, owned_cash.debits))
+
+      assert {:ok, %{rows: [%{code: "1000", owner_module: nil}, %{code: "4000"}]}} =
+               Ledger.account_totals_by_owner(operator, 73,
+                 from: ~D[2026-10-01],
+                 to: ~D[2026-10-31],
+                 through_entry_number: 3
+               )
+
+      assert {:error, :invalid_option} =
+               Ledger.account_totals_by_owner(operator, 73, through_entry_number: "3")
+    end
+  end
+
   describe "list_entries/3 behind a figure" do
     test "keeps the entries with a line on the account", context do
       %{operator: operator, accounts: accounts, entries: entries} = context

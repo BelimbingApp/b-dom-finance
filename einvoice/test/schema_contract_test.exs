@@ -15,18 +15,29 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261015150300_claim_finance_einvoice_entries.exs",
+  __DIR__
+)
+
+Code.require_file(
+  "../priv/repo/migrations/20261015150400_add_finance_einvoice_source_links.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Einvoice.Migrations.{AddConsolidation, AddLedgerEntry}
-  alias Bilimbi.Finance.Einvoice.Migrations.{AddPostingUniqueness, CreateEinvoice}
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddConsolidation, AddLedgerEntry, AddSourceLinks}
+  alias Bilimbi.Finance.Einvoice.Migrations.{AddPostingUniqueness, ClaimEntries, CreateEinvoice}
   alias Bilimbi.Finance.Einvoice.SchemaContract
+  alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
-  setup do
+  setup context do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
     database = "bilimbi_finance_einvoice_#{String.replace(Ecto.UUID.generate(), "-", "")}"
     quoted = SchemaVerifier.quote_identifier!(database)
@@ -45,18 +56,33 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
       )
     )
 
-    [first, second, third, fourth] = SchemaContract.migration_versions()
+    migrate! = fn migrations ->
+      for {version, migration} <- migrations do
+        assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
+      end
+    end
 
-    for {version, migration} <- [
+    [first, second, third, fourth, fifth, sixth] = SchemaContract.migration_versions()
+
+    # The ledger's migrations come first, as in a composed database: the
+    # claim migration calls the ledger's claim function.
+    {ledger, [owner]} = Enum.split(LedgerFixtures.migrations(), 3)
+
+    migrate!.(
+      ledger ++
+        [
           {first, CreateEinvoice},
           {second, AddLedgerEntry},
           {third, AddPostingUniqueness},
           {fourth, AddConsolidation}
-        ] do
-      assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
-    end
+        ]
+    )
 
-    %{repo: repo}
+    later = [owner, {fifth, ClaimEntries}, {sixth, AddSourceLinks}]
+    # One test posts before the ledger recorded owners and migrates itself.
+    unless context[:before_claim], do: migrate!.(later)
+
+    %{repo: repo, migrate_later!: fn -> migrate!.(later) end}
   end
 
   test "the fresh migration implements the complete e-invoicing contract", %{repo: repo} do
@@ -326,5 +352,141 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
              query!.(
                "SELECT document_id, source_document_id FROM finance_einvoice_consolidated_sources ORDER BY document_id, source_document_id"
              )
+  end
+
+  @document "INSERT INTO finance_einvoice_documents (id, tenant_id, company_id, authority, environment, document_type, code_number, issued_at, currency_code, supplier, buyer, line_extension_amount, tax_exclusive_amount, tax_amount, tax_inclusive_amount, payable_amount, issued_by_user_id, recorded_at) VALUES (ID, 1, 1, 'authority', 'sandbox', '01', 'INV-ID', '2026-10-01', 'XTS', '{}', '{}', 10, 10, 0, 10, 10, 1, '2000-01-01')"
+  @line "INSERT INTO finance_einvoice_document_lines (tenant_id, company_id, document_id, line_number, description, classification_code, quantity, unit_price, subtotal, line_extension_amount, tax_type, tax_amount) VALUES (1, 1, ID, 1, 'Item', '022', 1, 10, 10, 10, '06', 0)"
+
+  # Entries this module posted before the ledger recorded owners are
+  # claimed by the migration, through the ledger's own function.
+  @tag :before_claim
+  @tag :capture_log
+  test "the claim migration marks the module's earlier entries as its own",
+       %{repo: repo, migrate_later!: migrate_later!} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    entry = fn id, reverses ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 1, '2026-10-01', 'Entry', 'XTS', #{reverses || "NULL"}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 1, 10, 0), (1, 1, #{id}, 2, 2, 0, 10)"
+      ]
+    end
+
+    event = fn document, name, entry ->
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, ledger_entry_id, recorded_at) VALUES (1, 1, #{document}, 99, '#{name}', 'user', 1, #{entry}, '2000-01-01')"
+    end
+
+    {:ok, _} =
+      in_transaction.(
+        [
+          "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+          "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
+        ] ++
+          entry.(1, nil) ++
+          entry.(2, 1) ++
+          entry.(3, nil) ++
+          [
+            String.replace(@document, "ID", "1"),
+            String.replace(@line, "ID", "1"),
+            event.(1, "issued", "NULL"),
+            event.(1, "posted", 1),
+            event.(1, "posting_reversed", 2)
+          ]
+      )
+
+    migrate_later!.()
+
+    assert %{
+             rows: [
+               [1, true, "finance/einvoice", "document:1"],
+               [2, true, "finance/einvoice", "document:1"],
+               [3, true, nil, nil]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+             )
+  end
+
+  @tag :capture_log
+  test "a source has one standing document, and a linked document stands only while it does",
+       %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    document = fn id ->
+      [String.replace(@document, "ID", "#{id}"), String.replace(@line, "ID", "#{id}")]
+    end
+
+    link = fn document, record ->
+      "INSERT INTO finance_einvoice_source_links (tenant_id, company_id, document_id, source_module, source_record, ledger_entry_id) VALUES (1, 1, #{document}, 'finance/receivables', '#{record}', 7)"
+    end
+
+    event = fn document, name ->
+      "INSERT INTO finance_einvoice_status_events (tenant_id, company_id, document_id, sequence, event, actor_type, actor_user_id, recorded_at) VALUES (1, 1, #{document}, 99, '#{name}', 'user', 1, '2000-01-01')"
+    end
+
+    submission = fn document ->
+      "INSERT INTO finance_einvoice_submissions (tenant_id, company_id, document_id, environment, format, document_version, payload, payload_sha256, actor_type, actor_user_id, recorded_at) VALUES (1, 1, #{document}, 'sandbox', 'JSON', '1.0', 'x', encode(sha256('x'), 'hex'), 'user', 1, '2000-01-01')"
+    end
+
+    # A link is written with its document, once per source.
+    assert {:ok, _} = in_transaction.(document.(1) ++ [link.(1, "document:5"), event.(1, "issued")])
+
+    assert_raise Postgrex.Error, ~r/already recorded/, fn ->
+      in_transaction.([link.(1, "document:6")])
+    end
+
+    # An issued, unsubmitted document does not stand: another may link the
+    # source, and then the first is not submitted.
+    assert {:ok, _} = in_transaction.(document.(2) ++ [link.(2, "document:5"), event.(2, "issued")])
+    assert {:ok, _} = in_transaction.([submission.(2), event.(2, "submitted")])
+
+    assert_raise Postgrex.Error, ~r/document 1 is not submitted: .* source of document 2, which stands/, fn ->
+      in_transaction.([submission.(1)])
+    end
+
+    assert_raise Postgrex.Error, ~r/source of document 2, which stands/, fn ->
+      in_transaction.(document.(3) ++ [link.(3, "document:5"), event.(3, "issued")])
+    end
+
+    # Once the authority refuses it, the source is free again.
+    assert {:ok, _} = in_transaction.([event.(2, "refused")])
+    assert {:ok, _} = in_transaction.(document.(3) ++ [link.(3, "document:5"), event.(3, "issued")])
+    assert {:ok, _} = in_transaction.([submission.(3), event.(3, "submitted")])
+
+    # A consolidated document carries its source's link and may be submitted.
+    assert {:ok, _} = in_transaction.(document.(4) ++ [link.(4, "document:8"), event.(4, "issued")])
+
+    assert {:ok, _} =
+             in_transaction.(
+               document.(5) ++
+                 [
+                   "INSERT INTO finance_einvoice_consolidated_sources (tenant_id, company_id, document_id, source_document_id, line_number) VALUES (1, 1, 5, 4, 1)",
+                   event.(4, "consolidated"),
+                   link.(5, "document:8"),
+                   event.(5, "issued")
+                 ]
+             )
+
+    assert {:ok, _} = in_transaction.([submission.(5), event.(5, "submitted")])
+
+    # Links are append-only.
+    for sql <- [
+          "UPDATE finance_einvoice_source_links SET ledger_entry_id = 9",
+          "DELETE FROM finance_einvoice_source_links",
+          "TRUNCATE finance_einvoice_source_links"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance e-invoicing keeps/, fn -> query!.(sql) end
+    end
   end
 end

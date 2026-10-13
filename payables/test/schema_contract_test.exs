@@ -3,12 +3,13 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
+  alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Payables.SchemaContract
   alias Bilimbi.Finance.Payables.TestFixtures
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
-  setup do
+  setup context do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
     database = "bilimbi_finance_payables_#{String.replace(Ecto.UUID.generate(), "-", "")}"
     quoted = SchemaVerifier.quote_identifier!(database)
@@ -27,11 +28,21 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
       )
     )
 
-    for {version, module} <- TestFixtures.migrations() do
-      assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+    migrate! = fn migrations ->
+      for {version, module} <- migrations do
+        assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+      end
     end
 
-    %{repo: repo}
+    # The ledger's migrations come first, as in a composed database: the
+    # claim migration calls the ledger's claim function.
+    {ledger, [owner]} = Enum.split(LedgerFixtures.migrations(), 3)
+    {earlier, [claim]} = Enum.split(TestFixtures.migrations(), 2)
+    migrate!.(ledger ++ earlier)
+    # One test posts before the ledger recorded owners and migrates itself.
+    unless context[:before_claim], do: migrate!.([owner, claim])
+
+    %{repo: repo, migrate_claim!: fn -> migrate!.([owner, claim]) end}
   end
 
   test "the fresh migrations implement the complete payables contract", %{repo: repo} do
@@ -365,6 +376,62 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
     assert %{rows: [[1, 1, true], [4, 2, true]]} =
              query!.(
                "SELECT id, payment_number, posted_at > '2026-01-01' FROM finance_payables_payments ORDER BY id"
+             )
+  end
+
+  # Entries this module posted before the ledger recorded owners are
+  # claimed by the migration, through the ledger's own function.
+  @tag :before_claim
+  @tag :capture_log
+  test "the claim migration marks the module's earlier entries as its own",
+       %{repo: repo, migrate_claim!: migrate_claim!} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    entry = fn id, reverses ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 1, '2026-10-01', 'Entry', 'XTS', #{reverses || "NULL"}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 5, 30, 0), (1, 1, #{id}, 2, 7, 0, 30)"
+      ]
+    end
+
+    {:ok, _} =
+      in_transaction.(
+        [
+          "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+          "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (5, 1, 1, '5000', 'Expense', 'expense', now(), now()), (7, 1, 1, '2000', 'Payable', 'liability', now(), now())"
+        ] ++ entry.(1, nil) ++ entry.(2, nil) ++ entry.(3, 2) ++ entry.(4, nil)
+      )
+
+    # Bill 1 posted entry 1; payment 1 posted entry 2, reversed by payment
+    # 2's entry 3; entry 4 is somebody else's.
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_payables_documents (id, tenant_id, company_id, document_type, status, party_key, party_name, party_document_number, document_date, due_date, currency_code, total_net, total_tax, total, created_by_user_id, created_at) VALUES (1, 1, 1, 'bill', 'draft', 'P', 'Party', 'D-1', '2026-10-01', '2026-10-01', 'XTS', 30, 0, 30, 1, '2000-01-01')",
+        "INSERT INTO finance_payables_document_lines (tenant_id, company_id, document_id, line_number, description, account_id, amount) VALUES (1, 1, 1, 1, 'Line', 5, 30)",
+        "UPDATE finance_payables_documents SET status = 'approved', approved_by_user_id = 1 WHERE id = 1",
+        "UPDATE finance_payables_documents SET status = 'posted', posted_by_user_id = 1, payable_account_id = 7, entry_id = 1, entry_number = 1, document_number = 1 WHERE id = 1",
+        "INSERT INTO finance_payables_payments (id, tenant_id, company_id, payment_number, payment_date, party_key, party_name, paid_from_account_id, amount, currency_code, entry_id, entry_number, posted_by_user_id, posted_at) VALUES (1, 1, 1, 1, '2026-10-02', 'P', 'Party', 7, 30, 'XTS', 2, 2, 1, '2000-01-01')",
+        "INSERT INTO finance_payables_payment_allocations (tenant_id, company_id, payment_id, line_number, document_id, amount) VALUES (1, 1, 1, 1, 1, 30)",
+        "INSERT INTO finance_payables_payments (id, tenant_id, company_id, payment_number, payment_date, party_key, party_name, paid_from_account_id, amount, currency_code, reverses_payment_id, entry_id, entry_number, posted_by_user_id, posted_at) VALUES (2, 1, 1, 2, '2026-10-03', 'P', 'Party', 7, 30, 'XTS', 1, 3, 3, 1, '2000-01-01')"
+      ])
+
+    migrate_claim!.()
+
+    assert %{
+             rows: [
+               [1, true, "finance/payables", "document:1"],
+               [2, true, "finance/payables", "payment:1"],
+               [3, true, "finance/payables", "payment:1"],
+               [4, true, nil, nil]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
              )
   end
 end

@@ -7,7 +7,8 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   migration's rule. Keep them in step with
   `priv/repo/migrations/`; `test/schema_contract_test.exs` checks the real
   migrations themselves. The closing rules' functions are the closing
-  migration's own, created in `pg_temp`.
+  migration's own, created in `pg_temp`, and the entry owner migration's
+  statements run as they are (`statements(temporary: true)`).
   """
 
   alias Bilimbi.Base.Authz
@@ -26,6 +27,39 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
                        "../../priv/repo/migrations/20261013101700_create_finance_ledger_closing.exs",
                        __DIR__
                      )
+
+  @owner_migration Path.expand(
+                     "../../priv/repo/migrations/20261015150000_add_finance_ledger_entry_owner.exs",
+                     __DIR__
+                   )
+
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
+
+  @migration_files [
+    {20_261_012_170_100, Bilimbi.Finance.Ledger.Migrations.CreateLedger,
+     "20261012170100_create_finance_ledger.exs"},
+    {20_261_012_214_100, Bilimbi.Finance.Ledger.Migrations.NotifyPostings,
+     "20261012214100_notify_finance_ledger_postings.exs"},
+    {20_261_013_101_700, Bilimbi.Finance.Ledger.Migrations.CreateClosing,
+     "20261013101700_create_finance_ledger_closing.exs"},
+    {20_261_015_150_000, Bilimbi.Finance.Ledger.Migrations.AddEntryOwner,
+     "20261015150000_add_finance_ledger_entry_owner.exs"}
+  ]
+
+  @doc """
+  The ledger's migrations as `{version, module}` in version order, each
+  loaded once, for a sibling module's fresh-database contract test that
+  runs them before its own (a module that claims its legacy entries needs
+  the ledger's claim function).
+  """
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
+  end
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
@@ -92,16 +126,27 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   end
 
   def create_ledger_tables! do
-    Enum.each(ledger_statements() ++ closing_statements(), &SQL.query!(Repo, &1, []))
+    (ledger_statements() ++ closing_statements() ++ owner_statements())
+    |> Enum.each(&SQL.query!(Repo, &1, []))
   end
 
-  # The migration is a script, not compiled module code; load it once.
+  # The migrations are scripts, not compiled module code; load each once.
   defp closing_functions do
     migration = Bilimbi.Finance.Ledger.Migrations.CreateClosing
 
     unless Code.ensure_loaded?(migration), do: Code.require_file(@closing_migration)
 
     apply(migration, :functions, ["pg_temp."])
+  end
+
+  # The owner migration's own SQL, which alters the temporary entries table
+  # and replaces its update trigger as the migration does.
+  defp owner_statements do
+    migration = Bilimbi.Finance.Ledger.Migrations.AddEntryOwner
+
+    unless Code.ensure_loaded?(migration), do: Code.require_file(@owner_migration)
+
+    apply(migration, :statements, [[temporary: true]])
   end
 
   defp ledger_statements do

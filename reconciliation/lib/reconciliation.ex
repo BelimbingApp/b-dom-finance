@@ -521,7 +521,9 @@ defmodule Bilimbi.Finance.Reconciliation do
   (a closed period, an inactive account) is returned as its changeset with
   nothing recorded. Other refusals: `:invalid_kind`, `:no_charges_account`,
   `:no_interest_account`, `:not_a_charge` (the line is money in),
-  `:not_interest` (money out), and `:statement_line_matched`.
+  `:not_interest` (money out), `:statement_line_matched`, and
+  `:statement_line_posted` for a line that already posted an entry (the
+  ledger holds that entry as this line's: match the line to it instead).
   """
   @spec post_statement_line(Scope.t(), term(), term(), map()) ::
           {:ok, %{entry: map(), match: map()}}

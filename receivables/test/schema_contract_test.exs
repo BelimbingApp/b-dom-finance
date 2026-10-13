@@ -1,19 +1,15 @@
-Code.require_file(
-  "../priv/repo/migrations/20261012214517_create_finance_receivables.exs",
-  __DIR__
-)
-
 defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Receivables.Migrations.CreateReceivables
+  alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Receivables.SchemaContract
+  alias Bilimbi.Finance.Receivables.TestFixtures
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
-  setup do
+  setup context do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
     database = "bilimbi_finance_receivables_#{String.replace(Ecto.UUID.generate(), "-", "")}"
     quoted = SchemaVerifier.quote_identifier!(database)
@@ -32,13 +28,21 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), CreateReceivables,
-               log: false,
-               dynamic_repo: repo
-             )
+    migrate! = fn migrations ->
+      for {version, module} <- migrations do
+        assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+      end
+    end
 
-    %{repo: repo}
+    # The ledger's migrations come first, as in a composed database: the
+    # claim migration calls the ledger's claim function.
+    [create, claim] = TestFixtures.migrations()
+    {ledger, [owner]} = Enum.split(LedgerFixtures.migrations(), 3)
+    migrate!.(ledger ++ [create])
+    # One test posts before the ledger recorded owners and migrates itself.
+    unless context[:before_claim], do: migrate!.([owner, claim])
+
+    %{repo: repo, migrate_claim!: fn -> migrate!.([owner, claim]) end}
   end
 
   test "the fresh migration implements the complete receivables contract", %{repo: repo} do
@@ -224,5 +228,64 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
 
     assert %{rows: [[true]]} =
              query!.("SELECT recorded_at > '2026-01-01' FROM finance_receivables_payments")
+  end
+
+  # Entries this module posted before the ledger recorded owners are
+  # claimed by the migration, through the ledger's own function.
+  @tag :before_claim
+  @tag :capture_log
+  test "the claim migration marks the module's earlier entries as its own",
+       %{repo: repo, migrate_claim!: migrate_claim!} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    entry = fn id, reverses ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 1, '2026-10-01', 'Entry', 'XTS', #{reverses || "NULL"}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 5, 110, 0), (1, 1, #{id}, 2, 8, 0, 110)"
+      ]
+    end
+
+    {:ok, _} =
+      in_transaction.(
+        [
+          "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+          "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (5, 1, 1, '1100', 'Receivable', 'asset', now(), now()), (7, 1, 1, '1000', 'Cash', 'asset', now(), now()), (8, 1, 1, '4000', 'Income', 'income', now(), now()), (9, 1, 1, '2100', 'Tax', 'liability', now(), now())",
+          "INSERT INTO finance_receivables_series (id, tenant_id, company_id, code, name, kind, prefix, number_width, inserted_at, updated_at) VALUES (1, 1, 1, 'I', 'Invoices', 'invoice', 'I-', 3, now(), now()), (3, 1, 1, 'P', 'Payments', 'payment', 'P-', 3, now(), now())",
+          "INSERT INTO finance_receivables_customers (id, tenant_id, company_id, code, name, inserted_at, updated_at) VALUES (1, 1, 1, 'C1', 'Customer', now(), now())",
+          "INSERT INTO finance_receivables_tax_codes (id, tenant_id, company_id, code, name, rate, account_id, inserted_at, updated_at) VALUES (1, 1, 1, 'T', 'Tax', 10, 9, now(), now())"
+        ] ++ entry.(1, nil) ++ entry.(2, nil) ++ entry.(3, 2) ++ entry.(4, nil)
+      )
+
+    # Invoice 1 posted entry 1; payment 1 posted entry 2, reversed by entry
+    # 3; entry 4 is somebody else's.
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_receivables_documents (id, tenant_id, company_id, kind, status, series_id, customer_id, currency_code, issue_date, subtotal, tax_total, total, inserted_at, updated_at) VALUES (1, 1, 1, 'invoice', 'draft', 1, 1, 'XTS', '2026-10-01', 100, 10, 110, now(), now())",
+        "INSERT INTO finance_receivables_document_lines (tenant_id, company_id, document_id, line_number, description, quantity, unit_price, amount, account_id, tax_code_id, tax_rate, tax_amount) VALUES (1, 1, 1, 1, 'Work', 1, 100, 100, 8, 1, 10, 10)",
+        "INSERT INTO finance_receivables_document_tax_lines (tenant_id, company_id, document_id, tax_code_id, tax_code, tax_rate, taxable_amount, tax_amount, account_id) VALUES (1, 1, 1, 1, 'T', 10, 100, 10, 9)",
+        "UPDATE finance_receivables_documents SET status = 'issued', document_number = 1, document_reference = 'I-001', due_date = '2026-10-31', party_name = 'Customer', receivable_account_id = 5, ledger_entry_id = 1, ledger_entry_number = 1, issued_by_user_id = 1, issued_at = '2000-01-01' WHERE id = 1",
+        "INSERT INTO finance_receivables_payments (id, tenant_id, company_id, series_id, customer_id, payment_number, payment_reference, payment_date, amount, currency_code, deposit_account_id, ledger_entry_id, ledger_entry_number, recorded_by_user_id, recorded_at) VALUES (1, 1, 1, 3, 1, 1, 'P-001', '2026-10-02', 110, 'XTS', 7, 2, 2, 1, '2000-01-01')",
+        "INSERT INTO finance_receivables_allocations (tenant_id, company_id, payment_id, document_id, amount) VALUES (1, 1, 1, 1, 110)",
+        "INSERT INTO finance_receivables_payment_reversals (tenant_id, company_id, payment_id, reversal_date, reason, ledger_entry_id, ledger_entry_number, reversed_by_user_id, reversed_at) VALUES (1, 1, 1, '2026-10-03', 'Bounced', 3, 3, 1, '2000-01-01')"
+      ])
+
+    migrate_claim!.()
+
+    assert %{
+             rows: [
+               [1, true, "finance/receivables", "document:1"],
+               [2, true, "finance/receivables", "payment:1"],
+               [3, true, "finance/receivables", "payment:1"],
+               [4, true, nil, nil]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+             )
   end
 end
