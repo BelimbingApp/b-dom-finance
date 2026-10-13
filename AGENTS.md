@@ -107,8 +107,9 @@ here; they govern this code and are not copied here.
   (`view` and `manage` are Base's, `post` is Ledger's): a verb two mounted
   Domains both declare is that boot failure.
 - Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
-  `post_payroll_run/3` and `post_claim/3`, and undo one with
-  `reverse_posting/4`: a source's standing is its latest posting event,
+  `post_payroll_run/3`, `post_claim/3`, or `post_claims/3` (a batch posted
+  from one read of the source taken before the company lock; the `posted`
+  check still happens under it), and undo one with `reverse_posting/4`: a source's standing is its latest posting event,
   and the database keeps one `posted` and one `reversed` event per source.
   People has no void or reversal event, so a reversal is a user's decision
   with a reason, never a reaction to the source.

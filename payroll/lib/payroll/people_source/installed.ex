@@ -13,9 +13,7 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
   # company's local calendar date of it.
   @behaviour Bilimbi.Finance.Payroll.PeopleSource
 
-  alias Bilimbi.Base.DateTime, as: BaseDateTime
-  alias Bilimbi.Base.Settings
-  alias Bilimbi.Base.Tenancy.Scope
+  alias Bilimbi.Finance.Payroll.CompanyTime
   alias Bilimbi.Finance.Payroll.PeopleSource
 
   @impl true
@@ -54,7 +52,7 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
          {:ok, categories} <- category_codes(claims, scope, company_id),
          {:ok, approved} <- apply(claims, :claim_queue, [scope, company_id, "approved"]),
          {:ok, reimbursed} <- apply(claims, :claim_queue, [scope, company_id, "reimbursed"]) do
-      timezone = company_timezone(scope, company_id)
+      timezone = CompanyTime.timezone(scope, company_id)
 
       {:ok,
        (approved ++ reimbursed)
@@ -125,28 +123,13 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
     end
   end
 
-  # The company's own time zone, from Base DateTime, which falls back to the
-  # app's configured zone when the company has not set one.
-  defp company_timezone(scope, company_id) do
-    BaseDateTime.company_timezone(Settings.Scope.company(company_id, Scope.tenant_id(scope)))
-  end
-
-  @doc false
-  # The company's local calendar date of an approval stored as naive UTC.
-  def approved_on(decided_at, timezone) do
-    case BaseDateTime.shift(decided_at, timezone) do
-      {:ok, local} -> DateTime.to_date(local)
-      {:error, _reason} -> nil
-    end
-  end
-
   defp claim_view(claim, categories, timezone) do
     {type_code, category_code} = Map.get(categories, claim.claim_type_id, {nil, nil})
 
     %{
       id: claim.id,
       reference: String.trim("claim #{claim.id} #{type_code}"),
-      approved_on: approved_on(claim.decided_at, timezone),
+      approved_on: CompanyTime.local_date(claim.decided_at, timezone),
       currency_code: claim.currency,
       amount: claim.approved_amount,
       category_code: category_code,

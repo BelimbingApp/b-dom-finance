@@ -57,6 +57,7 @@ defmodule Bilimbi.Finance.Payroll.TestFixtures do
   def setup_payroll! do
     CompanyFixtures.create_company_identity_tables!()
     AuthzFixtures.create_authz_tables!()
+    Bilimbi.Base.Settings.TestFixtures.create_settings_table!()
     LedgerFixtures.create_ledger_tables!()
     create_payroll_tables!()
     install_authz!()
@@ -72,21 +73,46 @@ defmodule Bilimbi.Finance.Payroll.TestFixtures do
     %{first_scope: first, second_scope: second}
   end
 
-  @doc "An Authz snapshot over the platform's, the ledger's, and this module's capabilities."
+  @doc """
+  A snapshot over the platform's, the ledger's, and this module's capabilities,
+  and the company time zone setting Base DateTime defines.
+  """
   def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/payroll", :bilimbi_finance_payroll, Payroll.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
+    providers = [
+      {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
+      {"base/datetime", :bilimbi_base_datetime, Bilimbi.Base.DateTime.Contributions},
+      {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
+      {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
+      {"finance/payroll", :bilimbi_finance_payroll, Payroll.Contributions}
+    ]
+
+    entries = fn key ->
+      for {id, app, provider} <- providers,
+          payload = Map.get(provider.contributions(), key),
+          payload != nil,
+          do: %{descriptor: %{id: id, otp_app: app}, payload: payload}
+    end
 
     ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
+      %{
+        authz: ContributionValidator.validate_contributions!(entries.(:authz)),
+        settings:
+          Bilimbi.Base.Settings.ContributionValidator.validate_contributions!(entries.(:settings))
+      },
       "finance-payroll-test"
     )
+  end
+
+  @doc "Sets the company's time zone, as its profile does."
+  def put_company_timezone!(%Scope{} = scope, company_id, timezone) do
+    {:ok, _} =
+      Bilimbi.Base.Settings.put(
+        "localization.timezone",
+        timezone,
+        Bilimbi.Base.Settings.Scope.company(company_id, Scope.tenant_id(scope))
+      )
+
+    :ok
   end
 
   @doc """

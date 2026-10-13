@@ -333,7 +333,7 @@ defmodule Bilimbi.Finance.Payroll.Web.PostingsLive do
               field={@reversal_form[:entry_date]}
               id="payroll-reversal-date"
               type="date"
-              label="Entry date (today unless given)"
+              label="Entry date (company's today unless given)"
             />
             <div class="flex gap-2 md:col-span-2">
               <.button type="submit" id="payroll-reversal-confirm" variant="danger">

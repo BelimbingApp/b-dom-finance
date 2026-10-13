@@ -45,6 +45,7 @@ defmodule Bilimbi.Finance.Payroll do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Ledger
+  alias Bilimbi.Finance.Payroll.CompanyTime
   alias Bilimbi.Finance.Payroll.Events
   alias Bilimbi.Finance.Payroll.Mapping
   alias Bilimbi.Finance.Payroll.MappingChange
@@ -400,7 +401,7 @@ defmodule Bilimbi.Finance.Payroll do
 
   @doc """
   Reverses a posting's entry with `reason` (required, at most 500
-  characters) on `entry_date` (today unless given; not before the
+  characters) on `entry_date` (the company's local today unless given; not before the
   original's, and in an open period), through `Ledger.reverse_entry/4`, and
   records it as a `reversed` event. A posting is reversed once
   (`:already_reversed`); a refused attempt is recorded as a
@@ -420,7 +421,7 @@ defmodule Bilimbi.Finance.Payroll do
       when is_map(attributes) do
     with :ok <- authorize(scope, company_id, @post_postings),
          {:ok, posting_id} <- positive_id(posting_id),
-         {:ok, attributes} <- reversal_attributes(attributes) do
+         {:ok, attributes} <- reversal_attributes(scope, company_id, attributes) do
       Posting.reverse(scope, company_id, %{id: posting_id}, attributes)
     else
       :error -> {:error, :posting_not_found}
@@ -428,7 +429,7 @@ defmodule Bilimbi.Finance.Payroll do
     end
   end
 
-  defp reversal_attributes(attributes) do
+  defp reversal_attributes(scope, company_id, attributes) do
     types = %{reason: :string, entry_date: :date}
 
     changeset =
@@ -440,7 +441,7 @@ defmodule Bilimbi.Finance.Payroll do
 
     if changeset.valid? do
       values = Changeset.apply_changes(changeset)
-      {:ok, Map.put_new(values, :entry_date, Date.utc_today())}
+      {:ok, Map.put_new(values, :entry_date, CompanyTime.today(scope, company_id))}
     else
       {:error, changeset}
     end

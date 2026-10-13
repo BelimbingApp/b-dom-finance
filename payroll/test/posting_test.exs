@@ -366,6 +366,24 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
       assert got == Map.put(reversed, :last_failure, nil)
     end
 
+    test "defaults the reversal date to the company's local today, not UTC's", context do
+      TestFixtures.put_company_timezone!(context.first_scope, 73, "Pacific/Pago_Pago")
+      run!()
+      {:ok, posting} = Payroll.post_payroll_run(context.operator, 73, 1)
+
+      {:ok, local_now} =
+        DateTime.shift_zone(
+          DateTime.utc_now(),
+          "Pacific/Pago_Pago",
+          Bilimbi.Base.DateTime.time_zone_database()
+        )
+
+      assert {:ok, reversed} =
+               Payroll.reverse_posting(context.operator, 73, posting.id, %{reason: "wrong month"})
+
+      assert reversed.reversal.entry_date == DateTime.to_date(local_now)
+    end
+
     test "records a refused reversal and the database refuses a reversal of nothing", context do
       run!()
       {:ok, posting} = Payroll.post_payroll_run(context.operator, 73, 1)

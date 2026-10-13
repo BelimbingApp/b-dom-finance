@@ -133,7 +133,7 @@ failure that may pass at once is tried a second time, then recorded.
 `Bilimbi.Finance.Payroll.Posting` holds the rules.
 
 `reverse_posting/4` posts the mirror entry through `Ledger.reverse_entry/4`
-on the date given (today by default) and records a `reversed` event with the
+on the date given (the company's local today by default) and records a `reversed` event with the
 reason; a posting reverses once, and a reversed source is not posted again:
 its correction is a new ledger entry. A refused reversal is a
 `reversal_failed` event.
