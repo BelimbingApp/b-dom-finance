@@ -84,7 +84,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   test "the migrations roll back in order", %{repo: repo} do
     for {version, migration} <-
           SchemaContract.migration_versions()
-          |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner])
+          |> Enum.zip([
+            CreateLedger,
+            NotifyPostings,
+            CreateClosing,
+            AddEntryOwner,
+            AddDutySeparation
+          ])
           |> Enum.reverse() do
       assert :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
     end
