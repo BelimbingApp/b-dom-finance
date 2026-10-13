@@ -15,7 +15,7 @@ captured it when, and never changed afterwards.
   the same transaction as its file; `replace/4` and `remove/4` while the
   record is not final; `extend_retention/4`, `place_hold/4`, and
   `release_hold/4`; `refresh_retention/4` for a record whose date changed; the company's `get_retention/2`, `set_retention/3`, and
-  `list_retention_changes/2`; `retain_until/3`; and the reads
+  `list_retention_changes/2`; `retain_until/3`; `evidence_page/4`; and the reads
   `list_attachments/4`, `list_company_attachments/3`, `list_sources/2`,
   `get_attachment/3`, and `read_attachment/3`.
 - `Bilimbi.Finance.Attachments.Source`, the behaviour a Finance module
@@ -98,10 +98,11 @@ captured it when, and never changed afterwards.
   retained document nobody references, which an operator can find in Base
   Artifacts by its owner `finance/attachments`.
 - **Not kept here.** The e-invoice PDF stays einvoice's regenerable visual,
-  not a source document. The auditor's evidence pack (an attachment index
-  of document, file name, hash, and retain-until) belongs to the reports
-  module's pack, which is not on `main` yet: adding the index there is the
-  follow-up once it lands; until then `/finance/attachments` is the index.
+  not a source document. The auditor's evidence pack exports the attachment
+  index through `evidence_page/4` (`attachment`: document, file name, hash,
+  and retain-until; `attachment_event`; `retention_change`), authorized with
+  `finance.attachments.view`; the bytes stay in Base Artifacts and are read
+  through `/finance/attachments`.
 
 ## Database
 

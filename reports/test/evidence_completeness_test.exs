@@ -2,6 +2,7 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
   use ExUnit.Case, async: true
 
   alias Bilimbi.Finance.{
+    Attachments,
     Ledger,
     Receivables,
     Payables,
@@ -20,7 +21,8 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
     {:bilimbi_finance_einvoice, Einvoice.Evidence},
     {:bilimbi_finance_payroll, Payroll.Evidence},
     {:bilimbi_finance_sst, Sst.Evidence},
-    {:bilimbi_finance_fixed_assets, FixedAssets.Evidence}
+    {:bilimbi_finance_fixed_assets, FixedAssets.Evidence},
+    {:bilimbi_finance_attachments, Attachments.Evidence}
   ]
 
   @excluded %{
@@ -83,7 +85,8 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
                Einvoice,
                Payroll,
                Sst,
-               FixedAssets
+               FixedAssets,
+               Attachments
              ])
   end
 

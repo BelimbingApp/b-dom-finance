@@ -37,7 +37,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         context.first_scope,
         73,
         95,
-        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.payroll.view finance.sst.view finance.fixed-assets.view finance.reports.reports-export)
+        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.payroll.view finance.sst.view finance.fixed-assets.view finance.attachments.view finance.reports.reports-export)
       )
 
     assert {:ok, reader_artifact} = Reports.export_auditor_pack(reader, 73, ~D[2026-10-31])
@@ -55,7 +55,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     assert manifest["tenant_id"] == 41
     assert manifest["through_entry_number"] == 501
     assert manifest["timezone"] == "Etc/UTC"
-    assert manifest["generator_version"] == "5"
+    assert manifest["generator_version"] == "6"
     assert manifest["files"]["ledger-entry.csv"]["row_count"] == 501
     assert manifest["files"]["ledger-line.csv"]["row_count"] == 1002
     assert manifest["files"]["general-ledger.csv"]["row_count"] == 1002
@@ -85,7 +85,9 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
              sst-return_box.csv sst-return_account.csv sst-return_source.csv
              sst-adjustment.csv einvoice-source_link.csv fixed_assets-category.csv
              fixed_assets-category_revision.csv fixed_assets-asset.csv fixed_assets-run.csv
-             fixed_assets-run_item.csv fixed_assets-run_exception.csv fixed_assets-event.csv) do
+             fixed_assets-run_item.csv fixed_assets-run_exception.csv fixed_assets-event.csv
+             attachments-attachment.csv attachments-attachment_event.csv
+             attachments-retention_change.csv) do
       assert manifest["files"][filename]["row_count"] == 0
     end
   end

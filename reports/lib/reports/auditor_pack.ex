@@ -5,6 +5,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
   alias Bilimbi.Base.Tenancy.Scope
 
   alias Bilimbi.Finance.{
+    Attachments,
     Ledger,
     Receivables,
     Payables,
@@ -26,10 +27,11 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"einvoice", Einvoice},
     {"payroll", Payroll},
     {"sst", Sst},
-    {"fixed_assets", FixedAssets}
+    {"fixed_assets", FixedAssets},
+    {"attachments", Attachments}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "5"
+  @version "6"
 
   def sources, do: Enum.map(@owners, &elem(&1, 1))
 

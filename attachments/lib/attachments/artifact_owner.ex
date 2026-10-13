@@ -5,33 +5,38 @@ defmodule Bilimbi.Finance.Attachments.ArtifactOwner do
 
   Every operation re-asks the capability the facade asks for the same
   action, for the company, and that the company is live; a system scope is
-  refused. Storing (`:create`) needs `finance.attachments.create`; reading
-  needs `finance.attachments.view`; deleting and purging need
+  refused. Storing (`:create`) and retaining at capture (`:retain`) need
+  `finance.attachments.create`; a later retention change needs
+  `finance.attachments.retention.manage`, which also satisfies `:retain`;
+  reading needs `finance.attachments.view`; deleting and purging need
   `finance.attachments.delete`, though a records-grade document is never
   deleted before its retain-until, and nothing here purges one.
 
-  `:retain` asks only for a signed-in user of a live company. Retention only
-  ever lengthens, and the facade gates every discretionary extension and
-  legal hold with `finance.attachments.retention.manage`; the lengthening
-  that follows a record's finalisation
+  The one exception is the named system principal
+  `finance.attachments.retention_refresh`, which `:retain` also accepts: the
+  lengthening that follows a record's finalisation
   (`Bilimbi.Finance.Attachments.refresh_retention/4`) is a consequence of the
-  owning module's own authorized write, so the person who finalised the
-  record need hold no attachments grant.
+  owning module's own authorized write, so it runs under that principal and
+  the person who finalised the record need hold no attachments grant.
   """
 
   @behaviour Bilimbi.Base.Artifacts.Owner
 
-  alias Bilimbi.Base.Authz
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
 
   @view "finance.attachments.view"
   @create "finance.attachments.create"
   @delete "finance.attachments.delete"
+  @manage_retention "finance.attachments.retention.manage"
+  @refresh_principal "finance.attachments.retention_refresh"
   @kind "source-document"
 
   @impl Bilimbi.Base.Artifacts.Owner
   def artifact_owner_id, do: "finance/attachments"
+
+  @doc "The system principal the finalisation refresh of a record's retention runs as."
+  def refresh_principal, do: @refresh_principal
 
   @doc "The artifact reference of a source's documents."
   def reference(source_id) when is_binary(source_id), do: %{subject: source_id, kind: @kind}
@@ -48,14 +53,16 @@ defmodule Bilimbi.Finance.Attachments.ArtifactOwner do
     end
   end
 
-  defp permitted?(scope, _company_id, :retain),
-    do: match?({:ok, _actor}, Authz.scope_actor(scope))
+  defp permitted?(scope, company_id, operation) do
+    (operation == :retain and refresh_principal?(scope)) or
+      Enum.any?(capabilities(operation), &granted?(scope, company_id, &1))
+  end
 
-  defp permitted?(scope, company_id, operation),
-    do: Enum.any?(capabilities(operation), &granted?(scope, company_id, &1))
+  defp refresh_principal?(scope), do: Scope.actor(scope).system_principal == @refresh_principal
 
   defp capabilities(:create), do: [@create]
   defp capabilities(:read), do: [@view]
+  defp capabilities(:retain), do: [@create, @manage_retention]
   defp capabilities(operation) when operation in [:delete, :purge], do: [@delete]
 
   defp granted?(scope, company_id, capability),

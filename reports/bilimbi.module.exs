@@ -22,7 +22,8 @@
     "finance/einvoice",
     "finance/payroll",
     "finance/sst",
-    "finance/fixed_assets"
+    "finance/fixed_assets",
+    "finance/attachments"
   ],
   migrations: "priv/repo/migrations",
   migration_dispositions: %{20_261_015_100_000 => :bilimbi_only},

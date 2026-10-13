@@ -230,16 +230,17 @@ decisions, approval exceptions with their reviews, duty-separation changes,
 e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own
-capability. The source-file index names imported bank files with their original
-SHA-256; their original bytes are not retained. Exact authority submission
-payloads are included with their hashes. No source uploads exist for the current
-AR/AP document APIs.
+capability. The source-file index (the Attachments datasets below) names each
+kept source document, such as an imported bank file, with its file name, SHA-256
+and retain-until; the bytes stay in Base Artifacts and are not in the pack. Exact
+authority submission payloads are included with their hashes.
 
 The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
-Payroll, SST and Fixed Assets modules: each facade's `evidence_page/4` exports every table of
+Payroll, SST, Fixed Assets and Attachments modules: each facade's `evidence_page/4` exports every table of
 the module, including payroll posting events, mapping and settings changes,
 and SST registrations, mappings, returns, return events, boxes, accounts,
-sources and adjustments; and fixed-asset categories, revisions, assets, runs, items, exceptions and events. Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
+sources and adjustments; fixed-asset categories, revisions, assets, runs, items, exceptions and events; and
+source documents (every attachment, its events, and the company's retention changes). Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
 A test lists every table of those modules and fails unless the pack exports it
 or an exclusion names it with a reason (the only exclusion is the issued
 report table, which the pack writes as `issued-reports.csv`), so a new table

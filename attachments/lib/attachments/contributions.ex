@@ -22,6 +22,14 @@ defmodule Bilimbi.Finance.Attachments.Contributions do
         capabilities: @capabilities,
         roles: %{"tenant_owner" => %{capabilities: @capabilities}}
       },
+      system_principals: [
+        %{
+          name: "finance.attachments.retention_refresh",
+          description:
+            "Lengthens the retention of a record's source documents when its owning module finalises the record.",
+          capabilities: [@manage_retention]
+        }
+      ],
       menu: [
         %{
           id: "finance.attachments",
