@@ -32,8 +32,11 @@ defmodule Bilimbi.Finance.Receivables.Payments do
       %{book: book, accounts: accounts} = context
       {user_id, impersonator_id} = Records.actor_ids(scope)
 
+      # The payment takes its ID now: the entry names it as its owner, and
+      # the payment names the entry, in one transaction.
       changeset =
         %Payment{
+          id: Records.next_id(Payment),
           tenant_id: Scope.tenant_id(scope),
           company_id: company_id,
           currency_code: book.currency_code,
@@ -50,7 +53,10 @@ defmodule Bilimbi.Finance.Receivables.Payments do
            entry = entry(changeset, scope, company_id),
            settled = for(%{credit: _credit, account_id: id} <- entry.lines, do: id),
            {:ok, entry} <-
-             Ledger.post_entry(scope, company_id, entry, settlement_account_ids: settled) do
+             Ledger.post_entry(scope, company_id, entry,
+               settlement_account_ids: settled,
+               owner: Records.owner(:payment, changeset.data.id)
+             ) do
         changeset
         |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
         |> Repo.insert()
@@ -255,8 +261,10 @@ defmodule Bilimbi.Finance.Receivables.Payments do
 
   @doc """
   Reverses a payment on `reversal_date` (not before the payment's) for a
-  `reason`: the ledger posts the reversal of its entry, and its allocations
-  stop settling the invoices from that date. A payment is reversed once.
+  `reason`: the ledger posts the reversal of its entry through the owner's
+  path (`Ledger.reverse_owned_entry/5`, as this module for this payment),
+  and its allocations stop settling the invoices from that date, both in
+  one transaction. A payment is reversed once.
   """
   def reverse(scope, company_id, payment_id, attributes) do
     with {:ok, payment} <- reversible(scope, company_id, payment_id) do
@@ -279,10 +287,16 @@ defmodule Bilimbi.Finance.Receivables.Payments do
 
       with {:ok, changeset} <- valid(changeset),
            {:ok, entry} <-
-             Ledger.reverse_entry(scope, company_id, payment.ledger_entry_id, %{
-               entry_date: Changeset.get_field(changeset, :reversal_date),
-               description: "Reversal of payment #{payment.payment_reference}"
-             }) do
+             Ledger.reverse_owned_entry(
+               scope,
+               company_id,
+               payment.ledger_entry_id,
+               Records.owner(:payment, payment.id),
+               %{
+                 entry_date: Changeset.get_field(changeset, :reversal_date),
+                 description: "Reversal of payment #{payment.payment_reference}"
+               }
+             ) do
         changeset
         |> Changeset.change(ledger_entry_id: entry.id, ledger_entry_number: entry.entry_number)
         |> Repo.insert()

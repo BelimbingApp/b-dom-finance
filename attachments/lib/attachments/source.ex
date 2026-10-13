@@ -19,7 +19,14 @@ defmodule Bilimbi.Finance.Attachments.Source do
   - `label`: how the record is named to a person (`"Bill 12"`), kept with
     the attachment for the index and the auditor's pack;
   - `date`: the record's own date, which decides the financial year the
-    retention counts from;
+    retention counts from. A record whose date can change while it is not
+    final (a draft invoice) makes its module call
+    `Bilimbi.Finance.Attachments.refresh_retention/4` once the record is
+    final, inside the transaction that finalises it or after, so the
+    retention follows the final date: that confirms the record through `document/3` with the
+    caller's own scope, then queues a Base Queue job
+    (`Bilimbi.Finance.Attachments.RetentionRefreshWorker`) that extends the
+    retention as a system principal, so the caller needs no attachments grant;
   - `final?`: whether the record is beyond change (posted, issued,
     approved, imported), after which its attachments are kept as they are:
     one can still be added, none replaced or removed.

@@ -37,6 +37,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
 | `tax_totals/3` | `finance.payables.view` | Posted documents' tax per type and tax code over a date window, pinned to a ledger entry number |
+| `tie_out_control_accounts/4` | `finance.payables.view` | The payable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 ## Authorization and company scope
 
@@ -273,10 +274,33 @@ A posted payment is corrected by `reverse_payment/4`: the ledger reverses its
 entry, and its bills are owed again from the reversal's date. A payment is
 reversed at most once, and a reversal is not itself reversed.
 
-Correct a payables posting through this module, never by reversing its
-ledger entry with `Ledger.reverse_entry/4` directly: the ledger does not yet
-know which module owns an entry, so it cannot refuse that, and the two
-records would then disagree. A ledger-level owner guard is later work.
+## Ledger ownership
+
+Every entry this module posts names it as the owner, with the record the
+entry recognises: `finance/payables` and `document:<id>` for a posted bill
+or debit note, `payment:<id>` for a payment and for the reversal of that
+payment (`Bilimbi.Finance.Ledger.post_entry/4`'s `owner` option;
+`Bilimbi.Finance.Payables.Ownership` names them). The ledger then refuses a
+second entry for the same record, and refuses `Ledger.reverse_entry/4` on
+any of them (`{:error, {:owned_by, owner}}`): a payables posting is corrected
+only through this module, which records its own reversal and reverses the
+entry through `Ledger.reverse_owned_entry/5` in the same transaction, so the
+ledger and the aged payables never disagree about a payment. Entries posted
+before the ledger recorded owners were claimed by the migration
+`20261015150200`, through the ledger's own claim function.
+
+`tie_out_control_accounts/4` is the control-account tie-out: for each
+payable account a posted bill recorded (and the settings'), what this
+module's records say is owed on it as of a date (`subledger_balance`, the
+aged payables' total including its exceptions), what the ledger holds there
+(`ledger_balance`, credits less debits), the part this module posted
+(`owned_balance`), and every other posting on the account by owner module
+(`other_postings`; `nil` is a manual journal, `legacy` one posted before
+owners were recorded). `difference` is the subledger less the ledger, and
+`tied_out?` is true only when every account's difference is zero. A manual
+journal on the payable account or a purchase another module also posted
+there is shown with its owner, never netted away. Every figure is read at
+one ledger entry number, `through_entry_number`, which reproduces it.
 
 ## Aged payables
 
@@ -290,7 +314,7 @@ passes its own.
 
 The result names `through_entry_number`, the last ledger entry number of a
 payables posting it counts. A posting made later with an earlier date changes
-the figures for that date, so a report reproduces exactly by passing the same
+the figures for that date, so its amounts reproduce by passing the same
 `as_of` and its `through_entry_number`: postings never change and ledger
 entry numbers follow posting order. Party names are the latest bill's
 snapshot.
@@ -435,9 +459,10 @@ payables are held to:
 - **Retention.** Nothing is deleted: a mistaken draft is voided with a reason
   and kept, and the database refuses DELETE and TRUNCATE. How long records
   must be kept is law, not code.
-- **Reproducible reports.** Aged payables as of any date reproduce exactly
+- **Pinned amounts.** Aged-payables amounts as of any date reproduce
   from their `through_entry_number`, and reconcile to the payable accounts:
   a bill owed less than nothing is listed as an exception, never dropped.
+  `Bilimbi.Finance.Reports.issue_report/5` stores a complete issued copy.
 - **Settlement of recorded documents.** A bill and a debit note keep the
   payable account they posted to, and payments and debit notes settle that
   account even if it is no longer the setting. The ledger refuses to

@@ -68,6 +68,94 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              Attachments.list_attachments(context.operator, 73, Document, draft.id)
   end
 
+  test "issuing a re-dated draft queues the extension of its attachments", context do
+    issuer = issuer!(context, TestFixtures.ledger_capabilities())
+    {:ok, draft, attachment} = draft_with_contract!(context)
+    assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+
+    {:ok, _draft} =
+      Receivables.update_draft(issuer, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    assert {:ok, %{retention_refresh: :queued}} = Receivables.issue_document(issuer, 73, draft.id)
+
+    assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+
+    assert :ok = perform_refresh_job!()
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+
+    assert event.event == "retention_extended"
+
+    assert {:ok, %{metadata: %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}}} =
+             Bilimbi.Base.Artifacts.read(
+               context.operator,
+               73,
+               Bilimbi.Finance.Attachments.ArtifactOwner,
+               attachment.artifact_id
+             )
+  end
+
+  test "the refresh is queued with the issue, inside a caller's transaction too", context do
+    {:ok, draft, attachment} = draft_with_contract!(context)
+
+    {:ok, _draft} =
+      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    assert {:error, :abort} =
+             Bilimbi.Base.Repo.transact(fn ->
+               assert {:ok, %{retention_refresh: :queued}} =
+                        Receivables.issue_document(context.operator, 73, draft.id)
+
+               {:error, :abort}
+             end)
+
+    assert {:ok, %{status: "draft"}} = Receivables.get_document(context.operator, 73, draft.id)
+    assert {:error, _no_job} = refresh_job()
+
+    assert {:ok, {:ok, %{retention_refresh: :queued}}} =
+             Bilimbi.Base.Repo.transact(fn ->
+               {:ok, Receivables.issue_document(context.operator, 73, draft.id)}
+             end)
+
+    assert :ok = perform_refresh_job!()
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+  end
+
+  test "a refresh job Base Artifacts refuses fails for the queue to retry, and what it extended stays",
+       context do
+    {:ok, draft, attachment} = draft_with_contract!(context)
+    orphan!(attachment.id)
+
+    {:ok, _draft} =
+      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    assert {:ok, %{status: "issued", retention_refresh: :queued}} =
+             Receivables.issue_document(context.operator, 73, draft.id)
+
+    assert {:error, :retention_refresh_failed} = perform_refresh_job!()
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+  end
+
+  test "an issue with no source documents queues nothing", context do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-03-01],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    assert {:ok, %{retention_refresh: :none}} =
+             Receivables.issue_document(context.operator, 73, draft.id)
+  end
+
   test "a payment received is final from the start", context do
     {:ok, invoice} =
       Receivables.create_draft(context.operator, 73, %{
@@ -133,5 +221,74 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
     assert {:error, :document_not_found} = Document.document(context.operator, 73, 999)
     assert {:error, :payment_not_found} = Payment.document(context.operator, 73, 999)
     assert {:error, :unauthorized} = Document.document(context.first_scope, 73, 1)
+  end
+
+  defp issuer!(context, extra) do
+    TestFixtures.sign_in!(
+      context.first_scope,
+      73,
+      99,
+      TestFixtures.receivables_capabilities() ++ extra
+    )
+  end
+
+  defp draft_with_contract!(context) do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-03-01],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    {:ok, attachment} =
+      Attachments.attach(
+        context.operator,
+        73,
+        Document,
+        draft.id,
+        AttachmentsFixtures.file("contract.txt")
+      )
+
+    {:ok, draft, attachment}
+  end
+
+  defp orphan!(attachment_id) do
+    Ecto.Adapters.SQL.query!(
+      Bilimbi.Base.Repo,
+      """
+      INSERT INTO finance_attachments (tenant_id, company_id, source, source_module, document_id,
+        document_label, document_date, artifact_id, file_name, content_type, byte_size, sha256,
+        retention_years, retain_until, captured_by_user_id)
+      SELECT tenant_id, company_id, source, source_module, document_id, document_label,
+        document_date, gen_random_uuid(), file_name, content_type, byte_size, sha256,
+        retention_years, retain_until, captured_by_user_id
+      FROM finance_attachments WHERE id = $1
+      """,
+      [attachment_id]
+    )
+  end
+
+  defp refresh_job do
+    import Ecto.Query
+    worker = Bilimbi.Finance.Attachments.RetentionRefreshWorker
+
+    Bilimbi.Base.Repo.one(
+      from(j in Oban.Job,
+        where: j.worker == ^"#{inspect(worker)}.ObanAdapter",
+        order_by: [desc: j.id],
+        limit: 1
+      )
+    )
+    |> case do
+      nil -> {:error, :no_job}
+      job -> {:ok, job}
+    end
+  end
+
+  defp perform_refresh_job! do
+    {:ok, job} = refresh_job()
+    Bilimbi.Base.Queue.Worker.perform(Bilimbi.Finance.Attachments.RetentionRefreshWorker, job)
   end
 end

@@ -15,6 +15,9 @@ defmodule Bilimbi.Finance.Ledger.Entry do
     field(:reference, :string)
     field(:currency_code, :string)
     field(:reverses_entry_id, :integer)
+    field(:owner_module, :string)
+    field(:owner_record, :string)
+    field(:legacy, :boolean, default: false)
     field(:posted_by_user_id, :integer)
     field(:posted_by_impersonator_id, :integer)
     field(:posted_at, :utc_datetime_usec, read_after_writes: true)
@@ -37,5 +40,9 @@ defmodule Bilimbi.Finance.Ledger.Entry do
     |> validate_length(:description, min: 1, max: 500)
     |> validate_length(:reference, max: 100)
     |> unique_constraint(:reverses_entry_id, name: :finance_ledger_entries_reversed_once)
+    |> unique_constraint(:owner_record,
+      name: :finance_ledger_entries_owner_record_unique,
+      message: "already has an entry"
+    )
   end
 end

@@ -110,7 +110,11 @@ defmodule Bilimbi.Finance.Attachments.TestFixtures do
       %{
         authz: ContributionValidator.validate_contributions!(entries.(:authz)),
         settings:
-          Bilimbi.Base.Settings.ContributionValidator.validate_contributions!(entries.(:settings))
+          Bilimbi.Base.Settings.ContributionValidator.validate_contributions!(entries.(:settings)),
+        system_principals:
+          Bilimbi.Base.Tenancy.SystemPrincipals.ContributionValidator.validate_contributions!(
+            entries.(:system_principals)
+          )
       },
       "finance-attachments-test"
     )

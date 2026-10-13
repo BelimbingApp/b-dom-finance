@@ -174,6 +174,7 @@ defmodule Bilimbi.Finance.Attachments.Migrations.CreateAttachments do
         reason varchar(500),
         actor_user_id bigint NOT NULL,
         actor_impersonator_id bigint,
+        actor_system_principal varchar(100),
         occurred_at timestamp(6) NOT NULL,
         CONSTRAINT finance_attachment_events_attachment_fkey
           FOREIGN KEY (attachment_id, company_id)

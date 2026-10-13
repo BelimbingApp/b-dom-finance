@@ -32,6 +32,24 @@ defmodule Bilimbi.Finance.Ledger do
   to an entry posted in an earlier transaction (see the migrations), so no
   other writer can break them either.
 
+  An entry a module posts for a record of its own (a receivables payment,
+  a payables bill, a fiscal document) carries that owner: the module's
+  descriptor ID and the record, `%{module: "finance/receivables", record:
+  "payment:17"}`, given as `post_entry/4`'s `owner` option. An owned record
+  has one original entry, and an owned entry is corrected only through its
+  owner: `reverse_entry/4` refuses it (`{:error, {:owned_by, owner}}`) and
+  `reverse_owned_entry/5` posts the reversal for the owner that names
+  itself, in the owner's own transaction with its own reversal record. A
+  manual journal entry has no owner and is reversed directly. The database
+  keeps a reversal's owner equal to its original's.
+
+  The owner is a seam between modules, not an authorization boundary: the
+  ledger cannot tell which module is calling, and `reverse_owned_entry/5`
+  asks only for `finance.ledger.entries.post`. It is for the owning
+  module's own correction path; a caller that passes an entry's owner from
+  anywhere else reverses the entry without the owner's record, and the
+  owner's control-account tie-out then shows the difference.
+
   A company divides its time into fiscal years of monthly periods. Periods
   close in date order and reopen in reverse; a reopen needs a reason and the
   reopen capability, and a locked period never reopens. `close_fiscal_year/4`
@@ -128,6 +146,21 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc "The capability that records an independent review of an approval exception."
   def review_exceptions_capability, do: @review_exceptions
+
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.Ledger.Evidence.datasets()
+
+  @doc """
+  One ID-ordered evidence page with explicit fields, rows and next cursor.
+  Requires this module's view grant. Consume all pages in one repeatable-read
+  transaction for a consistent export; individual pages are live reads.
+  """
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.Ledger.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
 
   ## Book
 
@@ -250,13 +283,23 @@ defmodule Bilimbi.Finance.Ledger do
   last fiscal year, but not before its first. `{:error, :book_not_open}`
   before the book is opened.
 
-  The one option, `settlement_account_ids`, is the settlement exception to
-  the active-account rule: a list of account IDs that may be inactive in this
-  entry only, for a module that settles a document it posted earlier (such
-  as a payment against an invoice recorded on an account deactivated since).
-  Every listed account must still be an account of the company, and every
-  other line still needs an active account. Anything else in `options`, or a
-  list of anything but integers, is `{:error, :invalid_option}`.
+  Options:
+
+    * `settlement_account_ids`, the settlement exception to the
+      active-account rule: a list of account IDs that may be inactive in
+      this entry only, for a module that settles a document it posted
+      earlier (such as a payment against an invoice recorded on an account
+      deactivated since). Every listed account must still be an account of
+      the company, and every other line still needs an active account.
+    * `owner`, `%{module: module, record: record}`: the module (its
+      descriptor ID, `finance/receivables`) and the record of its own
+      (`payment:17`, a kind and a positive integer) this entry recognises.
+      The record has at most one original entry in the company: a second
+      is refused with an `owner_record` changeset error. An owned entry is
+      corrected only through `reverse_owned_entry/5`.
+
+  Anything else in `options`, a list of anything but integers, or an owner
+  of another shape is `{:error, :invalid_option}`.
   """
   @spec post_entry(Scope.t(), term(), map(), keyword()) ::
           {:ok, map()}
@@ -264,12 +307,13 @@ defmodule Bilimbi.Finance.Ledger do
   def post_entry(%Scope{} = scope, company_id, attributes, options \\ [])
       when is_map(attributes) and is_list(options) do
     write(scope, company_id, @post_entries, fn ->
-      with {:ok, settlement_ids} <- settlement_option(options),
+      with {:ok, settlement_ids, owner} <- post_options(options),
            {:ok, book} <- open_book_for_write(scope, company_id) do
         lines = attributes |> fetch(:lines) |> List.wrap()
 
         scope
         |> entry_changeset(book, Map.drop(attributes, [:lines, "lines"]), lines)
+        |> put_owner(owner)
         |> validate_open_period(scope, company_id)
         |> validate_accounts(scope, company_id, settlement_ids)
         |> insert_entry(scope)
@@ -277,19 +321,43 @@ defmodule Bilimbi.Finance.Ledger do
     end)
   end
 
-  defp settlement_option(options) do
+  defp post_options(options) do
     with true <- Keyword.keyword?(options),
-         {:ok, [settlement_account_ids: ids]} when is_list(ids) <-
-           Keyword.validate(options, settlement_account_ids: []),
-         true <- Enum.all?(ids, &is_integer/1) do
-      {:ok, ids}
+         {:ok, validated} <- Keyword.validate(options, settlement_account_ids: [], owner: nil),
+         ids = Keyword.fetch!(validated, :settlement_account_ids),
+         true <- is_list(ids) and Enum.all?(ids, &is_integer/1),
+         {:ok, owner} <- owner_option(Keyword.fetch!(validated, :owner)) do
+      {:ok, ids, owner}
     else
       _invalid -> {:error, :invalid_option}
     end
   end
 
+  @owner_module ~r"\A[a-z][a-z0-9_]*/[a-z][a-z0-9_]*\z"
+  @owner_record ~r"\A[a-z][a-z0-9_]*:[1-9][0-9]*\z"
+
+  defp owner_option(nil), do: {:ok, nil}
+
+  defp owner_option(%{module: module, record: record} = owner)
+       when is_binary(module) and is_binary(record) and map_size(owner) == 2 do
+    if String.length(module) <= 100 and String.length(record) <= 100 and
+         Regex.match?(@owner_module, module) and Regex.match?(@owner_record, record),
+       do: {:ok, %{module: module, record: record}},
+       else: {:error, :invalid_option}
+  end
+
+  defp owner_option(_other), do: {:error, :invalid_option}
+
+  defp put_owner(changeset, nil), do: changeset
+
+  defp put_owner(changeset, %{module: module, record: record}) do
+    changeset
+    |> Changeset.put_change(:owner_module, module)
+    |> Changeset.put_change(:owner_record, record)
+  end
+
   @doc """
-  Posts the reversal of a posted entry on `entry_date` (not before the
+  Posts the reversal of a manual entry on `entry_date` (not before the
   original's) with `description`: the same accounts and amounts with debits
   and credits swapped. An entry is reversed at most once
   (`{:error, :already_reversed}`), and a reversal is not itself reversed
@@ -297,6 +365,10 @@ defmodule Bilimbi.Finance.Ledger do
   deactivated since the original still take its reversal, but its date must
   fall in an open period, as a new entry's does. A year-end closing entry is
   reversed only by `reopen_fiscal_year/4` (`{:error, :closing_entry}`).
+
+  An entry another module owns is `{:error, {:owned_by, %{module, record}}}`:
+  correct it through that module, which records its own reversal and calls
+  `reverse_owned_entry/5`, so the ledger and the owner's records agree.
   """
   @spec reverse_entry(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -306,12 +378,14 @@ defmodule Bilimbi.Finance.Ledger do
              | :already_reversed
              | :reversal_not_reversible
              | :closing_entry
+             | {:owned_by, map()}
              | Changeset.t()}
   def reverse_entry(%Scope{} = scope, company_id, entry_id, attributes)
       when is_map(attributes) do
     write(scope, company_id, @post_entries, fn ->
       with {:ok, book} <- open_book_for_write(scope, company_id),
-           {:ok, original} <- reversible_entry(scope, company_id, entry_id) do
+           {:ok, original} <- reversible_entry(scope, company_id, entry_id),
+           :ok <- unowned(original) do
         scope
         |> reversal_changeset(book, original, Map.drop(attributes, [:lines, "lines"]))
         |> validate_open_period(scope, company_id)
@@ -321,6 +395,66 @@ defmodule Bilimbi.Finance.Ledger do
     end)
   end
 
+  defp unowned(%Entry{owner_module: nil}), do: :ok
+
+  defp unowned(%Entry{owner_module: module, owner_record: record}),
+    do: {:error, {:owned_by, %{module: module, record: record}}}
+
+  @doc """
+  The owner's correction path: posts the reversal of an entry the calling
+  module posted with `owner` (`post_entry/4`'s option, the same module and
+  record), as `reverse_entry/4` does for a manual entry, and with the same
+  refusals. The owner calls it inside the transaction that records its own
+  reversal (a payment reversal, a cancellation), so both stand or neither.
+  The reversal carries the same owner. An entry owned by another module or
+  record is `{:error, :not_the_owner}`; a manual entry is
+  `{:error, :not_owned}`, and is reversed with `reverse_entry/4`. A legacy
+  entry, posted before owners were recorded and never claimed, is reversed
+  by the module whose record names it, without an owner on either side.
+
+  Only the owning module calls this, from its own correction path. The
+  ledger cannot authenticate the caller: anyone holding
+  `finance.ledger.entries.post` who passes an entry's owner reverses it
+  without the owner's record, which the owner's control-account tie-out
+  then shows as a difference. Use `reverse_entry/4` for a manual entry, and
+  the owning module's own function for an owned one.
+  """
+  @spec reverse_owned_entry(Scope.t(), term(), term(), map(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :invalid_option
+             | :entry_not_found
+             | :already_reversed
+             | :reversal_not_reversible
+             | :closing_entry
+             | :not_the_owner
+             | :not_owned
+             | Changeset.t()}
+  def reverse_owned_entry(%Scope{} = scope, company_id, entry_id, owner, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @post_entries, fn ->
+      with {:ok, owner} <- owner_option(owner),
+           {:ok, book} <- open_book_for_write(scope, company_id),
+           {:ok, original} <- reversible_entry(scope, company_id, entry_id),
+           :ok <- owned_by(original, owner) do
+        scope
+        |> reversal_changeset(book, original, Map.drop(attributes, [:lines, "lines"]))
+        |> validate_open_period(scope, company_id)
+        |> validate_accounts(scope, company_id, :any)
+        |> insert_entry(scope)
+      end
+    end)
+  end
+
+  defp owned_by(%Entry{owner_module: nil, legacy: true}, _owner), do: :ok
+  defp owned_by(%Entry{owner_module: nil}, _owner), do: {:error, :not_owned}
+
+  defp owned_by(%Entry{owner_module: module, owner_record: record}, owner) do
+    if owner == %{module: module, record: record}, do: :ok, else: {:error, :not_the_owner}
+  end
+
+  # A reversal carries its original's owner; the database refuses any other.
   defp reversal_changeset(scope, book, original, attributes) do
     lines =
       Enum.map(original.lines, fn line ->
@@ -335,6 +469,8 @@ defmodule Bilimbi.Finance.Ledger do
     scope
     |> entry_changeset(book, attributes, lines)
     |> Changeset.put_change(:reverses_entry_id, original.id)
+    |> Changeset.put_change(:owner_module, original.owner_module)
+    |> Changeset.put_change(:owner_record, original.owner_record)
     |> Changeset.validate_change(:entry_date, fn :entry_date, date ->
       if Date.compare(date, original.entry_date) == :lt,
         do: [entry_date: "cannot be before the reversed entry's date"],
@@ -1531,6 +1667,49 @@ defmodule Bilimbi.Finance.Ledger do
     end
   end
 
+  @doc """
+  `account_totals/3` split by who posted: for every account with a posting
+  in the window, one row per owner module that posted to it, in account
+  code order, each `account_totals/3`'s row with `owner_module` (the
+  module's descriptor ID, or `nil` for entries with no owner) and `legacy`
+  (true for entries posted before owners were recorded; a legacy entry a
+  module claimed is that module's). The same options, and the same
+  `through_entry_number` reproduces the same figures.
+
+  A control account ties out when the owner module's rows are the whole
+  account: any other row is a posting the owner's own records do not
+  know, which `finance/receivables` and `finance/payables` show as a
+  difference in their control-account tie-outs.
+  """
+  @spec account_totals_by_owner(Scope.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def account_totals_by_owner(%Scope{} = scope, company_id, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, from, to} <- window_option(options),
+         {:ok, through} <- through_option(options),
+         {:ok, exclude_closing} <- exclude_closing_option(options) do
+      case book(scope, company_id) do
+        nil ->
+          {:error, :book_not_open}
+
+        book ->
+          through = through || last_entry_number(scope, company_id)
+
+          {:ok,
+           %{
+             company_id: company_id,
+             from: from,
+             to: to,
+             through_entry_number: through,
+             currency_code: book.currency_code,
+             minor_units: book.minor_units,
+             rows: totals_by_owner(scope, company_id, from, to, through, exclude_closing)
+           }}
+      end
+    end
+  end
+
   defp window_option(options) do
     from = Keyword.get(options, :from)
     to = Keyword.get(options, :to)
@@ -1573,6 +1752,47 @@ defmodule Bilimbi.Finance.Ledger do
     |> Enum.map(fn account ->
       {debits, credits} = Map.fetch!(totals, account.id)
       account |> account_view() |> Map.merge(%{debits: debits, credits: credits})
+    end)
+  end
+
+  # The same sums, grouped by the entries' owner module and legacy flag.
+  defp totals_by_owner(scope, company_id, from, to, through, exclude_closing) do
+    entries =
+      scope
+      |> entries_query(company_id)
+      |> date_bound(:from, from)
+      |> date_bound(:to, to)
+      |> through_bound(through)
+      |> closing_bound(scope, company_id, exclude_closing)
+
+    totals =
+      from(l in lines_query(scope),
+        join:
+          e in subquery(
+            select(entries, [e], %{id: e.id, owner_module: e.owner_module, legacy: e.legacy})
+          ),
+        on: e.id == l.entry_id,
+        where: l.company_id == ^company_id,
+        group_by: [l.account_id, e.owner_module, e.legacy],
+        select: {l.account_id, {e.owner_module, e.legacy, sum(l.debit), sum(l.credit)}}
+      )
+      |> Repo.all()
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    scope
+    |> accounts_query(company_id)
+    |> where([a], a.id in ^Map.keys(totals))
+    |> order_by([a], asc: a.code)
+    |> Repo.all()
+    |> Enum.flat_map(fn account ->
+      totals
+      |> Map.fetch!(account.id)
+      |> Enum.sort_by(fn {module, legacy, _debits, _credits} -> {module || "", legacy} end)
+      |> Enum.map(fn {module, legacy, debits, credits} ->
+        account
+        |> account_view()
+        |> Map.merge(%{owner_module: module, legacy: legacy, debits: debits, credits: credits})
+      end)
     end)
   end
 
@@ -1879,10 +2099,12 @@ defmodule Bilimbi.Finance.Ledger do
       :reference,
       :currency_code,
       :reverses_entry_id,
+      :legacy,
       :posted_by_user_id,
       :posted_by_impersonator_id,
       :posted_at
     ])
+    |> Map.put(:owner, owner_view(entry))
     |> Map.put(:reversed_by_entry_id, Map.get(reversals, entry.id))
     |> Map.put(
       :lines,
@@ -1892,6 +2114,11 @@ defmodule Bilimbi.Finance.Ledger do
       )
     )
   end
+
+  defp owner_view(%{owner_module: nil}), do: nil
+
+  defp owner_view(%{owner_module: module, owner_record: record}),
+    do: %{module: module, record: record}
 
   defp year_view(year, latest_event, periods) do
     closed = match?(%ClosingEvent{action: "close"}, latest_event)

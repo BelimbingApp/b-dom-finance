@@ -19,6 +19,7 @@ defmodule Bilimbi.Finance.FixedAssets do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.{Ledger, Payables}
+  alias Bilimbi.Finance.FixedAssets.Ownership
 
   alias Bilimbi.Finance.FixedAssets.{
     Asset,
@@ -56,6 +57,16 @@ defmodule Bilimbi.Finance.FixedAssets do
   def dispose_capability, do: @dispose
   def void_capability, do: @void
   def capabilities, do: Contributions.capabilities()
+
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.FixedAssets.Evidence.datasets()
+
+  @doc "One company-authorized ID-ordered evidence page; consume every page in one repeatable-read transaction."
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.FixedAssets.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
 
   @doc "Creates a category and its first immutable revision; reason is required."
   def create_category(%Scope{} = scope, company_id, attrs) when is_map(attrs) do
@@ -246,22 +257,33 @@ defmodule Bilimbi.Finance.FixedAssets do
           }
         end
 
+      # The run takes its ID now: the entry names it as its owner, and the
+      # run names the entry, in one transaction.
+      run_id = Ownership.next_id(Run)
+
       with {:ok, {items, excepted}} <- split_by_source(scope, company_id, candidates),
            total = sum(items, :amount),
            {:ok, entry} <-
-             post_or_empty(scope, company_id, total, %{
-               entry_date: date,
-               description: "Asset depreciation #{period}",
-               lines:
-                 Enum.flat_map(items, fn i ->
-                   [
-                     %{account_id: i.revision.expense_account_id, debit: i.amount},
-                     %{account_id: i.revision.accumulated_account_id, credit: i.amount}
-                   ]
-                 end)
-             }),
+             post_or_empty(
+               scope,
+               company_id,
+               total,
+               %{
+                 entry_date: date,
+                 description: "Asset depreciation #{period}",
+                 lines:
+                   Enum.flat_map(items, fn i ->
+                     [
+                       %{account_id: i.revision.expense_account_id, debit: i.amount},
+                       %{account_id: i.revision.accumulated_account_id, credit: i.amount}
+                     ]
+                   end)
+               },
+               Ownership.owner(:run, run_id)
+             ),
            {:ok, run} <-
              identity(Run, scope, company_id)
+             |> Map.put(:id, run_id)
              |> change(%{
                period: period,
                total: total,
@@ -293,6 +315,7 @@ defmodule Bilimbi.Finance.FixedAssets do
            {:ok, event} <-
              event_changeset(scope, company_id, attrs, "run_reversed", %{run_id: run.id})
              |> apply_action(:insert),
+           event = %{event | id: Ownership.next_id(Event)},
            :ok <- reversal_dependencies(scope, company_id, run, event.effective_date),
            {:ok, entry} <- reverse_charges(scope, company_id, run, items, live, event),
            {:ok, saved} <-
@@ -334,12 +357,19 @@ defmodule Bilimbi.Finance.FixedAssets do
              Decimal.eq?(row.scheduled_depreciation, row.accumulated) ||
                {:error, :depreciation_required},
            {:ok, settlement} <- settlement_account(scope, company_id, attrs, event.proceeds),
+           event = %{event | id: Ownership.next_id(Event)},
            {:ok, entry} <-
-             Ledger.post_entry(scope, company_id, %{
-               entry_date: event.effective_date,
-               description: event.reason,
-               lines: disposal_lines(asset, revision, row.accumulated, event.proceeds, settlement)
-             }),
+             Ledger.post_entry(
+               scope,
+               company_id,
+               %{
+                 entry_date: event.effective_date,
+                 description: event.reason,
+                 lines:
+                   disposal_lines(asset, revision, row.accumulated, event.proceeds, settlement)
+               },
+               owner: Ownership.owner(:event, event.id)
+             ),
            {:ok, saved} <-
              event
              |> change(
@@ -376,8 +406,16 @@ defmodule Bilimbi.Finance.FixedAssets do
            reversed = reversed_run_ids(events),
            charges =
              asset_items(scope, company_id, asset.id) |> Enum.reject(&(&1.run_id in reversed)),
+           event = %{event | id: Ownership.next_id(Event)},
            {:ok, entry} <-
-             mirror_charges(scope, company_id, charges, event.effective_date, event.reason),
+             mirror_charges(
+               scope,
+               company_id,
+               charges,
+               event.effective_date,
+               event.reason,
+               Ownership.owner(:event, event.id)
+             ),
            {:ok, saved} <-
              event
              |> change(
@@ -405,10 +443,13 @@ defmodule Bilimbi.Finance.FixedAssets do
              |> apply_action(:insert),
            :ok <- chronological(scope, company_id, event.effective_date),
            {:ok, entry} <-
-             Ledger.reverse_entry(scope, company_id, original.entry_id, %{
-               entry_date: event.effective_date,
-               description: event.reason
-             }),
+             Ledger.reverse_owned_entry(
+               scope,
+               company_id,
+               original.entry_id,
+               Ownership.owner(:event, original.id),
+               %{entry_date: event.effective_date, description: event.reason}
+             ),
            {:ok, saved} <-
              event
              |> change(entry_id: entry.id, entry_number: entry.entry_number)
@@ -708,8 +749,10 @@ defmodule Bilimbi.Finance.FixedAssets do
     end
   end
 
-  defp post_or_empty(scope, company, total, attrs) do
-    if Decimal.eq?(total, 0), do: {:ok, nil}, else: Ledger.post_entry(scope, company, attrs)
+  defp post_or_empty(scope, company, total, attrs, owner) do
+    if Decimal.eq?(total, 0),
+      do: {:ok, nil},
+      else: Ledger.post_entry(scope, company, attrs, owner: owner)
   end
 
   defp insert_items(scope, company_id, run, items) do
@@ -737,20 +780,34 @@ defmodule Bilimbi.Finance.FixedAssets do
     end)
   end
 
+  # A whole run is reversed through the ledger's owner path, as the run's
+  # owner; a run with voided assets is mirrored for the live ones, as the
+  # reversal event's own entry.
   defp reverse_charges(scope, company_id, run, items, live, event)
        when length(items) == length(live),
        do:
-         Ledger.reverse_entry(scope, company_id, run.entry_id, %{
-           entry_date: event.effective_date,
-           description: event.reason
-         })
+         Ledger.reverse_owned_entry(
+           scope,
+           company_id,
+           run.entry_id,
+           Ownership.owner(:run, run.id),
+           %{entry_date: event.effective_date, description: event.reason}
+         )
 
   defp reverse_charges(scope, company_id, _run, _items, live, event),
-    do: mirror_charges(scope, company_id, live, event.effective_date, event.reason)
+    do:
+      mirror_charges(
+        scope,
+        company_id,
+        live,
+        event.effective_date,
+        event.reason,
+        Ownership.owner(:event, event.id)
+      )
 
-  defp mirror_charges(_scope, _company_id, [], _date, _description), do: {:ok, nil}
+  defp mirror_charges(_scope, _company_id, [], _date, _description, _owner), do: {:ok, nil}
 
-  defp mirror_charges(scope, company_id, charges, date, description) do
+  defp mirror_charges(scope, company_id, charges, date, description, owner) do
     assets = all(Asset, scope, company_id) |> Map.new(&{&1.id, &1})
     revisions = all(CategoryRevision, scope, company_id) |> Map.new(&{&1.id, &1})
 
@@ -764,11 +821,12 @@ defmodule Bilimbi.Finance.FixedAssets do
         ]
       end)
 
-    Ledger.post_entry(scope, company_id, %{
-      entry_date: date,
-      description: description,
-      lines: lines
-    })
+    Ledger.post_entry(
+      scope,
+      company_id,
+      %{entry_date: date, description: description, lines: lines},
+      owner: owner
+    )
   end
 
   defp run_items(scope, company_id, run_id),

@@ -40,15 +40,32 @@ here; they govern this code and are not copied here.
 - Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
   (a month's consolidated document through `issue_consolidated_document/3`)
   with plain attributes, never by writing its tables: it derives every amount
-  and records the `issued` event the status reads from.
+  and records the `issued` event the status reads from. A document for a
+  sale or purchase another module already posted names it as `source`
+  (`module`, `record`, `ledger_entry_id`), so e-invoicing links to that entry
+  and never posts the transaction again; never issue such a document without
+  the source and let both post (a note whose original names one is refused
+  without its own).
 - Write UBL JSON through `MyInvois.Json` (`einvoice/lib/einvoice/my_invois/json.ex`),
   not `Jason.encode!/1` of a map: the authority signs exact bytes, so key
   order and each number's written form must survive.
 - Post to the ledger through `Bilimbi.Finance.Ledger`'s facade, from Finance
-  modules and other Domains alike; never write or read its tables. A posted
-  entry is corrected with `reverse_entry/4`, never edited. Its `entry_date`
-  must fall in an open period: handle that changeset error, never reopen a
-  period to post.
+  modules and other Domains alike; never write or read its tables. A module
+  posting for a record of its own passes `owner: %{module: "<descriptor
+  id>", record: "<kind>:<id>"}` (each module's `owner/2` builds it) and
+  corrects that entry with `reverse_owned_entry/5` under the same owner, in
+  the transaction that records its own reversal; `reverse_entry/4` is for
+  manual entries and refuses an owned one. `reverse_owned_entry/5` is for
+  the owning module's own correction path only: the ledger cannot
+  authenticate its caller, so anyone passing an entry's owner from elsewhere
+  reverses it without the owner's record, which the owner's tie-out shows as
+  a difference. A posted entry is never edited.
+  Its `entry_date` must fall in an open period: handle that changeset
+  error, never reopen a period to post. A module's entries posted before
+  owners were recorded are claimed by that module's own migration through
+  the ledger's `finance_ledger_claim_legacy_entry`
+  (`receivables/priv/repo/migrations/20261015150100_*`), never by writing
+  the ledger's table.
 - Ask `Bilimbi.Finance.Ledger.check_approval/3` inside the transaction of
   every approval a module records (approve, post a submitted record,
   finalise), with everyone who prepared the record as `prepared_by` and
@@ -69,7 +86,8 @@ here; they govern this code and are not copied here.
 - Read ledger figures with `Ledger.account_totals/3`, which sums in
   PostgreSQL, not by adding up `list_entries/3` lines in memory; read every
   column of one report at the first read's `through_entry_number`, as
-  `reports/lib/reports.ex` does, so the figures reproduce.
+  `reports/lib/reports.ex` does, so postings reproduce. Whole issued reports
+  use its stored snapshots: entry pins alone do not freeze chart or layout.
 - React to postings with `Ledger.subscribe_postings/2`, never a broadcast
   sent after a facade write: the ledger's trigger notifies at commit, while
   a broadcast inside a caller's transaction announces uncommitted entries.
@@ -96,7 +114,11 @@ here; they govern this code and are not copied here.
   the retention counts from, and whether it is final, after which nothing is
   replaced or removed. A record's page embeds
   `Bilimbi.Finance.Attachments.Web.Panel`; the retention years are the
-  company's setting, never a module constant.
+  company's setting, never a module constant. Finance code that must change
+  retention without a user's grant (a record's finalisation) calls
+  `Attachments.refresh_retention/4`, which queues
+  `Attachments.RetentionRefreshWorker`; never call Base Artifacts or
+  `Bilimbi.Base.Tenancy.Authentication` for it.
 - A Finance migration version must be unique across Bilimbi's modules too,
   not only Finance's: `find apps -path '*/priv/repo/migrations/*'` in the
   mounted checkout before picking one (einvoice's `20261013090000` clashed
@@ -139,7 +161,8 @@ here; they govern this code and are not copied here.
   Receiving stops declaring the authz verb `post` that Ledger owns, the Web
   host refuses to boot with both mounted and the payables test only runs
   its unmounted branch. Declare no new authz verb in a Finance module
-  (`view` and `manage` are Base's, `post` is Ledger's): a verb two mounted
+  (`view` and `manage` are Base's, `post` is Ledger's) unless it carries the
+  module's own prefix (`sst-prepare`, `reports-export`): a verb two mounted
   Domains both declare is that boot failure.
 - Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
   `post_payroll_run/3`, `post_claim/3`, or `post_claims/3` (a batch posted

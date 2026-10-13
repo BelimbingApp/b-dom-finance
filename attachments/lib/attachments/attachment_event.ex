@@ -19,6 +19,7 @@ defmodule Bilimbi.Finance.Attachments.AttachmentEvent do
     field(:reason, :string)
     field(:actor_user_id, :integer)
     field(:actor_impersonator_id, :integer)
+    field(:actor_system_principal, :string)
     field(:occurred_at, :utc_datetime_usec, read_after_writes: true)
     belongs_to(:attachment, Attachment)
   end

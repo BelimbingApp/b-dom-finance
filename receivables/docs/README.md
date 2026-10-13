@@ -27,6 +27,7 @@ maps; the schemas are private.
 | `aged_receivables/4` | view | What each customer owes as of a date, by days past due |
 | `tax_totals/3` | view | Issued documents' tax per kind and tax code over a date window |
 | `received_tax_totals/3` | view | The tax share of payments received in a window, and of invoices unpaid past a period |
+| `tie_out_control_accounts/4` | view | The receivable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 The Tenant Owner role holds every receivables capability.
 
@@ -125,7 +126,15 @@ from the start, as a payment posts as it is recorded). The file is kept as a
 records-grade document retained for the company's retention years after
 the end of the financial year the document's date falls in; a draft's
 attachments can be replaced or removed, an issued document's are kept as
-they are. This module has no pages, so attachments are made through the
+they are. A draft's date may change after its attachments were kept, so
+issuing a document extends each attachment's retain-until to the issue
+date's financial year (`Attachments.refresh_retention/4`, called inside the
+transaction that issues, so its Base Queue job commits with the issue and asks
+the issuer no attachments grant). `issue_document/3` answers the issued
+document with `retention_refresh`: `:queued`, `:none` when no source document
+needs it, or `{:error, reason}`, which is also logged and does not undo the
+issue; calling `refresh_retention/4` again redoes a failed one.
+This module has no pages, so attachments are made through the
 facade and read on the source documents page, `/finance/attachments`.
 
 ## Payments
@@ -160,14 +169,43 @@ receivable account even when it has been deactivated since (for example
 after a reversal reopened an invoice, or a manual ledger entry moved the
 balance): a payment and a credit note pass the account to
 `Bilimbi.Finance.Ledger.post_entry/4` as a `settlement_account_ids` entry for
-that entry only, and a reversal posts through `reverse_entry/4`, which
+that entry only, and a reversal posts through `reverse_owned_entry/5`, which
 already takes inactive accounts.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a
 mistaken or returned payment once, on a date not before it and for a stated
-reason, through `Bilimbi.Finance.Ledger.reverse_entry/4`; from that date its
-allocations stop settling the invoices. A corrected payment is recorded
+reason, through `Bilimbi.Finance.Ledger.reverse_owned_entry/5` as the
+entry's owner, in the transaction that records the reversal; from that date
+its allocations stop settling the invoices. A corrected payment is recorded
 anew.
+
+## Ledger ownership
+
+Every entry this module posts names it as the owner, with the record the
+entry recognises: `finance/receivables` and `document:<id>` for an issued
+invoice or credit note, `payment:<id>` for a payment and for that payment's
+reversal (`Bilimbi.Finance.Ledger.post_entry/4`'s `owner` option;
+`Bilimbi.Finance.Receivables.Records.owner/2` names them). The ledger then
+refuses a second entry for the same record, and refuses
+`Ledger.reverse_entry/4` on any of them (`{:error, {:owned_by, owner}}`): a
+receivables posting is corrected only through this module, so the ledger
+and the aged receivables never disagree about a payment. Entries posted
+before the ledger recorded owners were claimed by the migration
+`20261015150100`, through the ledger's own claim function.
+
+`tie_out_control_accounts/4` is the control-account tie-out: for each
+receivable account an issued document recorded (and the setup's), what this
+module's records say customers still owe on it as of a date
+(`subledger_balance`, the aged receivables' total for the account), what the
+ledger holds there (`ledger_balance`, debits less credits), the part this
+module posted (`owned_balance`), and every other posting on the account by
+owner module (`other_postings`; `nil` is a manual journal, `legacy` one
+posted before owners were recorded). `difference` is the subledger less the
+ledger, and `tied_out?` is true only when every account's difference is
+zero. A manual journal on the receivable account, or a sale another module
+(such as `finance/einvoice`) also posted there, is shown with its owner,
+never netted away. Every figure is read at one ledger entry number,
+`through_entry_number`, which reproduces it.
 
 Unallocated receipts, refunds, and customer credit balances are later
 work: a payment settles invoices only.
@@ -183,9 +221,9 @@ buckets.
 Every invoice, credit note, payment, and reversal counts from its own date,
 and each posted one ledger entry. The report names `through_entry_number`,
 the last entry it counts; passing the same `as_of` and
-`through_entry_number` reproduces its figures exactly, the way the ledger's
-trial balance does, because those records never change and later ones post
-later entry numbers. While the receivable account takes postings only from
+`through_entry_number` reproduces its amounts exactly, the way the ledger's
+trial balance does (customer names and codes are not frozen), because those
+records never change and later ones post later entry numbers. While the receivable account takes postings only from
 this module, the report's total equals that account's balance in
 `Bilimbi.Finance.Ledger.trial_balance/4` for the same date and entry
 number. Customer codes and names are read as they are now; each row also
@@ -203,11 +241,15 @@ lines, tax codes and rates, totals, currency, reference, dates). An issued
 document never changes, so each is read once; a submission's own state
 belongs to that module.
 
-A document issued here has already posted its entry. `finance/einvoice`
-also posts a document to the ledger when the authority validates it (its
-"Ledger bridge"), so a bridge that submits receivables' documents through
-`Bilimbi.Finance.Einvoice` must keep that sale from being posted a second
-time.
+A document issued here has already posted its entry, and that entry is
+owned by this module and the document (`document:<id>`). A fiscal document
+issued for it through `Bilimbi.Finance.Einvoice.issue_document/3` names
+that as its `source` (`module`, `record`, and the document's
+`ledger_entry_id`): e-invoicing checks the entry against the ledger, links
+the fiscal document to it, and never posts or reverses an entry of its own
+for that sale, so a sale entered here is recognised once. Its correction
+is this module's too: a credit note or a payment reversal posts here, and
+the credit note e-invoice links to the credit note's record.
 
 ## For tax returns
 
@@ -236,7 +278,10 @@ The migration `20261012214517` is `:bilimbi_only` and creates
 `finance_receivables_setups`, `_setup_changes`, `_series`, `_tax_codes`, `_customers`,
 `_documents`, `_document_lines`, `_document_tax_lines`, `_payments`,
 `_allocations`, and `_payment_reversals`. Ledger accounts and entries are
-named by ID without a foreign key: those tables are the ledger's.
+named by ID without a foreign key: those tables are the ledger's. The
+migration `20261015150100`, also `:bilimbi_only`, claims the entries this
+module posted before the ledger recorded owners, through the ledger's claim
+function; it builds nothing for the module tests' temporary tables.
 PostgreSQL enforces the rules the facade checks, so no other writer can
 break them:
 
@@ -299,8 +344,9 @@ sales ledger is held to. What this slice covers:
   value, and a database-stamped time. Drafts, setup, series, tax codes, and
   customers change through Repo writes, which Base Audit records with their
   actor in the composed host (ADR 0013).
-- **Reproducible reports.** Any past aged-receivables report reproduces
-  exactly from its `as_of` and `through_entry_number`.
+- **Pinned amounts.** Aged-receivables amounts reproduce from `as_of` and
+  `through_entry_number`; current customer names and codes can change. Use
+  `Bilimbi.Finance.Reports.issue_report/5` for an immutable issued copy.
 - **Retention.** Nothing is deleted: the database refuses DELETE and
   TRUNCATE on every receivables table, except deleting a draft's own lines
   and tax lines while it is a draft, and unmounting Finance keeps every row. How long records must
@@ -309,10 +355,10 @@ sales ledger is held to. What this slice covers:
 Tax rules themselves (which rate applies to what, rounding a tax authority
 prescribes beyond half up per line) are a company's configuration;
 reporting a tax return is another module's, such as `finance/sst` (see For
-tax returns). Posting directly through the ledger to the
-receivable account, or reversing a receivables entry through
-`Bilimbi.Finance.Ledger.reverse_entry/4` rather than this module, bypasses
-these records; correct receivables only through this facade.
+tax returns). The ledger refuses to reverse a receivables
+entry anywhere but through this module (see Ledger ownership); a manual
+journal posted straight to the receivable account still bypasses these
+records, and `tie_out_control_accounts/4` shows it as a difference.
 
 ## Tests
 

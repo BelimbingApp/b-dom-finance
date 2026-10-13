@@ -19,6 +19,7 @@
   migration_dispositions: %{
     20_261_012_213_700 => :bilimbi_only,
     20_261_014_100_000 => :bilimbi_only,
+    20_261_015_150_200 => :bilimbi_only,
     20_261_016_100_100 => :bilimbi_only
   },
   web: "priv/web_routes.exs",

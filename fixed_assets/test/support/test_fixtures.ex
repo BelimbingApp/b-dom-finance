@@ -1,28 +1,36 @@
 defmodule Bilimbi.Finance.FixedAssets.TestFixtures do
   @moduledoc false
-  alias Bilimbi.Base.Authz.ContributionValidator
-  alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
   alias Bilimbi.Base.Repo
   alias Bilimbi.Finance.{FixedAssets, Ledger, Payables}
   alias Ecto.Adapters.SQL
 
-  def migration do
-    module = Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
-    unless Code.ensure_loaded?(module),
-      do:
-        Code.require_file(
-          Path.expand(
-            "../../priv/repo/migrations/20261015110000_create_finance_fixed_assets.exs",
-            __DIR__
-          )
-        )
+  @migration_files [
+    {20_261_015_110_000, Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets,
+     "20261015110000_create_finance_fixed_assets.exs"},
+    {20_261_015_150_700, Bilimbi.Finance.FixedAssets.Migrations.ClaimEntries,
+     "20261015150700_claim_finance_fixed_assets_entries.exs"}
+  ]
 
-    module
+  @doc "The first migration's module, loaded from its file once."
+  def migration, do: migrations() |> hd() |> elem(1)
+
+  @doc "The module's migrations as `{version, module}` in version order, each loaded once."
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
   end
 
+  # Each migration's own statements, in version order (the claim migration
+  # builds nothing for temporary tables).
   def create_tables! do
-    for statement <- apply(migration(), :statements, [[temporary: true]]),
+    for {_version, module} <- migrations(),
+        statement <- apply(module, :statements, [[temporary: true]]),
         do: SQL.query!(Repo, statement, [])
   end
 
@@ -33,20 +41,9 @@ defmodule Bilimbi.Finance.FixedAssets.TestFixtures do
         ~w(finance.ledger.periods.manage finance.ledger.periods.reopen)
 
   def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/payables", :bilimbi_finance_payables, Payables.Contributions},
-            {"finance/fixed_assets", :bilimbi_finance_fixed_assets, FixedAssets.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
-
-    ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
-      "fixed-assets-test"
-    )
+    Payables.TestFixtures.install_authz!([
+      {"finance/fixed_assets", :bilimbi_finance_fixed_assets, FixedAssets.Contributions}
+    ])
   end
 
   def setup! do

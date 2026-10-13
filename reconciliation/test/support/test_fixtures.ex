@@ -30,6 +30,8 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
   @migration_files [
     {20_261_014_090_000, Bilimbi.Finance.Reconciliation.Migrations.CreateReconciliation,
      "20261014090000_create_finance_reconciliation.exs"},
+    {20_261_015_150_600, Bilimbi.Finance.Reconciliation.Migrations.ClaimEntries,
+     "20261015150600_claim_finance_reconciliation_entries.exs"},
     {20_261_017_090_100, Bilimbi.Finance.Reconciliation.Migrations.AddImportMapping,
      "20261017090100_add_finance_reconciliation_import_mapping.exs"}
   ]

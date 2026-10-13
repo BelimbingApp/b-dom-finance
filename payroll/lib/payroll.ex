@@ -90,6 +90,21 @@ defmodule Bilimbi.Finance.Payroll do
   @spec people_available?() :: boolean()
   def people_available?, do: PeopleSource.available?()
 
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.Payroll.Evidence.datasets()
+
+  @doc """
+  One ID-ordered evidence page with explicit fields, rows and next cursor.
+  Requires this module's view grant. Consume all pages in one repeatable-read
+  transaction for a consistent export; individual pages are live reads.
+  """
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.Payroll.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
+
   ## Settings
 
   @doc """
@@ -402,8 +417,8 @@ defmodule Bilimbi.Finance.Payroll do
   @doc """
   Reverses a posting's entry with `reason` (required, at most 500
   characters) on `entry_date` (the company's local today unless given; not before the
-  original's, and in an open period), through `Ledger.reverse_entry/4`, and
-  records it as a `reversed` event. A posting is reversed once
+  original's, and in an open period), through `Ledger.reverse_owned_entry/5`
+  as the entry's owner, and records it as a `reversed` event. A posting is reversed once
   (`:already_reversed`); a refused attempt is recorded as a
   `reversal_failed` event and returned as `{:error, {:failed, reason}}`.
   A reversed source is not posted again: its correction is a new entry in

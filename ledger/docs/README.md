@@ -18,11 +18,13 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `list_accounts/2` | `finance.ledger.view` | The chart of accounts by code |
 | `create_account/3` | `finance.ledger.accounts.manage` | Adds an account: `code`, `name`, `account_type`, optional `parent_id`, `active`, `retained_earnings` |
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
-| `post_entry/3,4` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines`; option `settlement_account_ids` lists accounts that may be inactive in this entry |
-| `reverse_entry/4` | `finance.ledger.entries.post` | Posts a posted entry's mirror image on `entry_date` with `description` |
+| `post_entry/3,4` | `finance.ledger.entries.post` | Posts a balanced entry: `entry_date`, `description`, optional `reference`, `lines`; option `settlement_account_ids` lists accounts that may be inactive in this entry, and `owner` names the module and record the entry recognises |
+| `reverse_entry/4` | `finance.ledger.entries.post` | Posts a manual entry's mirror image on `entry_date` with `description`; refuses an owned entry |
+| `reverse_owned_entry/5` | `finance.ledger.entries.post` | The owner's correction path: the mirror image of an entry the calling module owns, named by the same `owner` |
 | `get_entry/3`, `list_entries/3` | `finance.ledger.view` | Posted entries with their lines; `list_entries/3` takes `from`, `to`, `limit`, `after`, `account_id`, `through_entry_number`, and `exclude_closing` |
 | `trial_balance/4` | `finance.ledger.view` | Per-account totals and balances as of a date, optionally `through_entry_number` |
 | `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` and `exclude_closing` |
+| `account_totals_by_owner/3` | `finance.ledger.view` | The same totals, one row per account and owner module, for a control-account tie-out |
 | `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
 | `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods |
 | `list_fiscal_years/2`, `get_fiscal_year/3` | `finance.ledger.view` | Fiscal years with their status, closing entry, and periods |
@@ -143,6 +145,51 @@ Each entry has an `entry_number`, its book's sequence number: the database
 numbers a company's entries 1, 2, 3, ... in posting order, so a number is never
 skipped (a refused or rolled-back post takes none) or reused.
 
+## Ownership
+
+A module that posts an entry for a record of its own names itself as the
+entry's owner: `post_entry/4`'s `owner` option, `%{module: "finance/receivables",
+record: "payment:17"}`, the module's descriptor ID and the record in that
+module's terms (a kind and a positive integer). The entry's view carries it as
+`owner`; a manual journal entry has none. Ownership makes two things true, and
+PostgreSQL keeps both (see Database):
+
+- an owned record has one original entry in the company: `post_entry/4` for a
+  record that already has one is a changeset error on `owner_record`, so no
+  module recognises a transaction twice;
+- an owned entry is corrected only through its owner. `reverse_entry/4` refuses
+  it with `{:error, {:owned_by, owner}}`; the owner calls
+  `reverse_owned_entry/5` with the same owner, inside the transaction that
+  records its own reversal (a payment reversal, a cancellation), so the ledger
+  and the owner's records change together or not at all. The reversal carries
+  the same owner. A manual entry is `{:error, :not_owned}` there and is reversed
+  with `reverse_entry/4`; another module's entry is `{:error, :not_the_owner}`.
+  The owner is a seam between modules, not an authorization boundary: the
+  ledger cannot authenticate its caller and `reverse_owned_entry/5` asks only
+  for `finance.ledger.entries.post`. It is for the owning module's own
+  correction path. A caller holding that capability who passes an entry's owner
+  from anywhere else reverses the entry without the owner's record, and the
+  owner's control-account tie-out then shows the difference (`tied_out?` false,
+  the difference equal to the unrecorded reversal) while the owner's own record
+  stays unreversed.
+
+Entries posted before owners were recorded carry `legacy: true` and no
+owner. Each owning module's own migration claims its entries once through
+the ledger's `finance_ledger_claim_legacy_entry` function, the one change a
+posted entry's row ever takes: from no owner to one, everything else as it
+was. Claiming an entry also claims, with the same owner, the legacy entry
+that reverses it and the legacy entry it reverses when they still have no
+owner, so an original and its reversal always share one owner; one owned by
+another is refused. A legacy entry nobody claimed (a manual journal, or a
+posting no record names) stays unowned and is reversed directly, or by the module whose record
+names it through `reverse_owned_entry/5`, without an owner on either side.
+
+`account_totals_by_owner/3` splits `account_totals/3` by owner module (and
+`legacy`), which is how `finance/receivables` and `finance/payables` tie a
+control account out: the owner's rows should be the whole account, and any
+other row is a posting the subledger's records do not know, shown there as a
+difference with its owner, never netted away.
+
 `list_entries/3` orders entries by date and then ID. `limit` is an integer
 from 1 to 500 (default 100). To page past it, pass `after:
 {entry_date, id}` from the last entry returned, and stop when fewer than
@@ -217,8 +264,10 @@ totals) reproduce exactly by passing the same `as_of` and its
 posting order. Account names, parents, and active flags are read as they are
 now. A `through_entry_number` outside 0 to the `bigint` maximum is
 `{:error, :invalid_option}`. Once a period closes, no entry is dated into it
-or before it, so a trial balance as of a closed period's end stays the same
-without `through_entry_number`.
+or before it, so a trial balance's debit and credit figures as of a closed
+period's end stay the same without `through_entry_number`. For a complete
+issued copy with frozen labels and chart metadata, use
+`Bilimbi.Finance.Reports.issue_report/5` when Reports is mounted.
 
 ## Period closing
 
@@ -339,6 +388,12 @@ them:
 - a trigger refuses a line whose entry was inserted in an earlier transaction,
   so a posted entry's lines stay fixed;
 - a partial unique index allows one reversal per entry;
+- `owner_module` and `owner_record` go together, match the shapes above, and
+  a partial unique index allows one original entry per owned record; a
+  trigger refuses a reversal whose owner differs from its original's; the
+  entries' UPDATE trigger allows exactly one change, a legacy entry's owner
+  from none to one by `finance_ledger_claim_legacy_entry`, and refuses every
+  other;
 - a trigger numbers each company's entries without gaps and stamps
   `posted_at`, replacing whatever the inserting writer sent, and a unique
   index refuses a reused number;
@@ -358,7 +413,11 @@ them:
   partial unique index to one per company.
 
 The migration `20261012214100`, also `:bilimbi_only`, adds the trigger that
-announces each posted entry (see Posting notices).
+announces each posted entry (see Posting notices). The migration
+`20261015150000`, also `:bilimbi_only`, adds entries' `owner_module`,
+`owner_record`, and `legacy`, marks every entry posted before it legacy,
+and ships the claim function and the ownership triggers (see Ownership);
+it is self-contained and its `statements/1` builds the module tests' copy.
 
 The migration `20261016100000`, also `:bilimbi_only` and self-contained,
 adds `finance_ledger_duty_separation_changes`,
@@ -410,7 +469,10 @@ accounts are held to. What this slice covers:
   when the database recorded it, and its gapless book sequence number. A
   correction is a reversing entry that names the original, and the original
   reports the entry that reversed it, so the trail runs both ways and nothing
-  is overwritten. Opening a book and every account change are Repo writes,
+  is overwritten. An entry a module posted names that module and its record,
+  and is reversed only through that module (see Ownership), so the ledger
+  never contradicts the subledger that owns the entry, and a control account
+  ties out by owner. Opening a book and every account change are Repo writes,
   which Base Audit records with their actor in the composed host (ADR 0013).
   Any past trial balance's debit and credit figures reproduce exactly from its
   `through_entry_number`. Every period and year close, reopen, and lock is an
@@ -453,7 +515,10 @@ later work in sibling modules.
 Module tests run on temporary copies of the tables, constraints and triggers
 included, from `test/support/test_fixtures.ex`; change them with the
 migrations. The closing rules' functions are not copied: the closing
-migration's `functions/1` creates the same ones in `pg_temp`. `setup_ledger!/0`
+migration's `functions/1` creates the same ones in `pg_temp`, and the owner
+migration's `statements(temporary: true)` runs as it is. `migrations/0`
+there lists the ledger's migrations for a sibling module's fresh-database
+contract test to run before its own. `setup_ledger!/0`
 there builds two tenants' companies and an Authz snapshot, and `sign_in!/4`
 signs a user in with direct grants.
 

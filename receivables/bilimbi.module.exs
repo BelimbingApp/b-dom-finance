@@ -15,7 +15,10 @@
     "finance/ledger"
   ],
   migrations: "priv/repo/migrations",
-  migration_dispositions: %{20_261_012_214_517 => :bilimbi_only},
+  migration_dispositions: %{
+    20_261_012_214_517 => :bilimbi_only,
+    20_261_015_150_100 => :bilimbi_only
+  },
   web: nil,
   # Compatibility verification runs before pending Bilimbi-only migrations.
   # Registering these fresh tables would make adoption expect them already;

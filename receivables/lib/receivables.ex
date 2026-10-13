@@ -30,12 +30,16 @@ defmodule Bilimbi.Finance.Receivables do
   Results are plain maps; the schemas stay private to this module.
   """
 
+  require Logger
+
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Attachments
+  alias Bilimbi.Finance.Receivables.Attachments.Document, as: AttachmentsDocument
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
-  alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TaxReport}
+  alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TaxReport, TieOut}
   alias Ecto.Changeset
 
   @view "finance.receivables.view"
@@ -68,6 +72,21 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc "The capability that records and reverses payments."
   def post_payments_capability, do: @post_payments
+
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.Receivables.Evidence.datasets()
+
+  @doc """
+  One ID-ordered evidence page with explicit fields, rows and next cursor.
+  Requires this module's view grant. Consume all pages in one repeatable-read
+  transaction for a consistent export; individual pages are live reads.
+  """
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.Receivables.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
 
   ## Setup
 
@@ -305,6 +324,15 @@ defmodule Bilimbi.Finance.Receivables do
   receivable account its invoice recorded. The document records that
   account (`receivable_account_id`), the entry's ID and number, and who
   issued it; the database stamps when.
+
+  Right after the document is issued, inside the same transaction, its
+  source documents are queued for the retention its issue date says
+  (`Bilimbi.Finance.Attachments.refresh_retention/4`, a Base Queue job that
+  asks the issuer no attachments grant), so the job commits with the issue
+  and is never lost. The issued document answers `retention_refresh`:
+  `:queued`, `:none` when no source document needs it, or `{:error, reason}`
+  (also logged, and the issue stands); calling `refresh_retention/4` again
+  redoes a failed one.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -316,8 +344,25 @@ defmodule Bilimbi.Finance.Receivables do
              | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, document_id) do
     write(scope, company_id, @issue_documents, fn ->
-      Documents.issue(scope, company_id, document_id)
+      with {:ok, document} <- Documents.issue(scope, company_id, document_id) do
+        {:ok,
+         Map.put(document, :retention_refresh, refresh_attachments(scope, company_id, document))}
+      end
     end)
+  end
+
+  defp refresh_attachments(scope, company_id, document) do
+    case Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id) do
+      {:ok, status} ->
+        status
+
+      {:error, reason} = error ->
+        Logger.warning(
+          "source documents of receivables document #{document.id} kept short of its issue date: #{inspect(reason)}"
+        )
+
+        error
+    end
   end
 
   @doc """
@@ -431,7 +476,7 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc """
   Reverses a payment on `reversal_date` (not before the payment's) for a
-  `reason`, through `Bilimbi.Finance.Ledger.reverse_entry/4`. Its
+  `reason`, through `Bilimbi.Finance.Ledger.reverse_owned_entry/5`. Its
   allocations stop settling the invoices from that date. A payment is
   reversed once (`{:error, :already_reversed}`); a corrected payment is
   recorded anew.
@@ -492,6 +537,42 @@ defmodule Bilimbi.Finance.Receivables do
          {:ok, through, bucket_days} <- aging_options(options),
          {:ok, book} <- Ledger.get_book(scope, company_id) do
       {:ok, Aging.report(scope, company_id, book, as_of, through, bucket_days)}
+    end
+  end
+
+  @doc """
+  The control-account tie-out as of a date: for each receivable account
+  (every one an issued document recorded, the setup's, and any this module
+  posted to), what this module's records say is still owed on it
+  (`subledger_balance`, the aged receivables' total for the account), what
+  the ledger holds on it (`ledger_balance`, debits less credits over every
+  entry dated through `as_of`), the part of that this module posted
+  (`owned_balance`), and every other posting on the account
+  (`other_postings`, one per owner module, `nil` for an entry with no
+  owner, with `legacy` for one posted before owners were recorded), each
+  with its balance. `difference` is `subledger_balance` less
+  `ledger_balance`, and `tied_out?` whether every account's is zero: an
+  entry reversed outside this module, a manual journal on the account, a
+  sale posted by another module as well, each shows here as a difference
+  with its posting, never netted away.
+
+  All figures are read at one ledger entry number, named
+  `through_entry_number`; passing it back reproduces the tie-out exactly.
+  Reads the ledger, so it also needs `finance.ledger.view`. A malformed
+  option is `{:error, :invalid_option}`.
+  """
+  @spec tie_out_control_accounts(Scope.t(), term(), Date.t(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def tie_out_control_accounts(%Scope{} = scope, company_id, %Date{} = as_of, options \\ [])
+      when is_list(options) do
+    through = Keyword.get(options, :through_entry_number)
+
+    with :ok <- authorize(scope, company_id, @view),
+         true <-
+           (Keyword.keys(options) -- [:through_entry_number] == [] and
+              (is_nil(through) or (is_integer(through) and through in 0..Records.max_bigint()))) ||
+             {:error, :invalid_option} do
+      TieOut.report(scope, company_id, as_of, through)
     end
   end
 

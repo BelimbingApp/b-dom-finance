@@ -32,7 +32,9 @@ defmodule Bilimbi.Finance.Payroll.TestFixtures do
 
   @migration_files [
     {20_261_015_120_000, Bilimbi.Finance.Payroll.Migrations.CreatePayroll,
-     "20261015120000_create_finance_payroll.exs"}
+     "20261015120000_create_finance_payroll.exs"},
+    {20_261_015_150_500, Bilimbi.Finance.Payroll.Migrations.ClaimEntries,
+     "20261015150500_claim_finance_payroll_entries.exs"}
   ]
 
   @doc "The first migration's module, loaded from its file once."
