@@ -113,6 +113,31 @@ defmodule Bilimbi.Finance.FixedAssets.VoidTest do
     balanced!(c, ~D[2026-01-31])
   end
 
+  test "an entry-less void needs a date in an open fiscal period", c do
+    asset = Fixtures.acquisition!(c)
+    reverse_source!(c, asset, ~D[2026-01-02])
+    attrs = fn date -> %{effective_date: date, reason: "Acquisition cancelled"} end
+
+    assert {:error, :period_not_found} =
+             FixedAssets.void_acquisition(c.keeper, 73, asset.id, attrs.(~D[2062-02-01]))
+
+    assert {:error, :period_not_found} =
+             FixedAssets.void_acquisition(c.keeper, 73, asset.id, attrs.(~D[2025-12-31]))
+
+    [january | _] = c.year.periods
+    {:ok, _} = Ledger.close_period(c.keeper, 73, january.id)
+
+    assert {:error, :period_closed} =
+             FixedAssets.void_acquisition(c.keeper, 73, asset.id, attrs.(~D[2026-01-15]))
+
+    {:ok, detail} = FixedAssets.get_asset(c.keeper, 73, asset.id)
+    assert detail.events == []
+
+    event = void!(c, asset, ~D[2026-02-01])
+    assert event.entry_id == nil
+    assert {:ok, %{voided?: true}} = FixedAssets.get_asset(c.keeper, 73, asset.id)
+  end
+
   test "a voided asset cannot be disposed or voided again, and a live acquisition cannot be voided",
        c do
     asset = Fixtures.acquisition!(c)

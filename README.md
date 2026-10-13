@@ -36,8 +36,10 @@ and posts charges and disposals through the ledger facade. SST returns
 read receivables' and payables' document tax and the tax accounts' postings
 through their facades, and have pages to prepare, review, finalise, amend,
 and export each return and to set up the registration and tax code
-mappings. Each module's "Standards addressed" section says which bookkeeping
-and audit standards it meets.
+mappings. Fixed assets has pages for categories, the register, asset
+schedules and depreciation runs, and posts charges and disposals through the
+ledger facade. Each module's "Standards addressed" section says which
+bookkeeping and audit standards it meets.
 
 ## Mount
 

@@ -53,8 +53,8 @@ both public facades.
    touches only that asset's amounts; a month's other assets keep their posted
    charges. The asset then drops out of runs and reconciliation, the register
    shows it as voided with zero carrying value, and disposal is refused. A void
-   cannot be undone; an asset with nothing to reverse records an event without
-   a ledger entry. Reversing a run later leaves a voided asset's charge alone.
+   cannot be undone, so its date must fall in an open fiscal period; an asset
+   with nothing to reverse records an event without a ledger entry. Reversing a run later leaves a voided asset's charge alone.
 
 Every action rechecks its own `finance.fixed-assets` capability. Its verb names
 start with `finance-asset-` and cannot duplicate another Domain's `post` verb.
