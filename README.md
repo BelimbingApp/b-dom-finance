@@ -61,9 +61,8 @@ underscores, so `b-dom-finance` mounts at `apps/domains/finance`.
 CI checks out Bilimbi at the revision in
 [`.github/bilimbi-revision`](.github/bilimbi-revision), mounts this
 repository, and runs Bilimbi's precommit over the composed workspace. Bump that
-revision to build against a newer Platform. A second job runs the same
-precommit with Finance absent, and
-[`missing_dependency.sh`](.github/scripts/missing_dependency.sh) proves a
+revision to build against a newer Platform. The job's last step runs
+[`missing_dependency.sh`](.github/scripts/missing_dependency.sh), which proves a
 mounted dependent without Finance fails composition.
 
 ## License
