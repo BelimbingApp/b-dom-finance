@@ -25,18 +25,21 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks do
 
   use Ecto.Migration
 
-  @functions ~w(
-    finance_einvoice_standing_source_link
-    finance_einvoice_refuse_second_source_link
-    finance_einvoice_refuse_linked_submission
-  )
-
   def up, do: Enum.each(statements(), &execute/1)
 
+  # The standing-link function takes the table's row type, so it goes
+  # before the table, and the triggers that call the functions go first.
   def down do
     execute("DROP TRIGGER finance_einvoice_submissions_linked ON finance_einvoice_submissions")
+    execute("DROP TRIGGER finance_einvoice_source_links_standing ON finance_einvoice_source_links")
+    execute("DROP FUNCTION finance_einvoice_refuse_linked_submission()")
+    execute("DROP FUNCTION finance_einvoice_refuse_second_source_link()")
+
+    execute(
+      "DROP FUNCTION finance_einvoice_standing_source_link(finance_einvoice_source_links, bigint)"
+    )
+
     execute("DROP TABLE finance_einvoice_source_links")
-    for function <- Enum.reverse(@functions), do: execute("DROP FUNCTION #{function}")
   end
 
   @doc """

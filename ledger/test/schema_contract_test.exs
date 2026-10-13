@@ -69,6 +69,22 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end
 
+  test "the migrations roll back in order", %{repo: repo} do
+    for {version, migration} <-
+          SchemaContract.migration_versions()
+          |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner])
+          |> Enum.reverse() do
+      assert :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
+    end
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               repo,
+               "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'finance_ledger_%'",
+               []
+             )
+  end
+
   # The module's other suites prove these rules on temporary copies of the
   # tables; this proves the migration itself carries them, outside a sandbox,
   # where the deferred balance check runs at commit. A refused commit
