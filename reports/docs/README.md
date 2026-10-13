@@ -3,8 +3,11 @@
 Module ID: `finance/reports`. A company's financial statements, read live
 from its general ledger: profit and loss for any date range, the balance
 sheet and the cash position as of any date, headline figures against the
-previous period, and the entries behind any account's figure. It stores immutable
-issued snapshots; ledger figures come through `finance/ledger`'s facade.
+previous period, and the entries behind any account's figure; and the page
+an independent reviewer reads the ledger's approval exceptions on. It stores
+immutable issued snapshots; ledger figures come through `finance/ledger`'s
+facade, and the only other writes its pages make (the separation setting, a
+review) are that facade's calls.
 
 ## Public API
 
@@ -137,6 +140,18 @@ again when an entry posts. "Pin these figures" adds the report's entry
 number to the address and stops automatic posting updates. The address
 freezes ledger postings; it is not an issued copy and metadata can still change.
 
+`/finance/reports/approval-exceptions` (menu Finance › Approval
+exceptions, route capability `finance.ledger.view`) is the ledger's approval
+exceptions by period, chosen with the shared period filter in the viewer's
+time zone: every same-person approval and every override of a control, with
+the record, who prepared and approved it, the reason, and its review,
+filtered by review status. It shows the company's separation of duties and
+every change to it, and offers turning it off with a reason (or requiring it
+again) to `finance.ledger.duty-separation.manage`, and recording a review to
+`finance.ledger.approval-exceptions.review`; both are the ledger's facade
+calls, which re-ask their capability and refuse a review by whoever approved
+or prepared what an exception records.
+
 ## Performance
 
 Each column is one aggregate query in the ledger: PostgreSQL sums the lines
@@ -165,6 +180,10 @@ accounts are held to. What this slice covers:
 - **Double-entry consistency.** Statement totals come from the same
   per-account sums as the trial balance, and the balance sheet balances by
   construction.
+- **Independent review.** The approval exceptions page lists, by period,
+  what an independent reviewer reads when a company cannot separate duties
+  (same-person approvals) and every override of a control, and records each
+  review with the reviewer and time.
 - **No standard hard-coded.** Statements group by the five account types and
   the company's own sections; no chart, heading, or statement format of any
   accounting standard is built in. A company presents to its standard
@@ -205,14 +224,26 @@ ledger entry cutoff. Each owning Finance facade exposes bounded, ID-ordered
 cursor and writes CSV incrementally. Source schemas remain private.
 
 The archive includes line-level ledger entries/lines and chart, trial balance,
-AR/AP documents, lines, tax, payments and allocations, fiscal closing events,
-e-invoice submissions and status events, bank statements and lines, matches,
+AR/AP documents, lines, tax, payments and allocations, payment requests with
+their events, fiscal closing events, manual journals with their lines and
+decisions, approval exceptions with their reviews, duty-separation changes,
+e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own
 capability. The source-file index names imported bank files with their original
 SHA-256; their original bytes are not retained. Exact authority submission
 payloads are included with their hashes. No source uploads exist for the current
 AR/AP document APIs.
+
+The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
+Payroll and SST modules: each facade's `evidence_page/4` exports every table of
+the module, including payroll posting events, mapping and settings changes,
+and SST registrations, mappings, returns, return events, boxes, accounts,
+sources and adjustments. The manifest's `filters.evidence` names these modules.
+A test lists every table of those modules and fails unless the pack exports it
+or an exclusion names it with a reason (the only exclusion is the issued
+report table, which the pack writes as `issued-reports.csv`), so a new table
+cannot be left out unnoticed.
 
 `manifest.json` records the company/tenant, database snapshot, ledger cutoff,
 filters, UTC timezone, generator version, actor/time, file hashes, CSV row counts

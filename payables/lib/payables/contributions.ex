@@ -8,6 +8,7 @@ defmodule Bilimbi.Finance.Payables.Contributions do
   @create_documents "finance.payables.documents.create"
   @approve_documents "finance.payables.documents.approve"
   @post_documents "finance.payables.documents.post"
+  @submit_payments "finance.payables.payments.submit"
   @post_payments "finance.payables.payments.post"
   @approve_match_exceptions "finance.payables.match.approve"
 
@@ -17,6 +18,7 @@ defmodule Bilimbi.Finance.Payables.Contributions do
     @create_documents,
     @approve_documents,
     @post_documents,
+    @submit_payments,
     @post_payments,
     @approve_match_exceptions
   ]

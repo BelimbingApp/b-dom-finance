@@ -53,6 +53,12 @@ defmodule Bilimbi.Finance.Reconciliation.Web.Format do
   def refusal(:reconciliation_not_found), do: "The reconciliation no longer exists."
   def refusal(:reconciliation_finalised), do: "The reconciliation is finalised and cannot change."
   def refusal(:reconciliation_abandoned), do: "The reconciliation was abandoned."
+
+  def refusal(:same_person),
+    do:
+      "This company separates duties: someone other than whoever opened the reconciliation " <>
+        "must finalise it."
+
   def refusal(:invalid_kind), do: "Choose whether the line is a charge or interest."
   def refusal(:no_charges_account), do: "Set the bank account's charges account first."
   def refusal(:no_interest_account), do: "Set the bank account's interest account first."

@@ -1,9 +1,10 @@
 # Ledger
 
 Module ID: `finance/ledger`. A company's general ledger: its book, chart of
-accounts, journal entries, period closing, and trial balance. Other Finance
-modules and other Domains post through this module's facade; none of them
-reads its tables.
+accounts, journal entries, manual journals, period closing, trial balance,
+and the company's separation of duties with its approval exceptions. Other
+Finance modules and other Domains post through this module's facade; none of
+them reads its tables.
 
 ## Public API
 
@@ -31,6 +32,15 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `lock_period/4` | `finance.ledger.periods.lock` | Locks a closed period for good, optional `reason` |
 | `close_fiscal_year/4` | `finance.ledger.periods.manage` and `finance.ledger.entries.post` | Posts the closing entry into retained earnings and closes the year; idempotent |
 | `reopen_fiscal_year/4` | `finance.ledger.periods.reopen` and `finance.ledger.entries.post` | Reopens a closed year with a `reason`, reversing its closing entry |
+| `get_duty_separation/2`, `list_duty_separation_changes/2` | `finance.ledger.view` | Whether the company requires separation of duties, and every change to it |
+| `set_duty_separation/3` | `finance.ledger.duty-separation.manage` | Turns it on or off: `required`, and a `reason` to turn it off |
+| `check_approval/3` | `finance.ledger.view` | For a module approving a record: refuses the preparer while separation is required, and records a same-person approval or an override as an approval exception |
+| `list_approval_exceptions/3`, `get_approval_exception/3` | `finance.ledger.view` | Approval exceptions with their reviews; `list_approval_exceptions/3` takes `recorded_from`, `recorded_before`, `reviewed`, `limit`, and `after` |
+| `review_approval_exception/4` | `finance.ledger.approval-exceptions.review` | Records an independent review of an exception, optional `note` |
+| `submit_journal/3` | `finance.ledger.journals.submit` | Submits a manual journal for approval: `entry_date`, `description`, optional `reference`, `lines` |
+| `approve_journal/3` | `finance.ledger.journals.approve` | Approves a submitted journal, posting its entry |
+| `reject_journal/4` | `finance.ledger.journals.approve` | Rejects a submitted journal with a `reason` |
+| `get_journal/3`, `list_journals/3` | `finance.ledger.view` | Journals with their lines, status, and decision; `list_journals/3` takes `status`, `limit`, and `after` |
 
 ## Authorization and company scope
 
@@ -45,12 +55,16 @@ archived company is `{:error, :company_archived}` and one company's ledger
 writes run one at a time; that lock is also what keeps an account from being
 deactivated while an entry posts to it, and a period from closing while an
 entry posts into it. Ledger figures are financial facts, so reads need
-`finance.ledger.view`; the Tenant Owner role holds all six capabilities.
+`finance.ledger.view`; the Tenant Owner role holds all ten capabilities.
 Closing, reopening, and locking are separate capabilities, so a company can
 let one person close periods and keep reopening and locking with another.
 Closing and reopening a fiscal year also post an entry, so each needs the
 posting capability `finance.ledger.entries.post` as well; a caller missing
 either capability is `{:error, :unauthorized}` and nothing is posted.
+Submitting and approving a manual journal are separate capabilities too, as
+are changing the company's separation of duties and reviewing an approval
+exception. The capability names use Base Authz's verbs (`manage`, `submit`,
+`approve`, `review`); the ledger declares only `post`, `reopen`, and `lock`.
 
 An entry records who posted it: `posted_by_user_id` from `Scope.actor/1`, and
 `posted_by_impersonator_id` for an impersonated session; the database stamps
@@ -109,7 +123,10 @@ reversed at most once and a reversal is not itself reversed, so a correction
 is a reversal plus a new entry. A reversal is dated into an open period like
 any entry, and a year-end closing entry is reversed only by reopening its
 year (`{:error, :closing_entry}`). `get_entry/3` shows `reversed_by_entry_id`
-on a reversed entry. There are no draft entries in this slice.
+on a reversed entry. There are no draft entries: a person's manual journal
+waits for approval as a journal (see Manual journals), not as an entry.
+`post_entry/3,4` is how a module posts the records it keeps itself (a bill, a
+payment, a payroll run), each approved under that module's own rules.
 
 **Settlement exception.** An inactive account blocks new business, not the
 settlement of what was posted before it was deactivated. `post_entry/4` takes
@@ -134,6 +151,55 @@ that account and `through_entry_number` those numbered up to it, so the
 entries behind an `account_totals/3` figure are listed with the same
 options. An option of the wrong shape or range, including an ID beyond
 PostgreSQL's `bigint`, is `{:error, :invalid_option}`.
+
+## Manual journals
+
+A person's own adjustment is a manual journal: `submit_journal/3` takes what
+`post_entry/4` takes (`entry_date`, `description`, an optional `reference`,
+and `lines`), checks it as it would check an entry, and keeps it, numbered
+per company without gaps (`journal_number`), with the submitter and the
+database's time. Nothing posts until `approve_journal/3`, which checks it
+again, now, and posts it as an entry on its date, by the approver; a period
+closed or an account deactivated since submission is the ledger's changeset,
+and the journal stays submitted. `reject_journal/4` turns it down with a
+reason. A journal is decided once, by an append-only event (`approved`,
+naming the entry, or `rejected`), and its `status` is `submitted` until then.
+The approver is not the submitter (`{:error, :same_person}`) while the
+company requires separation of duties.
+
+## Separation of duties
+
+A company requires separation of duties until it turns it off: whoever
+approves a record, posts a payment, or finalises a reconciliation is not
+the person who prepared it, nor anyone who impersonated them, nor anyone
+they impersonated. A company too small for that (one finance person) turns
+it off with `set_duty_separation/3` and a reason; the setting is the latest
+of the company's append-only changes, each with the actor, any
+impersonator, the reason, and the database's time
+(`list_duty_separation_changes/2`). A call that changes nothing records
+nothing.
+
+Every Finance approval asks `check_approval/3` in the transaction that
+records it, under the company lock: Payables when a document is approved, a
+held bill's match exceptions are approved, or a payment is approved;
+Reconciliation when a reconciliation is finalised; and this module when a
+manual journal is approved. The caller describes the record (`source`, the
+module ID; `action`; `subject_type`, `subject_id`, and a `subject` label)
+and who prepared it (`prepared_by`). While separation is required, a
+preparer is `{:error, :same_person}` and the approval rolls back. While it
+is not, the approval goes ahead and is recorded as a same-person approval
+exception naming the change that turned separation off, with its reason.
+
+An override of a control is recorded whoever makes it, with the approver's
+reason: an approved match exception (`override: true`) and a reopened period
+or fiscal year (this module records those itself, with the reopen's reason).
+The approval exceptions are the population an independent reviewer reads:
+`list_approval_exceptions/3` lists them by the database's time, from an
+instant and before another, so a period's bounds in any time zone select it
+exactly; `review_approval_exception/4` records one review per exception, by
+someone who neither approved nor prepared what it records, whatever the
+setting. The Reports module's `/finance/reports/approval-exceptions` page
+(menu Finance › Approval exceptions) shows both, with the setting.
 
 ## Trial balance
 
@@ -296,6 +362,35 @@ them:
 The migration `20261012214100`, also `:bilimbi_only`, adds the trigger that
 announces each posted entry (see Posting notices).
 
+The migration `20261016100000`, also `:bilimbi_only` and self-contained,
+adds `finance_ledger_duty_separation_changes`,
+`finance_ledger_approval_exceptions`,
+`finance_ledger_approval_exception_reviews`, `finance_ledger_journals`,
+`finance_ledger_journal_lines`, and `finance_ledger_journal_events`; its
+`statements/1` is their one source, and the module's tests run it with
+`temporary: true`. All six are append-only (UPDATE, DELETE, and TRUNCATE
+are refused), and:
+
+- a trigger numbers each company's separation changes, stamps their time,
+  and refuses a change that changes nothing; a check requires a reason to
+  turn separation off;
+- a trigger numbers each company's approval exceptions and stamps their
+  time, and refuses a same-person exception unless the change it names is
+  the company's latest and turns separation off; checks keep `same_person`
+  true exactly when the approver and preparer overlap (impersonators
+  included), and require a reason;
+- a trigger refuses a review by the exception's approver or preparer, or
+  anyone overlapping them, and a unique index allows one review per
+  exception;
+- a trigger numbers journals and stamps them; a journal line is added only
+  in the transaction that submits its journal, and a deferred constraint
+  trigger refuses a commit in which a journal has no lines or does not
+  balance;
+- a journal is decided once (a unique index), an approval names its entry
+  and a rejection its reason, and a trigger refuses an approval by the
+  submitter unless the same transaction recorded the same-person exception
+  for it.
+
 `Bilimbi.Finance.Ledger.SchemaContract` describes the tables but is not
 registered in the descriptor: compatibility verification runs before pending
 Bilimbi-only migrations, when these tables correctly do not exist.
@@ -324,6 +419,14 @@ accounts are held to. What this slice covers:
   append-only, gaplessly numbered closing event with its actor, time, and
   reason, and a status is always the latest event's, so the log is the whole
   history.
+- **Separation of duties.** The company's setting, on by default, keeps a
+  record's preparer from approving it across Finance, impersonation
+  included; a manual journal posts only once someone else approves it. A
+  company that turns it off records why, and each same-person approval and
+  each override (an approved match exception, a reopened period) is listed
+  with its reason for an independent reviewer, whose review is recorded too.
+  The setting's history, the exceptions, and the reviews are append-only and
+  stamped by the database.
 - **Period-end cut-off.** Once a period closes, PostgreSQL refuses any entry
   dated in it or before it, so a closed period's figures, and every report as
   of its end, stay as they were reported. Reopening needs a separate
@@ -361,5 +464,10 @@ it could never deliver. `test/schema_contract_test.exs` proves the real
 trigger, and `test/postings_test.exs` proves who hears a notice by sending
 one committed outside the sandbox.
 
+`test/duty_separation_test.exs` proves the setting, `check_approval/3`
+(impersonation included), reviews, and manual journals; the rules only a
+commit shows (a journal's later lines, its balance) are proved in
+`test/schema_contract_test.exs`.
+
 The ledger has no pages, menu entries, or agent operations; callers use the
-facade.
+facade. The approval exceptions page is the Reports module's.

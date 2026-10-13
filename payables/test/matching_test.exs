@@ -6,7 +6,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
   alias Bilimbi.Finance.Payables.StubOrderSource
   alias Ecto.Adapters.SQL
 
-  @approve_exceptions "finance.payables.match.approve"
+  @approve_exceptions ["finance.payables.match.approve", "finance.ledger.view"]
 
   setup do
     StubOrderSource.install!()
@@ -23,7 +23,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
   defp approved_bill!(context, number, lines) do
     {:ok, bill} = Payables.create_bill(context.operator, 73, bill("P-1", number, lines))
-    {:ok, approved} = Payables.approve_document(context.operator, 73, bill.id)
+    {:ok, approved} = Payables.approve_document(context.approver, 73, bill.id)
     approved
   end
 
@@ -35,6 +35,16 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       reason: reason,
       held_event_id: held.id
     })
+  end
+
+  # The migration is loaded at run time, so the call is dynamic.
+  defp matching_migration do
+    {_version, migration} =
+      Enum.find(TestFixtures.migrations(), fn {version, _migration} ->
+        version == 20_261_014_100_000
+      end)
+
+    migration
   end
 
   defp tolerances!(context, attributes) do
@@ -454,7 +464,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
     test "names the hold approved, and refuses a hold it did not see", context do
       %{first_scope: system, operator: operator, bill: bill} = context
-      approver = TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
+      approver = TestFixtures.sign_in!(system, 73, 98, @approve_exceptions)
       {:ok, %{match_events: [%{id: seen}]}} = Payables.get_document(operator, 73, bill.id)
 
       assert {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
@@ -484,11 +494,11 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
     test "records the approver and reason, then posts over the approved exceptions", context do
       %{first_scope: system, operator: operator, bill: bill} = context
-      TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
+      TestFixtures.sign_in!(system, 73, 98, @approve_exceptions)
 
       approver =
         Authentication.sign_in(system, 98, 73,
-          impersonator_id: 91,
+          impersonator_id: 99,
           impersonation_session_id: "borrowed-session"
         )
 
@@ -503,7 +513,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
                  event: "exception_approved",
                  reason: "Short delivery agreed with the party",
                  actor_user_id: 98,
-                 actor_impersonator_id: 91,
+                 actor_impersonator_id: 99,
                  occurred_at: %DateTime{},
                  lines: []
                }
@@ -534,7 +544,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
     test "holds again on an exception the approval does not cover", context do
       %{first_scope: system, operator: operator, bill: bill} = context
-      approver = TestFixtures.sign_in!(system, 73, 98, [@approve_exceptions])
+      approver = TestFixtures.sign_in!(system, 73, 98, @approve_exceptions)
 
       {:ok, _} =
         approve(context, approver, bill, "Short delivery agreed")
@@ -560,18 +570,89 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     end
   end
 
+  describe "separation of duties for match exceptions" do
+    setup context do
+      bill =
+        approved_bill!(context, "INV-1", [
+          order_line(context.accounts.stock, "400", 11, "4")
+        ])
+
+      %{first_scope: system} = context
+      poster = TestFixtures.sign_in!(system, 73, 97, all_capabilities())
+      {:ok, %{status: "held"}} = Payables.post_document(poster, 73, bill.id)
+      %{bill: bill, poster: poster}
+    end
+
+    test "refuses whoever recorded the bill or tried to post it, impersonation included",
+         context do
+      %{first_scope: system, operator: operator, poster: poster, bill: bill} = context
+
+      assert {:error, :same_person} = approve(context, operator, bill, "Mine")
+      assert {:error, :same_person} = approve(context, poster, bill, "Mine")
+
+      TestFixtures.sign_in!(system, 73, 98, @approve_exceptions)
+
+      impersonated =
+        Authentication.sign_in(system, 98, 73,
+          impersonator_id: 91,
+          impersonation_session_id: "borrowed-session"
+        )
+
+      assert {:error, :same_person} = approve(context, impersonated, bill, "Mine")
+
+      assert {:ok, %{match_events: [%{event: "held"}]}} =
+               Payables.get_document(operator, 73, bill.id)
+    end
+
+    test "lists every approval as an override for independent review", context do
+      %{approver: approver, operator: operator, bill: bill} = context
+
+      assert {:ok, %{match_status: "exception_approved"}} =
+               approve(context, approver, bill, "Short delivery agreed")
+
+      assert {:ok,
+              [
+                %{
+                  source: "finance/payables",
+                  action: "match_override",
+                  subject_type: "bill",
+                  subject: "Bill INV-1 from Party P-1, 400 XTS",
+                  same_person: false,
+                  override: true,
+                  prepared_by_user_id: 91,
+                  approved_by_user_id: 92,
+                  reason: "Short delivery agreed"
+                } = exception
+              ]} = Ledger.list_approval_exceptions(operator, 73)
+
+      assert exception.subject_id == bill.id
+    end
+
+    test "lets the recorder approve while separation is off, listed as both", context do
+      %{first_scope: system, operator: operator, bill: bill} = context
+      owner = TestFixtures.sign_in!(system, 73, 99, ["finance.ledger.duty-separation.manage"])
+      {:ok, _} = Ledger.set_duty_separation(owner, 73, %{required: false, reason: "Small team"})
+
+      assert {:ok, _} = approve(context, operator, bill, "Short delivery agreed")
+
+      assert {:ok, [%{same_person: true, override: true, reason: "Short delivery agreed"}]} =
+               Ledger.list_approval_exceptions(operator, 73)
+    end
+  end
+
   describe "an approval covers the figures the approver saw" do
     setup context do
       bill =
         approved_bill!(context, "INV-A", [order_line(context.accounts.stock, "30.00", 10, "12")])
 
       {:ok, %{status: "held"}} = Payables.post_document(context.operator, 73, bill.id)
-      approver = TestFixtures.sign_in!(context.first_scope, 73, 98, [@approve_exceptions])
-      %{bill: bill, approver: approver}
+      approver = TestFixtures.sign_in!(context.first_scope, 73, 98, @approve_exceptions)
+      %{bill: bill, exception_approver: approver}
     end
 
     test "holds again when another bill took more of the order line meanwhile", context do
-      %{operator: operator, accounts: accounts, bill: bill, approver: approver} = context
+      %{operator: operator, accounts: accounts, bill: bill, exception_approver: approver} =
+        context
 
       assert {:ok, %{match_status: "exception_approved"}} =
                approve(context, approver, bill, "Over-delivery")
@@ -600,7 +681,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     end
 
     test "posts over an approval when the exceptions are the same or smaller", context do
-      %{operator: operator, bill: bill, approver: approver} = context
+      %{operator: operator, bill: bill, exception_approver: approver} = context
 
       {:ok, _} =
         approve(context, approver, bill, "Over-delivery")
@@ -610,7 +691,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     end
 
     test "holds again when the price gap widened", context do
-      %{operator: operator, accounts: accounts, approver: approver} = context
+      %{operator: operator, accounts: accounts, exception_approver: approver} = context
       bill = approved_bill!(context, "INV-C", [order_line(accounts.stock, "350", 11, "3")])
       {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
       {:ok, _} = approve(context, approver, bill, "Dearer")
@@ -622,7 +703,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
     end
 
     test "posts over an approval when a shortfall narrowed but remains", context do
-      %{operator: operator, accounts: accounts, approver: approver} = context
+      %{operator: operator, accounts: accounts, exception_approver: approver} = context
       bill = approved_bill!(context, "INV-D", [order_line(accounts.stock, "400", 11, "4")])
       {:ok, %{status: "held"}} = Payables.post_document(operator, 73, bill.id)
       {:ok, _} = approve(context, approver, bill, "Short")
@@ -677,7 +758,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
           lines: [order_line(accounts.stock, "14.00", 10, "7")]
         })
 
-      {:ok, _} = Payables.approve_document(operator, 73, note.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, note.id)
 
       assert {:ok, %{status: "posted", match_status: nil}} =
                Payables.post_document(operator, 73, note.id)
@@ -685,7 +766,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
       assert {:ok, %{10 => billed}} = Payables.billed_quantities(operator, 73, [10])
       assert decimal?(billed, 6)
 
-      {:ok, _} = Payables.approve_document(operator, 73, later.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, later.id)
       assert {:error, :exceeds_billed_quantity} = Payables.post_document(operator, 73, later.id)
 
       # The quantity taken back is billable again.
@@ -781,7 +862,7 @@ defmodule Bilimbi.Finance.Payables.MatchingTest do
 
     test "keeps the exception codes the match applies" do
       assert Payables.match_exception_codes() ==
-               apply(elem(List.last(TestFixtures.migrations()), 1), :exception_codes, [])
+               apply(matching_migration(), :exception_codes, [])
     end
   end
 end

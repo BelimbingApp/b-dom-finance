@@ -7,7 +7,8 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   migration's rule. Keep them in step with
   `priv/repo/migrations/`; `test/schema_contract_test.exs` checks the real
   migrations themselves. The closing rules' functions are the closing
-  migration's own, created in `pg_temp`.
+  migration's own, created in `pg_temp`, and the duty separation tables are
+  that migration's own `statements(temporary: true)`.
   """
 
   alias Bilimbi.Base.Authz
@@ -26,6 +27,11 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
                        "../../priv/repo/migrations/20261013101700_create_finance_ledger_closing.exs",
                        __DIR__
                      )
+
+  @duty_separation_migration Path.expand(
+                               "../../priv/repo/migrations/20261016100000_add_finance_ledger_duty_separation.exs",
+                               __DIR__
+                             )
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
@@ -92,7 +98,19 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   end
 
   def create_ledger_tables! do
-    Enum.each(ledger_statements() ++ closing_statements(), &SQL.query!(Repo, &1, []))
+    Enum.each(
+      ledger_statements() ++ closing_statements() ++ duty_separation_statements(),
+      &SQL.query!(Repo, &1, [])
+    )
+  end
+
+  # The duty separation migration's own statements, over the copies above.
+  defp duty_separation_statements do
+    migration = Bilimbi.Finance.Ledger.Migrations.AddDutySeparation
+
+    unless Code.ensure_loaded?(migration), do: Code.require_file(@duty_separation_migration)
+
+    apply(migration, :statements, [[temporary: true]])
   end
 
   # The migration is a script, not compiled module code; load it once.

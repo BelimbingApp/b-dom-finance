@@ -1,7 +1,9 @@
 defmodule Bilimbi.Finance.Payables.PayablesCase do
   @moduledoc """
   A company with an open ledger book, the accounts a payables test posts to,
-  payables settings, and one tax code, for the module's suites.
+  payables settings, and one tax code, for the module's suites. The
+  `operator` records and posts; the `approver`, another user with the same
+  capabilities, approves, since the company requires separation of duties.
 
   The contribution registry snapshot is process-global, so suites using this
   case do not run alongside other suites.
@@ -37,6 +39,7 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
     finance.payables.documents.create
     finance.payables.documents.approve
     finance.payables.documents.post
+    finance.payables.payments.submit
     finance.payables.payments.post
     finance.payables.match.approve
   )
@@ -50,6 +53,7 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
     on_exit(&ContributionRegistry.clear_for_test!/0)
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, all_capabilities())
+    approver = TestFixtures.sign_in!(context.first_scope, 73, 92, all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
 
     accounts =
@@ -86,7 +90,12 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
         account_id: accounts.tax.id
       })
 
-    Map.merge(context, %{operator: operator, accounts: accounts, tax_code: tax_code})
+    Map.merge(context, %{
+      operator: operator,
+      approver: approver,
+      accounts: accounts,
+      tax_code: tax_code
+    })
   end
 
   @doc "Bill attributes from the party `key` with `lines`."
@@ -106,12 +115,22 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
   def line(account, amount, extra \\ %{}),
     do: Map.merge(%{description: "Line", account_id: account.id, amount: amount}, extra)
 
-  @doc "Records, approves, and posts a bill."
+  @doc "Records, approves (as the approver), and posts a bill."
   def post_bill!(context, attributes) do
     {:ok, bill} = Payables.create_bill(context.operator, 73, attributes)
-    {:ok, _approved} = Payables.approve_document(context.operator, 73, bill.id)
+    {:ok, _approved} = Payables.approve_document(context.approver, 73, bill.id)
     {:ok, posted} = Payables.post_document(context.operator, 73, bill.id)
     posted
+  end
+
+  @doc """
+  Submits a payment as the operator and approves it as the approver: the
+  posted payment, or the first refusal.
+  """
+  def pay(context, attributes) do
+    with {:ok, request} <- Payables.submit_payment(context.operator, 73, attributes) do
+      Payables.approve_payment(context.approver, 73, request.id)
+    end
   end
 
   def decimal?(value, expected), do: Decimal.equal?(value, expected)

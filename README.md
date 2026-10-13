@@ -6,12 +6,12 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
-| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, trial balance, and posting notices |
-| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, the three-way match of a bill against the purchase order and goods receipts behind it when Supply Chain is mounted, payments allocated to bills, and aged payables |
+| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, manual journals posted on approval, the company's separation of duties with its approval exceptions, fiscal years and period closing, year-end close, trial balance, and posting notices |
+| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payment requests, the three-way match of a bill against the purchase order and goods receipts behind it when Supply Chain is mounted, payments approved before they post and allocated to bills, and aged payables |
 | [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
-| [`reports/`](reports/docs/README.md) | `finance/reports` | live financial statements, immutable issued statement/trial-balance/aging snapshots, and company auditor archives with ledger and Finance evidence |
+| [`reports/`](reports/docs/README.md) | `finance/reports` | live financial statements, immutable issued statement/trial-balance/aging snapshots, the approval exceptions page, and company auditor archives with ledger and Finance evidence |
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
-| [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference and kept with their figures |
+| [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference by someone other than their preparer (or recorded as an exception) and kept with their figures |
 | [`payroll/`](payroll/docs/README.md) | `finance/payroll` | each company's mapping of payroll components and claim categories to ledger accounts with its change history, one balanced entry per finalised payroll run and per approved staff claim posted once through the ledger, reversals with reasons, and the append-only record of every attempt; the runs and claims come from the People Domain when it is mounted |
 | [`sst/`](sst/docs/README.md) | `finance/sst` | Malaysia's Sales and Service Tax return (SST-02): the registration and tax code mappings as numbered versions, and returns per tax and taxable period computed from posted documents, reconciled with the tax accounts, finalised into immutable snapshots, and amended by new versions |
 
@@ -23,7 +23,7 @@ entries, or agent operations; payables has pages for its bills and the ones
 the three-way match holds. E-invoicing issues documents through its
 own facade, posts validated ones through the ledger's, and has pages for its
 documents, its reconciliation, and its setup. Reports reads the ledger's
-figures and has the financial reports pages. Bank reconciliation imports
+figures and has the financial reports pages and the approval exceptions page. Bank reconciliation imports
 bank statements, matches their lines to the ledger's postings, posts bank
 charges and interest through the ledger's facade, and has pages for its
 bank accounts, statements, matching, and reconciliations. Payroll posting

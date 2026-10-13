@@ -31,7 +31,7 @@ maps; the schemas are private.
 | `list_matches/4`, `get_match/3` | `finance.reconciliation.view` | Matches with their status, lines, entries, and events |
 | `preview_reconciliation/5` | `finance.reconciliation.view` | The figures as of an `end_date` against a `statement_balance`, optionally pinned to `through_*` numbers |
 | `open_reconciliation/4` | `finance.reconciliation.reconciliations.manage` | Opens a reconciliation: `end_date`, `statement_balance` |
-| `finalise_reconciliation/3` | `finance.reconciliation.reconciliations.finalise` | Finalises an open one at zero difference and stores its snapshot |
+| `finalise_reconciliation/3` | `finance.reconciliation.reconciliations.finalise` | Finalises an open one at zero difference and stores its snapshot, by someone other than whoever opened it while the company separates duties |
 | `abandon_reconciliation/4` | `finance.reconciliation.reconciliations.manage` | Abandons an open one with a `reason` |
 | `get_reconciliation/3`, `list_reconciliations/3` | `finance.reconciliation.view` | A reconciliation's figures and items; an account's reconciliations |
 | `post_statement_line/4` | `finance.reconciliation.statement-lines.post` | Posts an unmatched line as a `charge` or `interest` through the ledger and matches it |
@@ -56,7 +56,14 @@ opens, the account's entries when matching or reconciling) also needs
 `finance.ledger.entries.post`, because the ledger authorizes its own calls.
 The Tenant Owner role holds every reconciliation capability. Importing,
 matching, opening, finalising, and posting are separate capabilities, so a
-company can keep finalising with a reviewer. Each page re-asks its event's
+company can keep finalising with a reviewer. The company's separation of
+duties (the ledger's `set_duty_separation/3`, required unless turned off)
+holds them apart for each reconciliation too: whoever opened it, or anyone
+who impersonated them or whom they impersonated, cannot finalise it
+(`{:error, :same_person}`); finalising therefore also asks
+`finance.ledger.view` of the ledger's `check_approval/3`. While separation is
+off, the finalisation goes ahead and is listed in the ledger's approval
+exceptions for independent review. Each page re-asks its event's
 capability through `Bilimbi.Base.Authz.LiveAuthorization` before calling the
 facade, which asks again.
 
@@ -168,8 +175,10 @@ order.
 
 `open_reconciliation/4` records the reconciliation with its `opened` event;
 one reconciliation of an account is open at a time, and each ends after
-the last finalised one. `finalise_reconciliation/3` reads the figures now,
-refuses a difference other than zero (`{:error, {:difference, amount}}`),
+the last finalised one. `finalise_reconciliation/3` refuses whoever opened
+it while the company separates duties (`{:error, :same_person}`), reads the
+figures now, refuses a difference other than zero
+(`{:error, {:difference, amount}}`),
 and records the `finalised` event with the book balance, the difference,
 the three numbers, and the actor and time, and the items as they stood.
 From then on `get_reconciliation/3` reads the stored snapshot, nothing
@@ -254,6 +263,10 @@ and proves the migration's own triggers outside the test sandbox.
   Bank charges and interest reach the books only as ordinary ledger entries
   through the ledger's facade. Every change to a bank account is logged
   with its actor and reason.
+- **Independent review.** While the company separates duties (the
+  default), a reconciliation is finalised by someone other than whoever
+  opened it, impersonation included; a company that does not lists each
+  such finalisation in the ledger's approval exceptions for review.
 - **Gapless numbering.** Statements, matches, match events,
   reconciliations, and reconciliation events are numbered per company by
   the database in order, never skipped or reused.

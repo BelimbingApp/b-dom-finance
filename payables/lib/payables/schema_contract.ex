@@ -13,7 +13,7 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_versions, do: [20_261_012_213_700, 20_261_014_100_000]
+  def migration_versions, do: [20_261_012_213_700, 20_261_014_100_000, 20_261_016_100_100]
 
   def migration_version, do: List.last(migration_versions())
 
@@ -407,6 +407,116 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
         checks: %{
           "finance_payables_payment_allocations_line_number" => check("line_number > 0"),
           "finance_payables_payment_allocations_amount" => check("amount > (0)::numeric")
+        }
+      },
+      %{
+        name: "finance_payables_payment_requests",
+        columns:
+          owned_columns("finance_payables_payment_requests")
+          |> Map.merge(%{
+            "request_number" => column(:bigint, false),
+            "payment_date" => column(:date, false),
+            "party_key" => column({:varchar, 100}, false),
+            "party_name" => column({:varchar, 200}, false),
+            "paid_from_account_id" => column(:bigint, false),
+            "amount" => column({:numeric, 20, 4}, false),
+            "currency_code" => column({:varchar, 3}, false),
+            "reference" => column({:varchar, 100}, true),
+            "description" => column({:varchar, 500}, true),
+            "submitted_by_user_id" => column(:bigint, false),
+            "submitted_by_impersonator_id" => column(:bigint, true),
+            "submitted_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_payables_payment_requests_pkey" => index(["id"], true),
+          "finance_payables_payment_requests_id_company_unique" =>
+            index(["id", "company_id"], true),
+          "finance_payables_payment_requests_company_number_unique" =>
+            index(["company_id", "request_number"], true),
+          "finance_payables_payment_requests_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{},
+        checks: %{
+          "finance_payables_payment_requests_amount" => check("amount > (0)::numeric"),
+          "finance_payables_payment_requests_currency_code" =>
+            check("(currency_code)::text ~ '^[A-Z]{3}$'::text"),
+          "finance_payables_payment_requests_request_number" => check("request_number > 0")
+        }
+      },
+      %{
+        name: "finance_payables_payment_request_allocations",
+        columns:
+          owned_columns("finance_payables_payment_request_allocations")
+          |> Map.merge(%{
+            "request_id" => column(:bigint, false),
+            "line_number" => column(:integer, false),
+            "document_id" => column(:bigint, false),
+            "amount" => column({:numeric, 20, 4}, false)
+          }),
+        indexes: %{
+          "finance_payables_payment_request_allocations_pkey" => index(["id"], true),
+          "finance_payables_payment_request_allocations_line_unique" =>
+            index(["request_id", "line_number"], true),
+          "finance_payables_payment_request_allocations_document_unique" =>
+            index(["request_id", "document_id"], true),
+          "finance_payables_request_allocations_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_payment_request_allocations_request_fkey" =>
+            company_reference("request_id", "finance_payables_payment_requests"),
+          "finance_payables_payment_request_allocations_document_fkey" =>
+            company_reference("document_id", "finance_payables_documents")
+        },
+        checks: %{
+          "finance_payables_payment_request_allocations_line_number" => check("line_number > 0"),
+          "finance_payables_payment_request_allocations_amount" => check("amount > (0)::numeric")
+        }
+      },
+      %{
+        name: "finance_payables_payment_request_events",
+        columns:
+          owned_columns("finance_payables_payment_request_events")
+          |> Map.merge(%{
+            "request_id" => column(:bigint, false),
+            "event" => column({:varchar, 16}, false),
+            "reason" => column({:varchar, 500}, true),
+            "payment_id" => column(:bigint, true),
+            "actor_user_id" => column(:bigint, false),
+            "actor_impersonator_id" => column(:bigint, true),
+            "occurred_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_payables_payment_request_events_pkey" => index(["id"], true),
+          "finance_payables_payment_request_events_request_unique" => index(["request_id"], true),
+          "finance_payables_payment_request_events_payment_unique" => %{
+            columns: ["payment_id"],
+            unique: true,
+            where: "(payment_id IS NOT NULL)"
+          },
+          "finance_payables_payment_request_events_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_payment_request_events_request_fkey" =>
+            company_reference("request_id", "finance_payables_payment_requests"),
+          "finance_payables_payment_request_events_payment_fkey" =>
+            company_reference("payment_id", "finance_payables_payments")
+        },
+        checks: %{
+          "finance_payables_payment_request_events_event" =>
+            check(
+              "(event)::text = ANY ((ARRAY['posted'::character varying, " <>
+                "'rejected'::character varying])::text[])"
+            ),
+          "finance_payables_payment_request_events_payment" =>
+            check("((event)::text = 'posted'::text) = (payment_id IS NOT NULL)"),
+          "finance_payables_payment_request_events_reason" =>
+            check(
+              "(event)::text <> 'rejected'::text OR " <>
+                "(reason IS NOT NULL AND btrim((reason)::text) <> ''::text)"
+            )
         }
       },
       %{

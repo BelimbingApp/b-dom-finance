@@ -26,7 +26,8 @@ defmodule Bilimbi.Finance.Payables do
   is posted it may be voided instead. Posting numbers it, per company and
   document type, without gaps, and posts its ledger entry. A posted document
   is never changed: a bill is corrected by a debit note against it. A payment
-  is posted with its allocations to bills and corrected by its reversal.
+  is submitted with its allocations to bills, posted when someone approves
+  it, and corrected by its reversal.
   Nothing is deleted; the database refuses the same things on its own (see
   the migration). A change to the payable account, the match tolerances, or
   a tax code is recorded with who made it, why, and the values before and
@@ -45,6 +46,16 @@ defmodule Bilimbi.Finance.Payables do
   append-only match event with the figures it compared. A bill naming no
   order line is never matched, and when no order source is installed a line
   cannot name one.
+
+  Approving a document, approving a held bill's match exceptions, and
+  approving a payment ask the ledger's separation of duties
+  (`Bilimbi.Finance.Ledger.check_approval/3`): while the company requires
+  it, the approver is not the person who recorded the document or
+  submitted the payment (nor whoever impersonated them), and an exception
+  approver is also not whoever tried to post the held bill, else
+  `{:error, :same_person}`; while it does not, the approval is allowed and
+  listed in the ledger's approval exceptions. An approved match exception is
+  always listed there as an override. Each asks `finance.ledger.view`.
 
   Results are plain maps; the schemas stay private to this module.
   """
@@ -68,6 +79,9 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.Matching
   alias Bilimbi.Finance.Payables.OrderSource
   alias Bilimbi.Finance.Payables.Payment
+  alias Bilimbi.Finance.Payables.PaymentRequest
+  alias Bilimbi.Finance.Payables.PaymentRequestAllocation
+  alias Bilimbi.Finance.Payables.PaymentRequestEvent
   alias Bilimbi.Finance.Payables.Settings
   alias Bilimbi.Finance.Payables.SettingsChange
   alias Bilimbi.Finance.Payables.TaxCode
@@ -81,6 +95,7 @@ defmodule Bilimbi.Finance.Payables do
   @create_documents "finance.payables.documents.create"
   @approve_documents "finance.payables.documents.approve"
   @post_documents "finance.payables.documents.post"
+  @submit_payments "finance.payables.payments.submit"
   @post_payments "finance.payables.payments.post"
   @approve_match_exceptions "finance.payables.match.approve"
 
@@ -115,7 +130,10 @@ defmodule Bilimbi.Finance.Payables do
   @doc "The capability that posts approved documents to the ledger."
   def post_documents_capability, do: @post_documents
 
-  @doc "The capability that posts and reverses payments."
+  @doc "The capability that submits a payment for approval."
+  def submit_payments_capability, do: @submit_payments
+
+  @doc "The capability that approves (posting it) or rejects a payment, and reverses payments."
   def post_payments_capability, do: @post_payments
 
   @doc "The capability that approves a held bill's match exceptions."
@@ -430,13 +448,28 @@ defmodule Bilimbi.Finance.Payables do
     end)
   end
 
-  @doc "Approves a draft document. Anything else is `{:error, :not_draft}`."
+  @doc """
+  Approves a draft document. Anything else is `{:error, :not_draft}`. The
+  approver differs from whoever recorded it (`{:error, :same_person}`)
+  unless the company has turned separation of duties off, when the approval
+  is listed in the ledger's approval exceptions.
+  """
   @spec approve_document(Scope.t(), term(), term()) ::
-          {:ok, map()} | {:error, write_refusal() | :document_not_found | :not_draft}
+          {:ok, map()}
+          | {:error, write_refusal() | :document_not_found | :not_draft | :same_person}
   def approve_document(%Scope{} = scope, company_id, document_id) do
     write(scope, company_id, @approve_documents, fn ->
       with {:ok, document} <- fetch_document(scope, company_id, document_id),
-           :ok <- require_status(document, "draft", :not_draft) do
+           :ok <- require_status(document, "draft", :not_draft),
+           :ok <-
+             Ledger.check_approval(scope, company_id, %{
+               source: "finance/payables",
+               action: "document_approval",
+               subject_type: document.document_type,
+               subject_id: document.id,
+               subject: document_label(document),
+               prepared_by: [document_creator(document)]
+             }) do
         %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
 
         document
@@ -613,7 +646,10 @@ defmodule Bilimbi.Finance.Payables do
   `{:error, :not_held}`; one whose last hold is already approved is
   `{:error, :already_approved}`. The approval is a match event
   naming the approver, with any impersonator, the hold, and the database's
-  time.
+  time, and it is listed in the ledger's approval exceptions as an override.
+  The approver differs from whoever recorded the bill and whoever tried to
+  post it into the hold (`{:error, :same_person}`) unless the company has
+  turned separation of duties off.
   """
   @spec approve_match_exception(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -623,6 +659,7 @@ defmodule Bilimbi.Finance.Payables do
              | :not_held
              | :already_approved
              | :stale_hold
+             | :same_person
              | Changeset.t()}
   def approve_match_exception(%Scope{} = scope, company_id, document_id, attributes)
       when is_map(attributes) do
@@ -638,11 +675,44 @@ defmodule Bilimbi.Finance.Payables do
                "exception_approved",
                [],
                Map.take(attributes, [:reason, "reason", :held_event_id, "held_event_id"])
-             ) do
+             ),
+           :ok <-
+             Ledger.check_approval(scope, company_id, %{
+               source: "finance/payables",
+               action: "match_override",
+               subject_type: "bill",
+               subject_id: document.id,
+               subject: document_label(document),
+               prepared_by: [
+                 document_creator(document),
+                 %{user_id: held.actor_user_id, impersonator_id: held.actor_impersonator_id}
+               ],
+               override: true,
+               reason: fetch(attributes, :reason)
+             }) do
         {:ok, hd(document_views(scope, company_id, [document]))}
       end
     end)
   end
+
+  defp document_creator(document),
+    do: %{
+      user_id: document.created_by_user_id,
+      impersonator_id: document.created_by_impersonator_id
+    }
+
+  # What a reviewer of the approval exceptions reads; a draft has no number.
+  defp document_label(%Document{document_type: "bill"} = document),
+    do:
+      "Bill #{document.party_document_number} from #{document.party_name}, " <>
+        "#{amount_label(document.total)} #{document.currency_code}"
+
+  defp document_label(document),
+    do:
+      "Debit note to #{document.party_name}, " <>
+        "#{amount_label(document.total)} #{document.currency_code}"
+
+  defp amount_label(amount), do: amount |> Decimal.normalize() |> Decimal.to_string(:normal)
 
   defp latest_hold(scope, company_id, document) do
     events = scope |> match_events(company_id, [document.id]) |> Map.get(document.id, [])
@@ -872,37 +942,152 @@ defmodule Bilimbi.Finance.Payables do
   ## Payments
 
   @doc """
-  Posts a payment to one party: `payment_date`, `party_key`,
-  `paid_from_account_id` (an active asset or liability account, such as a
-  bank account), optional `reference` and `description`, and `allocations`,
-  each `%{document_id, amount}` naming a posted bill of that party dated on
-  or before the payment. The payment's amount is the allocations' total; an
-  allocation cannot exceed what is still owed on its bill, so a bill may be
-  paid in parts. An allocation fits the least that is owed on its bill on any
-  date from `payment_date` on (see `create_debit_note/4`), so a payment dated
-  before a payment that is later reversed cannot leave the bill owed less
-  than nothing. The ledger entry debits each bill's payable account and
-  credits the paid-from account.
+  Submits a payment to one party for approval: `payment_date`,
+  `party_key`, `paid_from_account_id` (an active asset or liability
+  account, such as a bank account), optional `reference` and
+  `description`, and `allocations`, each `%{document_id, amount}` naming a
+  posted bill of that party dated on or before the payment. The payment's
+  amount is the allocations' total; an allocation cannot exceed what is
+  still owed on its bill, so a bill may be paid in parts. An allocation
+  fits the least that is owed on its bill on any date from `payment_date`
+  on (see `create_debit_note/4`), so a payment dated before a payment that
+  is later reversed cannot leave the bill owed less than nothing.
+
+  The request is kept, numbered per company, with the submitter and the
+  database's time; nothing posts until `approve_payment/3`.
   """
-  @spec post_payment(Scope.t(), term(), map()) ::
+  @spec submit_payment(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
-  def post_payment(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
-    write(scope, company_id, @post_payments, fn ->
+  def submit_payment(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
+    write(scope, company_id, @submit_payments, fn ->
       with {:ok, book} <- Ledger.get_book(scope, company_id),
            {:ok, accounts} <- ledger_accounts(scope, company_id) do
-        {changeset, bills} = payment_changeset(scope, company_id, book, attributes, accounts)
+        {changeset, _bills} = payment_changeset(scope, company_id, book, attributes, accounts)
 
         with {:ok, changeset} <- valid(changeset),
-             {:ok, entry} <-
-               Ledger.post_entry(scope, company_id, payment_entry(changeset, bills)) do
-          changeset
-          |> Changeset.put_change(:entry_id, entry.id)
-          |> Changeset.put_change(:entry_number, entry.entry_number)
-          |> insert_payment(scope)
+             {:ok, request} <- changeset |> payment_request(scope) |> Repo.insert() do
+          {:ok, payment_request_view(fetch_payment_request(scope, company_id, request.id))}
         end
       end
     end)
   end
+
+  @doc """
+  Approves a submitted payment request, which posts the payment: every
+  check `submit_payment/3` made is made again now, so a bill paid or
+  corrected since is the payment changeset's error and the request stays
+  submitted. The ledger entry debits each bill's payable account and
+  credits the paid-from account; the payment is posted by the approver, and
+  the request records the `posted` event naming it. The result is the
+  payment, as `get_payment/3` shows it.
+
+  The approver differs from the submitter (`{:error, :same_person}`) unless
+  the company has turned separation of duties off, when the approval is
+  listed in the ledger's approval exceptions. Anything but a submitted
+  request is `{:error, :payment_request_decided}`.
+  """
+  @spec approve_payment(Scope.t(), term(), term()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :book_not_open
+             | :payment_request_not_found
+             | :payment_request_decided
+             | :same_person
+             | Changeset.t()}
+  def approve_payment(%Scope{} = scope, company_id, request_id) do
+    write(scope, company_id, @post_payments, fn ->
+      with {:ok, request} <- submitted_payment_request(scope, company_id, request_id),
+           :ok <- Ledger.check_approval(scope, company_id, payment_approval(request)),
+           {:ok, book} <- Ledger.get_book(scope, company_id),
+           {:ok, accounts} <- ledger_accounts(scope, company_id) do
+        {changeset, bills} =
+          payment_changeset(scope, company_id, book, requested_payment(request), accounts)
+
+        with {:ok, changeset} <- valid(changeset),
+             {:ok, entry} <-
+               Ledger.post_entry(scope, company_id, payment_entry(changeset, bills)),
+             {:ok, payment} <-
+               changeset
+               |> Changeset.put_change(:entry_id, entry.id)
+               |> Changeset.put_change(:entry_number, entry.entry_number)
+               |> insert_payment(scope),
+             {:ok, _event} <- decide_payment_request(scope, request, "posted", %{}, payment.id) do
+          {:ok, payment}
+        end
+      end
+    end)
+  end
+
+  @doc """
+  Rejects a submitted payment request with a `reason`; it never posts.
+  Anything but a submitted request is `{:error, :payment_request_decided}`.
+  """
+  @spec reject_payment(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :payment_request_not_found
+             | :payment_request_decided
+             | Changeset.t()}
+  def reject_payment(%Scope{} = scope, company_id, request_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @post_payments, fn ->
+      with {:ok, request} <- submitted_payment_request(scope, company_id, request_id),
+           {:ok, _event} <-
+             decide_payment_request(scope, request, "rejected", attributes, nil) do
+        {:ok, payment_request_view(fetch_payment_request(scope, company_id, request.id))}
+      end
+    end)
+  end
+
+  @doc """
+  One payment request with its allocations, `status` (`submitted`,
+  `posted`, or `rejected`), and `decision`: who posted or rejected it,
+  when, any `reason`, and the `payment_id` an approval posted.
+  """
+  @spec get_payment_request(Scope.t(), term(), term()) ::
+          {:ok, map()} | {:error, refusal() | :payment_request_not_found}
+  def get_payment_request(%Scope{} = scope, company_id, request_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      case fetch_payment_request(scope, company_id, request_id) do
+        nil -> {:error, :payment_request_not_found}
+        request -> {:ok, payment_request_view(request)}
+      end
+    end
+  end
+
+  @doc """
+  The company's payment requests by number, as `get_payment_request/3`
+  shows them. Options: `status` (one of `payment_request_statuses/0`),
+  `limit` (default 100, at most 500), and `after`, the last
+  `request_number` of the previous page.
+  """
+  @spec list_payment_requests(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def list_payment_requests(%Scope{} = scope, company_id, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, filters} <- request_options(options) do
+      {:ok,
+       scope
+       |> payment_requests_query(company_id)
+       |> request_status(scope, filters.status)
+       |> then(fn query ->
+         if filters.after,
+           do: where(query, [r], r.request_number > ^filters.after),
+           else: query
+       end)
+       |> order_by([r], asc: r.request_number)
+       |> limit(^filters.limit)
+       |> preload_payment_request(scope)
+       |> Repo.all()
+       |> Enum.map(&payment_request_view/1)}
+    end
+  end
+
+  @doc "The statuses a payment request moves through."
+  def payment_request_statuses, do: PaymentRequest.statuses()
 
   @doc """
   Posts the reversal of a payment on `payment_date` (not before the
@@ -1796,6 +1981,183 @@ defmodule Bilimbi.Finance.Payables do
       payment = payment_with_allocations(scope, payment.company_id, payment.id)
       {:ok, payment_view(payment, %{})}
     end
+  end
+
+  ## Payment requests
+
+  # A valid payment changeset, kept as the request it was submitted as.
+  defp payment_request(changeset, scope) do
+    %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+    field = &Changeset.get_field(changeset, &1)
+
+    %PaymentRequest{
+      tenant_id: field.(:tenant_id),
+      company_id: field.(:company_id),
+      payment_date: field.(:payment_date),
+      party_key: field.(:party_key),
+      party_name: field.(:party_name),
+      paid_from_account_id: field.(:paid_from_account_id),
+      amount: field.(:amount),
+      currency_code: field.(:currency_code),
+      reference: field.(:reference),
+      description: field.(:description),
+      submitted_by_user_id: user_id,
+      submitted_by_impersonator_id: impersonator_id,
+      allocations:
+        changeset
+        |> Changeset.get_change(:allocations)
+        |> Enum.map(fn allocation ->
+          struct(
+            PaymentRequestAllocation,
+            Map.take(Changeset.apply_changes(allocation), [
+              :tenant_id,
+              :company_id,
+              :line_number,
+              :document_id,
+              :amount
+            ])
+          )
+        end)
+    }
+  end
+
+  # The attributes the request was submitted with, for its approval to
+  # check and post afresh.
+  defp requested_payment(request) do
+    request
+    |> Map.take([:payment_date, :party_key, :paid_from_account_id, :reference, :description])
+    |> Map.put(
+      :allocations,
+      Enum.map(request.allocations, &Map.take(&1, [:document_id, :amount]))
+    )
+  end
+
+  defp payment_approval(request) do
+    %{
+      source: "finance/payables",
+      action: "payment_approval",
+      subject_type: "payment_request",
+      subject_id: request.id,
+      subject:
+        "Payment request #{request.request_number} to #{request.party_name}, " <>
+          "#{amount_label(request.amount)} #{request.currency_code}",
+      prepared_by: [
+        %{
+          user_id: request.submitted_by_user_id,
+          impersonator_id: request.submitted_by_impersonator_id
+        }
+      ]
+    }
+  end
+
+  defp submitted_payment_request(scope, company_id, request_id) do
+    case fetch_payment_request(scope, company_id, request_id) do
+      nil -> {:error, :payment_request_not_found}
+      %PaymentRequest{event: nil} = request -> {:ok, request}
+      _decided -> {:error, :payment_request_decided}
+    end
+  end
+
+  defp decide_payment_request(scope, request, event, attributes, payment_id) do
+    %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+    %PaymentRequestEvent{
+      tenant_id: request.tenant_id,
+      company_id: request.company_id,
+      request_id: request.id,
+      event: event,
+      payment_id: payment_id,
+      actor_user_id: user_id,
+      actor_impersonator_id: impersonator_id
+    }
+    |> PaymentRequestEvent.changeset(attributes)
+    |> Repo.insert()
+  end
+
+  defp fetch_payment_request(scope, company_id, request_id) when is_integer(request_id) do
+    scope
+    |> payment_requests_query(company_id)
+    |> where([r], r.id == ^request_id)
+    |> preload_payment_request(scope)
+    |> Repo.one()
+  end
+
+  defp fetch_payment_request(_scope, _company_id, _request_id), do: nil
+
+  defp payment_requests_query(scope, company_id),
+    do: where(Tenancy.scope_query(PaymentRequest, scope), [r], r.company_id == ^company_id)
+
+  defp preload_payment_request(query, scope) do
+    preload(query,
+      allocations:
+        ^order_by(Tenancy.scope_query(PaymentRequestAllocation, scope), [a], asc: a.line_number),
+      event: ^Tenancy.scope_query(PaymentRequestEvent, scope)
+    )
+  end
+
+  defp request_options(options) do
+    with true <- Keyword.keyword?(options),
+         {:ok, filters} <-
+           Keyword.validate(options, status: nil, limit: @default_limit, after: nil),
+         filters = Map.new(filters),
+         true <- is_nil(filters.status) or filters.status in PaymentRequest.statuses(),
+         true <- is_integer(filters.limit) and filters.limit in 1..@max_limit,
+         true <- is_nil(filters.after) or (is_integer(filters.after) and filters.after >= 0) do
+      {:ok, filters}
+    else
+      _invalid -> {:error, :invalid_option}
+    end
+  end
+
+  defp request_status(query, _scope, nil), do: query
+
+  defp request_status(query, scope, "submitted") do
+    decided = select(Tenancy.scope_query(PaymentRequestEvent, scope), [e], e.request_id)
+    where(query, [r], r.id not in subquery(decided))
+  end
+
+  defp request_status(query, scope, event) do
+    decided =
+      PaymentRequestEvent
+      |> Tenancy.scope_query(scope)
+      |> where([e], e.event == ^event)
+      |> select([e], e.request_id)
+
+    where(query, [r], r.id in subquery(decided))
+  end
+
+  defp payment_request_view(request) do
+    request
+    |> Map.take([
+      :id,
+      :request_number,
+      :payment_date,
+      :party_key,
+      :party_name,
+      :paid_from_account_id,
+      :amount,
+      :currency_code,
+      :reference,
+      :description,
+      :submitted_by_user_id,
+      :submitted_by_impersonator_id,
+      :submitted_at
+    ])
+    |> Map.merge(%{
+      status: PaymentRequest.status(request),
+      decision:
+        request.event &&
+          Map.take(request.event, [
+            :event,
+            :reason,
+            :payment_id,
+            :actor_user_id,
+            :actor_impersonator_id,
+            :occurred_at
+          ]),
+      allocations:
+        Enum.map(request.allocations, &Map.take(&1, [:line_number, :document_id, :amount]))
+    })
   end
 
   defp reversible_payment(scope, company_id, payment_id) do
