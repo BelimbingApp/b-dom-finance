@@ -321,6 +321,64 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContract do
         }
       },
       %{
+        name: "finance_fixed_assets_run_exceptions",
+        columns: %{
+          "asset_id" => %{default: nil, type: :bigint, nullable: false},
+          "company_id" => %{default: nil, type: :bigint, nullable: false},
+          "id" => %{
+            default: {:sequence, "finance_fixed_assets_run_exceptions_id_seq"},
+            type: :bigint,
+            nullable: false
+          },
+          "recorded_at" => %{default: nil, type: {:timestamp, 6}, nullable: false},
+          "recorded_by_impersonator_id" => %{default: nil, type: :bigint, nullable: true},
+          "recorded_by_user_id" => %{default: nil, type: :bigint, nullable: false},
+          "run_id" => %{default: nil, type: :bigint, nullable: false},
+          "tenant_id" => %{default: nil, type: :bigint, nullable: false}
+        },
+        indexes: %{
+          "finance_fixed_assets_run_exceptions_asset" => %{
+            where: nil,
+            columns: ["run_id", "asset_id"],
+            unique: true
+          },
+          "finance_fixed_assets_run_exceptions_identity" => %{
+            where: nil,
+            columns: ["id", "tenant_id", "company_id"],
+            unique: true
+          },
+          "finance_fixed_assets_run_exceptions_pkey" => %{
+            where: nil,
+            columns: ["id"],
+            unique: true
+          },
+          "finance_fixed_assets_run_exceptions_scope" => %{
+            where: nil,
+            columns: ["tenant_id", "company_id"],
+            unique: false
+          }
+        },
+        checks: %{
+          "finance_fixed_assets_run_exceptions_recorded_by_user_id_check" => %{
+            expression: "recorded_by_user_id > 0"
+          }
+        },
+        foreign_keys: %{
+          "finance_fixed_assets_run_exce_asset_id_tenant_id_company_i_fkey" => %{
+            columns: ["asset_id", "tenant_id", "company_id"],
+            references: {"finance_fixed_assets_assets", ["id", "tenant_id", "company_id"]},
+            on_delete: :restrict,
+            on_update: :nothing
+          },
+          "finance_fixed_assets_run_excep_run_id_tenant_id_company_id_fkey" => %{
+            columns: ["run_id", "tenant_id", "company_id"],
+            references: {"finance_fixed_assets_runs", ["id", "tenant_id", "company_id"]},
+            on_delete: :restrict,
+            on_update: :nothing
+          }
+        }
+      },
+      %{
         name: "finance_fixed_assets_events",
         columns: %{
           "accumulated" => %{default: nil, type: {:numeric, 20, 4}, nullable: true},
@@ -328,8 +386,8 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContract do
           "asset_id" => %{default: nil, type: :bigint, nullable: true},
           "company_id" => %{default: nil, type: :bigint, nullable: false},
           "effective_date" => %{default: nil, type: :date, nullable: false},
-          "entry_id" => %{default: nil, type: :bigint, nullable: false},
-          "entry_number" => %{default: nil, type: :bigint, nullable: false},
+          "entry_id" => %{default: nil, type: :bigint, nullable: true},
+          "entry_number" => %{default: nil, type: :bigint, nullable: true},
           "event_number" => %{default: nil, type: :bigint, nullable: false},
           "id" => %{
             default: {:sequence, "finance_fixed_assets_events_id_seq"},
@@ -349,6 +407,11 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContract do
           "finance_fixed_assets_events_disposal_reversal" => %{
             where: "(reverses_event_id IS NOT NULL)",
             columns: ["reverses_event_id"],
+            unique: true
+          },
+          "finance_fixed_assets_events_void" => %{
+            where: "((action)::text = 'acquisition_voided'::text)",
+            columns: ["asset_id"],
             unique: true
           },
           "finance_fixed_assets_events_identity" => %{
@@ -376,11 +439,15 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContract do
         checks: %{
           "finance_fixed_assets_events_action_check" => %{
             expression:
-              "action::text = ANY (ARRAY['run_reversed'::character varying, 'disposed'::character varying, 'disposal_reversed'::character varying]::text[]"
+              "action::text = ANY (ARRAY['run_reversed'::character varying, 'disposed'::character varying, 'disposal_reversed'::character varying, 'acquisition_voided'::character varying]::text[]"
           },
           "finance_fixed_assets_events_check" => %{
             expression:
-              "action::text = 'run_reversed'::text AND run_id IS NOT NULL AND asset_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NULL AND accumulated IS NULL OR action::text = 'disposed'::text AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NOT NULL AND accumulated IS NOT NULL AND proceeds >= 0::numeric AND accumulated >= 0::numeric OR action::text = 'disposal_reversed'::text AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NOT NULL AND proceeds IS NULL AND accumulated IS NULL"
+              "action::text = 'run_reversed'::text AND run_id IS NOT NULL AND asset_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NULL AND accumulated IS NULL OR action::text = 'disposed'::text AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NOT NULL AND accumulated IS NOT NULL AND proceeds >= 0::numeric AND accumulated >= 0::numeric OR action::text = 'disposal_reversed'::text AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NOT NULL AND proceeds IS NULL AND accumulated IS NULL OR action::text = 'acquisition_voided'::text AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NULL AND accumulated IS NOT NULL AND accumulated >= 0::numeric"
+          },
+          "finance_fixed_assets_events_entry_check" => %{
+            expression:
+              "entry_id IS NOT NULL AND entry_number IS NOT NULL OR action::text = 'acquisition_voided'::text AND accumulated = 0::numeric AND entry_id IS NULL AND entry_number IS NULL"
           },
           "finance_fixed_assets_events_event_number_check" => %{expression: "event_number > 0"},
           "finance_fixed_assets_events_reason_check" => %{

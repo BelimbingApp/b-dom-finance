@@ -26,6 +26,20 @@ defmodule Bilimbi.Finance.FixedAssets.Web.Feedback do
   def message(:later_activity),
     do: "This date precedes recorded asset activity. Choose a later date."
 
+  def message(:asset_voided),
+    do: "This asset's acquisition was voided, so it cannot be disposed of."
+
+  def message(:already_voided), do: "This asset's acquisition is already voided."
+
+  def message(:acquisition_not_reversed),
+    do: "Only an asset whose acquisition entry was reversed in the ledger can be voided."
+
+  def message(:disposal_standing),
+    do: "Reverse the standing disposal before voiding this asset's acquisition."
+
+  def message(:acquisition_reversed),
+    do: "The acquisition entry was reversed. Void the asset's acquisition from its page."
+
   def message(reason) when is_atom(reason),
     do: reason |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
 

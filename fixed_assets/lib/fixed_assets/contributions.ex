@@ -1,7 +1,7 @@
 defmodule Bilimbi.Finance.FixedAssets.Contributions do
   @moduledoc false
   @behaviour Bilimbi.Base.ModuleRegistry.ContributionProvider
-  @verbs ~w(finance-asset-configure finance-asset-acquire finance-asset-depreciate finance-asset-reverse finance-asset-dispose)
+  @verbs ~w(finance-asset-configure finance-asset-acquire finance-asset-depreciate finance-asset-reverse finance-asset-dispose finance-asset-void)
   @capabilities ["finance.fixed-assets.view" | Enum.map(@verbs, &"finance.fixed-assets.#{&1}")]
   def capabilities, do: @capabilities
   @impl true

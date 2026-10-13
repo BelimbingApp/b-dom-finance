@@ -1,7 +1,7 @@
 defmodule Bilimbi.Finance.FixedAssets do
   @moduledoc """
   Immutable company asset register, category revisions, monthly depreciation,
-  disposal and reversing entries. All data calls reauthorize the supplied scope;
+  disposal, voided acquisitions and reversing entries. All data calls reauthorize the supplied scope;
   all writes hold the writable-company lock. Ledger and Payables are consumed
   only through their facades. Acquisition cost comes from one posted cost-account
   debit, never caller arithmetic. Nothing can be deleted or edited.
@@ -26,6 +26,7 @@ defmodule Bilimbi.Finance.FixedAssets do
     Contributions,
     Event,
     Run,
+    RunException,
     RunItem,
     Schedule
   }
@@ -36,6 +37,7 @@ defmodule Bilimbi.Finance.FixedAssets do
   @depreciate "finance.fixed-assets.finance-asset-depreciate"
   @reverse "finance.fixed-assets.finance-asset-reverse"
   @dispose "finance.fixed-assets.finance-asset-dispose"
+  @void "finance.fixed-assets.finance-asset-void"
   @defaults ~w(cost_account_id accumulated_account_id expense_account_id gain_account_id loss_account_id method life_months annual_rate)a
   @account_types %{
     cost_account_id: "asset",
@@ -51,6 +53,7 @@ defmodule Bilimbi.Finance.FixedAssets do
   def depreciate_capability, do: @depreciate
   def reverse_capability, do: @reverse
   def dispose_capability, do: @dispose
+  def void_capability, do: @void
   def capabilities, do: Contributions.capabilities()
 
   @doc "Creates a category and its first immutable revision; reason is required."
@@ -208,7 +211,11 @@ defmodule Bilimbi.Finance.FixedAssets do
     end
   end
 
-  @doc "Posts one balanced entry for a calendar month. Repeating the period returns its stored run."
+  @doc """
+  Posts one balanced entry for a calendar month. Repeating the period returns its stored run.
+  An asset whose acquisition entry was reversed is skipped and recorded as the run's exception
+  until `void_acquisition/4` retires it; the remaining assets are still charged.
+  """
   def depreciate(%Scope{} = scope, company_id, %Date{} = period) do
     write(scope, company_id, @depreciate, fn ->
       with :ok <- month(period) do
@@ -226,9 +233,10 @@ defmodule Bilimbi.Finance.FixedAssets do
     with :ok <- open_period(scope, company_id, period),
          :ok <- chronological(scope, company_id, date),
          {:ok, report} <- register_report(scope, company_id, date) do
-      items =
+      candidates =
         for row <- report.rows,
             not row.disposed?,
+            not row.voided?,
             Decimal.gt?(row.scheduled_depreciation, row.accumulated) do
           %{
             asset: row.asset,
@@ -237,7 +245,7 @@ defmodule Bilimbi.Finance.FixedAssets do
           }
         end
 
-      with :ok <- source_entries_live(scope, company_id, items),
+      with {:ok, {items, excepted}} <- split_by_source(scope, company_id, candidates),
            total = sum(items, :amount),
            {:ok, entry} <-
              post_or_empty(scope, company_id, total, %{
@@ -261,27 +269,31 @@ defmodule Bilimbi.Finance.FixedAssets do
              })
              |> unique_constraint(:period, name: :finance_fixed_assets_runs_period)
              |> Repo.insert(),
-           :ok <- insert_items(scope, company_id, run, items) do
+           :ok <- insert_items(scope, company_id, run, items),
+           :ok <- insert_exceptions(scope, company_id, run, excepted) do
         {:ok, run_view(scope, company_id, run)}
       end
     end
   end
 
-  @doc "Reverses the latest nonempty run; later runs or standing disposals must be reversed first."
+  @doc """
+  Reverses the latest nonempty run; later runs or standing disposals must be reversed first.
+  Charges of voided acquisitions were already reversed by their void and are left out.
+  """
   def reverse_run(%Scope{} = scope, company_id, run_id, attrs) when is_map(attrs) do
     write(scope, company_id, @reverse, fn ->
       with {:ok, run} <- fetch(Run, scope, company_id, run_id),
            true <- not is_nil(run.entry_id) || {:error, :empty_run},
            false <- reversed_run?(scope, company_id, run.id),
+           items = run_items(scope, company_id, run.id),
+           voided = voided_asset_ids(all(Event, scope, company_id)),
+           live = Enum.reject(items, &(&1.asset_id in voided)),
+           true <- live != [] || {:error, :empty_run},
            {:ok, event} <-
              event_changeset(scope, company_id, attrs, "run_reversed", %{run_id: run.id})
              |> apply_action(:insert),
            :ok <- reversal_dependencies(scope, company_id, run, event.effective_date),
-           {:ok, entry} <-
-             Ledger.reverse_entry(scope, company_id, run.entry_id, %{
-               entry_date: event.effective_date,
-               description: event.reason
-             }),
+           {:ok, entry} <- reverse_charges(scope, company_id, run, items, live, event),
            {:ok, saved} <-
              event
              |> change(entry_id: entry.id, entry_number: entry.entry_number)
@@ -298,6 +310,7 @@ defmodule Bilimbi.Finance.FixedAssets do
   def dispose(%Scope{} = scope, company_id, asset_id, attrs) when is_map(attrs) do
     write(scope, company_id, @dispose, fn ->
       with {:ok, asset} <- fetch(Asset, scope, company_id, asset_id),
+           true <- not voided?(all(Event, scope, company_id), asset.id) || {:error, :asset_voided},
            {:ok, revision} <-
              fetch(CategoryRevision, scope, company_id, asset.category_revision_id),
            {:ok, book} <- Ledger.get_book(scope, company_id),
@@ -332,6 +345,42 @@ defmodule Bilimbi.Finance.FixedAssets do
                accumulated: row.accumulated,
                entry_id: entry.id,
                entry_number: entry.entry_number
+             )
+             |> Repo.insert() do
+        {:ok, public(saved)}
+      end
+    end)
+  end
+
+  @doc """
+  Retires an asset whose acquisition entry was reversed. Its unreversed depreciation is
+  mirrored in one entry that leaves every other asset's postings alone, and the asset
+  then drops out of runs and reconciliation. The event is permanent; a standing
+  disposal must be reversed first.
+  """
+  def void_acquisition(%Scope{} = scope, company_id, asset_id, attrs) when is_map(attrs) do
+    write(scope, company_id, @void, fn ->
+      with {:ok, asset} <- fetch(Asset, scope, company_id, asset_id),
+           events = all(Event, scope, company_id),
+           true <- not voided?(events, asset.id) || {:error, :already_voided},
+           true <- is_nil(standing_disposal(events, asset.id)) || {:error, :disposal_standing},
+           {:ok, source} <- Ledger.get_entry(scope, company_id, asset.entry_id),
+           true <- live_entry(source) != :ok || {:error, :acquisition_not_reversed},
+           {:ok, event} <-
+             event_changeset(scope, company_id, attrs, "acquisition_voided", %{asset_id: asset.id})
+             |> apply_action(:insert),
+           :ok <- chronological(scope, company_id, event.effective_date),
+           reversed = reversed_run_ids(events),
+           charges =
+             asset_items(scope, company_id, asset.id) |> Enum.reject(&(&1.run_id in reversed)),
+           {:ok, entry} <-
+             mirror_charges(scope, company_id, charges, event.effective_date, event.reason),
+           {:ok, saved} <-
+             event
+             |> change(
+               accumulated: sum(charges, :amount),
+               entry_id: entry && entry.id,
+               entry_number: entry && entry.entry_number
              )
              |> Repo.insert() do
         {:ok, public(saved)}
@@ -381,15 +430,15 @@ defmodule Bilimbi.Finance.FixedAssets do
          {:ok, asset} <- fetch(Asset, scope, company_id, asset_id),
          {:ok, book} <- Ledger.get_book(scope, company_id),
          {:ok, revision} <- fetch(CategoryRevision, scope, company_id, asset.category_revision_id) do
+      events = all(Event, scope, company_id)
+
       {:ok,
        %{
          asset: public(asset),
+         voided?: voided?(events, asset.id),
          revision: public(revision),
          schedule: Schedule.rows(asset, book.minor_units),
-         events:
-           all(Event, scope, company_id)
-           |> Enum.filter(&(&1.asset_id == asset.id))
-           |> Enum.map(&public/1),
+         events: events |> Enum.filter(&(&1.asset_id == asset.id)) |> Enum.map(&public/1),
          charges: asset_charges(scope, company_id, asset.id)
        }}
     end
@@ -428,7 +477,8 @@ defmodule Bilimbi.Finance.FixedAssets do
       events =
         Enum.filter(
           events,
-          &(&1.event_number <= event_through and &1.entry_number <= totals.through_entry_number and
+          &(&1.event_number <= event_through and
+              (is_nil(&1.entry_number) or &1.entry_number <= totals.through_entry_number) and
               Date.compare(&1.effective_date, date) != :gt)
         )
 
@@ -454,10 +504,12 @@ defmodule Bilimbi.Finance.FixedAssets do
             asset.entry_number <= totals.through_entry_number,
             Map.has_key?(revisions, asset.category_revision_id),
             Date.compare(asset.acquisition_date, date) != :gt do
+          voided? = voided?(events, asset.id)
+
           accumulated =
             items
             |> Enum.filter(
-              &(&1.asset_id == asset.id and
+              &(&1.asset_id == asset.id and not voided? and
                   not Enum.any?(events, fn e ->
                     e.run_id == &1.run_id and e.action == "run_reversed"
                   end))
@@ -470,10 +522,18 @@ defmodule Bilimbi.Finance.FixedAssets do
             asset: public(asset),
             revision: public(Map.fetch!(revisions, asset.category_revision_id)),
             accumulated: accumulated,
-            scheduled_depreciation: Schedule.cumulative(asset, date, totals.minor_units),
+            scheduled_depreciation:
+              if(voided?,
+                do: Decimal.new(0),
+                else: Schedule.cumulative(asset, date, totals.minor_units)
+              ),
             carrying_value:
-              if(disposed, do: Decimal.new(0), else: Decimal.sub(asset.cost, accumulated)),
+              if(disposed || voided?,
+                do: Decimal.new(0),
+                else: Decimal.sub(asset.cost, accumulated)
+              ),
             disposed?: not is_nil(disposed),
+            voided?: voided?,
             disposal_gain:
               if(disposed,
                 do: Decimal.sub(disposed.proceeds, Decimal.sub(asset.cost, disposed.accumulated)),
@@ -508,7 +568,7 @@ defmodule Bilimbi.Finance.FixedAssets do
 
   defp reconcile(rows, totals, flows, revisions) do
     expected =
-      Enum.reduce(rows, %{}, fn row, balances ->
+      Enum.reduce(Enum.reject(rows, & &1.voided?), %{}, fn row, balances ->
         balances = add_balance(balances, row.revision.expense_account_id, row.accumulated)
 
         balances =
@@ -580,12 +640,16 @@ defmodule Bilimbi.Finance.FixedAssets do
   defp reversal_dependencies(scope, company_id, run, date) do
     events = all(Event, scope, company_id)
 
+    voided = voided_asset_ids(events)
+    items = all(RunItem, scope, company_id)
+
     later =
       all(Run, scope, company_id)
-      |> Enum.any?(
-        &(Date.compare(&1.period, run.period) == :gt and Decimal.gt?(&1.total, 0) and
-            not reversed_run?(scope, company_id, &1.id))
-      )
+      |> Enum.any?(fn later_run ->
+        Date.compare(later_run.period, run.period) == :gt and
+          Enum.any?(items, &(&1.run_id == later_run.id and &1.asset_id not in voided)) and
+          not reversed_run?(scope, company_id, later_run.id)
+      end)
 
     disposed = all(Asset, scope, company_id) |> Enum.any?(&standing_disposal(events, &1.id))
 
@@ -622,19 +686,23 @@ defmodule Bilimbi.Finance.FixedAssets do
   defp live_entry(%{reversed_by_entry_id: nil, reverses_entry_id: nil}), do: :ok
   defp live_entry(_entry), do: {:error, :acquisition_reversed}
 
-  defp source_entries_live(scope, company_id, items) do
-    Enum.reduce_while(items, :ok, fn item, :ok ->
+  defp split_by_source(scope, company_id, candidates) do
+    Enum.reduce_while(candidates, {:ok, {[], []}}, fn item, {:ok, {live, excepted}} ->
       case Ledger.get_entry(scope, company_id, item.asset.entry_id) do
         {:ok, entry} ->
           case live_entry(entry) do
-            :ok -> {:cont, :ok}
-            error -> {:halt, error}
+            :ok -> {:cont, {:ok, {[item | live], excepted}}}
+            _reversed -> {:cont, {:ok, {live, [item | excepted]}}}
           end
 
         error ->
           {:halt, error}
       end
     end)
+    |> case do
+      {:ok, {live, excepted}} -> {:ok, {Enum.reverse(live), Enum.reverse(excepted)}}
+      error -> error
+    end
   end
 
   defp post_or_empty(scope, company, total, attrs) do
@@ -642,15 +710,78 @@ defmodule Bilimbi.Finance.FixedAssets do
   end
 
   defp insert_items(scope, company_id, run, items) do
-    Enum.reduce_while(items, :ok, fn item, :ok ->
-      case identity(RunItem, scope, company_id)
-           |> change(run_id: run.id, asset_id: item.asset.id, amount: item.amount)
-           |> Repo.insert() do
+    insert_each(items, fn item ->
+      identity(RunItem, scope, company_id)
+      |> change(run_id: run.id, asset_id: item.asset.id, amount: item.amount)
+      |> Repo.insert()
+    end)
+  end
+
+  defp insert_exceptions(scope, company_id, run, excepted) do
+    insert_each(excepted, fn item ->
+      identity(RunException, scope, company_id)
+      |> change(run_id: run.id, asset_id: item.asset.id)
+      |> Repo.insert()
+    end)
+  end
+
+  defp insert_each(rows, insert) do
+    Enum.reduce_while(rows, :ok, fn row, :ok ->
+      case insert.(row) do
         {:ok, _} -> {:cont, :ok}
         error -> {:halt, error}
       end
     end)
   end
+
+  defp reverse_charges(scope, company_id, run, items, live, event)
+       when length(items) == length(live),
+       do:
+         Ledger.reverse_entry(scope, company_id, run.entry_id, %{
+           entry_date: event.effective_date,
+           description: event.reason
+         })
+
+  defp reverse_charges(scope, company_id, _run, _items, live, event),
+    do: mirror_charges(scope, company_id, live, event.effective_date, event.reason)
+
+  defp mirror_charges(_scope, _company_id, [], _date, _description), do: {:ok, nil}
+
+  defp mirror_charges(scope, company_id, charges, date, description) do
+    assets = all(Asset, scope, company_id) |> Map.new(&{&1.id, &1})
+    revisions = all(CategoryRevision, scope, company_id) |> Map.new(&{&1.id, &1})
+
+    lines =
+      Enum.flat_map(charges, fn charge ->
+        revision = Map.fetch!(revisions, Map.fetch!(assets, charge.asset_id).category_revision_id)
+
+        [
+          %{account_id: revision.accumulated_account_id, debit: charge.amount},
+          %{account_id: revision.expense_account_id, credit: charge.amount}
+        ]
+      end)
+
+    Ledger.post_entry(scope, company_id, %{
+      entry_date: date,
+      description: description,
+      lines: lines
+    })
+  end
+
+  defp run_items(scope, company_id, run_id),
+    do: query(RunItem, scope, company_id) |> where([i], i.run_id == ^run_id) |> Repo.all()
+
+  defp asset_items(scope, company_id, asset_id),
+    do: query(RunItem, scope, company_id) |> where([i], i.asset_id == ^asset_id) |> Repo.all()
+
+  defp voided?(events, asset_id),
+    do: Enum.any?(events, &(&1.asset_id == asset_id and &1.action == "acquisition_voided"))
+
+  defp voided_asset_ids(events),
+    do: for(%{action: "acquisition_voided"} = e <- events, into: MapSet.new(), do: e.asset_id)
+
+  defp reversed_run_ids(events),
+    do: for(%{action: "run_reversed"} = e <- events, into: MapSet.new(), do: e.run_id)
 
   defp settlement_account(scope, company_id, attrs, proceeds) do
     if Decimal.eq?(proceeds, 0) do
@@ -818,10 +949,17 @@ defmodule Bilimbi.Finance.FixedAssets do
   defp asset_charges(scope, company_id, asset_id) do
     runs = all(Run, scope, company_id) |> Map.new(&{&1.id, &1})
 
+    events = all(Event, scope, company_id)
+
     reversals =
-      all(Event, scope, company_id)
+      events
       |> Enum.filter(&(&1.action == "run_reversed"))
       |> Map.new(&{&1.run_id, public(&1)})
+
+    void =
+      events
+      |> Enum.find(&(&1.asset_id == asset_id and &1.action == "acquisition_voided"))
+      |> then(&(&1 && public(&1)))
 
     query(RunItem, scope, company_id)
     |> where([i], i.asset_id == ^asset_id)
@@ -837,10 +975,14 @@ defmodule Bilimbi.Finance.FixedAssets do
         recorded_by_user_id: run.recorded_by_user_id,
         recorded_by_impersonator_id: run.recorded_by_impersonator_id,
         recorded_at: run.recorded_at,
-        reversal: Map.get(reversals, run.id)
+        reversal: charge_reversal(Map.get(reversals, run.id), void)
       }
     end)
   end
+
+  defp charge_reversal(nil, void), do: void
+  defp charge_reversal(reversal, nil), do: reversal
+  defp charge_reversal(reversal, void), do: Enum.min_by([reversal, void], & &1.event_number)
 
   defp reversed_run?(scope, company_id, id),
     do:
@@ -851,6 +993,20 @@ defmodule Bilimbi.Finance.FixedAssets do
   defp run_view(scope, company_id, run) do
     public(run)
     |> Map.put(:reversed?, reversed_run?(scope, company_id, run.id))
+    |> Map.put(
+      :exceptions,
+      query(RunException, scope, company_id)
+      |> where([x], x.run_id == ^run.id)
+      |> join(:inner, [x], a in Asset, on: a.id == x.asset_id)
+      |> order_by([_x, a], a.asset_number)
+      |> select([_x, a], %{
+        asset_id: a.id,
+        asset_number: a.asset_number,
+        description: a.description
+      })
+      |> Repo.all()
+      |> Enum.map(&Map.put(&1, :reason, :acquisition_reversed))
+    )
     |> Map.put(
       :items,
       query(RunItem, scope, company_id)

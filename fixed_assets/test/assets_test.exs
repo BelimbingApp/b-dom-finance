@@ -160,7 +160,9 @@ defmodule Bilimbi.Finance.FixedAssets.AssetsTest do
            fn -> FixedAssets.create_category(c.keeper, 73, %{}) end},
           {FixedAssets.dispose_capability(), fn -> FixedAssets.dispose(c.keeper, 73, 0, %{}) end},
           {FixedAssets.reverse_capability(),
-           fn -> FixedAssets.reverse_run(c.keeper, 73, 0, %{}) end}
+           fn -> FixedAssets.reverse_run(c.keeper, 73, 0, %{}) end},
+          {FixedAssets.void_capability(),
+           fn -> FixedAssets.void_acquisition(c.keeper, 73, 0, %{}) end}
         ] do
       {:ok, :stored} =
         Authz.put_principal_capability(c.first_scope, 73, :user, 91, capability, false)
@@ -197,6 +199,7 @@ defmodule Bilimbi.Finance.FixedAssets.AssetsTest do
     assert {:error, :company_archived} = FixedAssets.depreciate(c.keeper, 73, ~D[2026-01-01])
     assert {:error, :company_archived} = FixedAssets.dispose(c.keeper, 73, asset.id, %{})
     assert {:error, :company_archived} = FixedAssets.reverse_run(c.keeper, 73, 0, %{})
+    assert {:error, :company_archived} = FixedAssets.void_acquisition(c.keeper, 73, asset.id, %{})
   end
 
   test "impersonated operations record both identities from the sealed scope", c do
