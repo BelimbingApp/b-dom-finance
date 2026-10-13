@@ -9,6 +9,7 @@ defmodule Bilimbi.Finance.Payables.Contributions do
   @approve_documents "finance.payables.documents.approve"
   @post_documents "finance.payables.documents.post"
   @post_payments "finance.payables.payments.post"
+  @approve_match_exceptions "finance.payables.match.approve"
 
   @capabilities [
     @view,
@@ -16,7 +17,8 @@ defmodule Bilimbi.Finance.Payables.Contributions do
     @create_documents,
     @approve_documents,
     @post_documents,
-    @post_payments
+    @post_payments,
+    @approve_match_exceptions
   ]
 
   @impl true
@@ -25,7 +27,18 @@ defmodule Bilimbi.Finance.Payables.Contributions do
       authz: %{
         capabilities: @capabilities,
         roles: %{"tenant_owner" => %{capabilities: @capabilities}}
-      }
+      },
+      menu: [
+        %{
+          id: "finance.payables.bills",
+          label: "Bills",
+          icon: "clipboard-document-list",
+          parent: "finance",
+          route: "/finance/payables/bills",
+          capability: @view,
+          order: 5
+        }
+      ]
     }
   end
 end

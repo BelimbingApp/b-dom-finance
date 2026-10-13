@@ -95,6 +95,78 @@ defmodule Bilimbi.Finance.Payables.SettingsTest do
              } = change
     end
 
+    test "keep the match tolerances, each a kind with a value, and their history", context do
+      %{operator: operator, accounts: accounts} = context
+      payable_id = accounts.payable.id
+
+      assert {:ok, %{quantity_tolerance_kind: nil, quantity_tolerance: nil, price_tolerance: nil}} =
+               Payables.get_settings(operator, 73)
+
+      assert {:ok, settings} =
+               Payables.put_settings(operator, 73, %{
+                 payable_account_id: payable_id,
+                 quantity_tolerance_kind: "percent",
+                 quantity_tolerance: "2.5",
+                 price_tolerance_kind: "amount",
+                 price_tolerance: "0.0100",
+                 reason: "Agreed with audit"
+               })
+
+      assert %{quantity_tolerance_kind: "percent", price_tolerance_kind: "amount"} = settings
+      assert decimal?(settings.quantity_tolerance, "2.5")
+      assert decimal?(settings.price_tolerance, "0.01")
+
+      for {bad, field, message} <- [
+            {%{quantity_tolerance_kind: "ratio", quantity_tolerance: "1"},
+             :quantity_tolerance_kind, "is invalid"},
+            {%{quantity_tolerance_kind: "amount", quantity_tolerance: "-1"}, :quantity_tolerance,
+             "must be greater than or equal to 0"},
+            {%{price_tolerance_kind: "amount", price_tolerance: "0.00001"}, :price_tolerance,
+             "has more than 4 decimal places"},
+            {%{price_tolerance_kind: nil, price_tolerance: "1"}, :price_tolerance_kind,
+             "is needed with a tolerance"},
+            {%{price_tolerance_kind: "percent", price_tolerance: nil}, :price_tolerance,
+             "is needed with a tolerance kind"}
+          ] do
+        assert {:error, changeset} =
+                 Payables.put_settings(
+                   operator,
+                   73,
+                   Map.put(bad, :payable_account_id, payable_id)
+                 )
+
+        assert %{^field => [^message]} = errors_on(changeset)
+      end
+
+      assert {:ok, _} =
+               Payables.put_settings(operator, 73, %{
+                 payable_account_id: payable_id,
+                 price_tolerance_kind: nil,
+                 price_tolerance: nil
+               })
+
+      assert {:ok, [_first, change, cleared]} = Payables.list_settings_changes(operator, 73)
+
+      assert %{
+               old_quantity_tolerance_kind: nil,
+               new_quantity_tolerance_kind: "percent",
+               old_price_tolerance: nil,
+               new_price_tolerance_kind: "amount",
+               reason: "Agreed with audit"
+             } = change
+
+      assert decimal?(change.new_quantity_tolerance, "2.5")
+
+      assert %{
+               old_price_tolerance_kind: "amount",
+               new_price_tolerance_kind: nil,
+               new_price_tolerance: nil,
+               new_quantity_tolerance_kind: "percent"
+             } = cleared
+
+      assert decimal?(cleared.old_price_tolerance, "0.01")
+    end
+
     test "history needs the view grant and a visible company", context do
       editor =
         TestFixtures.sign_in!(context.first_scope, 73, 93, ["finance.payables.settings.manage"])

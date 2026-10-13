@@ -80,6 +80,22 @@ here; they govern this code and are not copied here.
   allowlist shape). Base Queue has no snooze: a worker returns `{:retry,
   code}` and the queue's backoff spaces attempts; it never sleeps for a
   `Retry-After`.
+- Reach an optional Domain only through a seam that finds its modules by
+  descriptor ID at run time, as `payables/lib/payables/order_source.ex` does
+  for Supply Chain; never alias a `Bilimbi.SupplyChain.*` module or declare
+  the edge: Bilimbi's `graph_edges.exs` fails an undeclared alias, and a
+  declared edge makes Finance fail to compose without that Domain. Module
+  tests substitute the seam (`test/support/stub_order_source.ex`); the
+  last test in `payables/web_test/` proves the real one with both Domains
+  mounted. Until Receiving stops declaring the authz verb `post` that
+  Ledger owns, the Web host refuses to boot with both mounted and that test
+  only runs its unmounted branch.
+- A module's later migration is self-contained (a database that ran the
+  earlier ones loads only its file), ships its own `statements/1`, and its
+  fixtures run every migration's statements in version order
+  (`payables/test/support/test_fixtures.ex`); replace a trigger function
+  with `CREATE OR REPLACE` spelled out in full, and restore the original in
+  `down/0`.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's

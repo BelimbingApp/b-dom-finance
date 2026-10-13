@@ -27,17 +27,31 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), TestFixtures.migration(),
-               log: false,
-               dynamic_repo: repo
-             )
+    for {version, module} <- TestFixtures.migrations() do
+      assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+    end
 
     %{repo: repo}
   end
 
-  test "the fresh migration implements the complete payables contract", %{repo: repo} do
+  test "the fresh migrations implement the complete payables contract", %{repo: repo} do
+    assert Enum.map(TestFixtures.migrations(), &elem(&1, 0)) ==
+             SchemaContract.migration_versions()
+
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  test "the migrations roll back in order", %{repo: repo} do
+    for {version, module} <- Enum.reverse(TestFixtures.migrations()) do
+      assert :ok = Ecto.Migrator.down(Repo, version, module, log: false, dynamic_repo: repo)
+    end
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               repo,
+               "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'finance_payables_%'",
+               []
+             )
   end
 
   # The module's other suites prove these rules on temporary copies of the
@@ -141,6 +155,103 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
              query!.(
                "SELECT id, status, document_number, created_at > '2026-01-01' AND (approved_at IS NULL OR approved_at >= created_at) FROM finance_payables_documents ORDER BY id"
              )
+  end
+
+  # Each rule about a later transaction, which the sandbox cannot show.
+  @tag :capture_log
+  test "the migrations' triggers keep a match record whole and a held bill held", %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_payables_documents (id, tenant_id, company_id, document_type, status, party_key, party_name, party_document_number, document_date, due_date, currency_code, total_net, total_tax, total, created_by_user_id) VALUES (1, 1, 1, 'bill', 'draft', 'P', 'Party', 'D-1', '2026-10-01', '2026-10-01', 'XTS', 50, 0, 50, 1)",
+        "INSERT INTO finance_payables_document_lines (tenant_id, company_id, document_id, line_number, description, account_id, amount, order_line_id, quantity) VALUES (1, 1, 1, 1, 'Line', 5, 50, 7, 10)",
+        "UPDATE finance_payables_documents SET status = 'approved', approved_by_user_id = 1 WHERE id = 1"
+      ])
+
+    event = fn id, event, reason ->
+      "INSERT INTO finance_payables_match_events (id, tenant_id, company_id, document_id, event, reason, actor_user_id, occurred_at) VALUES (#{id}, 1, 1, 1, '#{event}', #{reason}, 1, '2000-01-01')"
+    end
+
+    match_line = fn id, event_id ->
+      "INSERT INTO finance_payables_match_lines (id, tenant_id, company_id, event_id, document_id, line_number, order_line_id, billed_quantity, billed_unit_price, previously_billed_quantity) VALUES (#{id}, 1, 1, #{event_id}, 1, 1, 7, 10, 5, 0)"
+    end
+
+    exception = fn line_id ->
+      "INSERT INTO finance_payables_match_exceptions (tenant_id, company_id, match_line_id, code, detail) VALUES (1, 1, #{line_id}, 'price_differs', 'x')"
+    end
+
+    post =
+      "UPDATE finance_payables_documents SET status = 'posted', posted_by_user_id = 1, payable_account_id = 7, entry_id = 1, entry_number = 1 WHERE id = 1"
+
+    # A hold, recorded whole and stamped by the database.
+    assert {:ok, _} =
+             in_transaction.([
+               event.(1, "held", "NULL"),
+               match_line.(1, 1),
+               exception.(1),
+               "UPDATE finance_payables_documents SET status = 'held' WHERE id = 1"
+             ])
+
+    assert %{rows: [[true]]} =
+             query!.("SELECT occurred_at > '2026-01-01' FROM finance_payables_match_events")
+
+    assert_raise Postgrex.Error, ~r/complete when recorded/, fn ->
+      in_transaction.([match_line.(2, 1)])
+    end
+
+    assert_raise Postgrex.Error, ~r/complete when recorded/, fn ->
+      in_transaction.([exception.(1)])
+    end
+
+    # Held, with exceptions again and no approval: not posted.
+    assert_raise Postgrex.Error, ~r/match exceptions are not approved/, fn ->
+      in_transaction.([event.(2, "posted", "NULL"), match_line.(3, 2), exception.(3), post])
+    end
+
+    assert_raise Postgrex.Error, ~r/no held match exception to approve/, fn ->
+      in_transaction.([
+        "UPDATE finance_payables_documents SET status = 'voided', voided_by_user_id = 1, void_reason = 'x' WHERE id = 1",
+        event.(3, "exception_approved", "'x'")
+      ])
+    end
+
+    assert_raise Postgrex.Error, ~r/finance_payables_match_events_reason/, fn ->
+      in_transaction.([event.(3, "exception_approved", "NULL")])
+    end
+
+    assert {:ok, _} = in_transaction.([event.(3, "exception_approved", "'agreed'")])
+
+    assert_raise Postgrex.Error, ~r/no held match exception to approve/, fn ->
+      in_transaction.([event.(4, "exception_approved", "'again'")])
+    end
+
+    # Approved: posts with its match record, over the same exception.
+    assert {:ok, _} =
+             in_transaction.([
+               event.(4, "posted", "NULL"),
+               match_line.(4, 4),
+               exception.(4),
+               post
+             ])
+
+    assert %{rows: [["posted", 1]]} =
+             query!.(
+               "SELECT status, document_number FROM finance_payables_documents WHERE id = 1"
+             )
+
+    for sql <- [
+          "UPDATE finance_payables_match_events SET reason = 'y'",
+          "DELETE FROM finance_payables_match_lines",
+          "TRUNCATE finance_payables_match_exceptions"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance payables keeps/, fn -> query!.(sql) end
+    end
   end
 
   test "the migration's triggers stamp and keep the change history", %{repo: repo} do

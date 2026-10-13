@@ -22,6 +22,7 @@ defmodule Bilimbi.Finance.Payables.MixProject do
     [
       {:ecto_sql, "~> 3.14"},
       {:decimal, "~> 3.1"},
+      {:phoenix_live_view, "~> 1.2"},
       {:postgrex, "~> 0.22"}
     ]
   end
