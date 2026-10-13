@@ -77,9 +77,14 @@ defmodule Bilimbi.Finance.Sst.SstCase do
     Map.merge(context, build_company!(context.first_scope, 91))
   end
 
-  @doc "Builds the company as `user_id`, who holds every capability; see the moduledoc."
+  @doc """
+  Builds the company as `user_id`, who holds every capability; see the
+  moduledoc. User 95 holds every capability too and approves the bills, since
+  the user who recorded one may not.
+  """
   def build_company!(scope, user_id) do
     operator = TestFixtures.sign_in!(scope, 73, user_id, all_capabilities())
+    approver = TestFixtures.sign_in!(scope, 73, 95, all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
 
     accounts =
@@ -184,6 +189,7 @@ defmodule Bilimbi.Finance.Sst.SstCase do
     series
     |> Map.merge(%{
       operator: operator,
+      approver: approver,
       accounts: accounts,
       customer: customer,
       codes: receivable_codes,
@@ -291,7 +297,7 @@ defmodule Bilimbi.Finance.Sst.SstCase do
         ]
       })
 
-    {:ok, _approved} = Payables.approve_document(context.operator, 73, bill.id)
+    {:ok, _approved} = Payables.approve_document(context.approver, 73, bill.id)
     {:ok, posted} = Payables.post_document(context.operator, 73, bill.id)
     posted
   end
