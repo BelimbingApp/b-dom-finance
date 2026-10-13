@@ -2,6 +2,7 @@ defmodule Bilimbi.Finance.Reconciliation.ImportTest do
   use Bilimbi.Finance.Reconciliation.ReconciliationCase
 
   alias Bilimbi.Base.Repo
+  alias Bilimbi.Finance.Reconciliation.Records
   alias Ecto.Adapters.SQL
 
   @rows [
@@ -49,6 +50,18 @@ defmodule Bilimbi.Finance.Reconciliation.ImportTest do
 
       assert {:ok, %{lines: [_, _, _, _]}} =
                Reconciliation.get_statement(context.operator, 73, statement.id)
+    end
+
+    test "walks every page of statements, so the newest is listed", context do
+      import!(context, @rows)
+      next = import!(context, [["2026-10-06", "Interest", "INT", "1.25", "905.25"]], "next.csv")
+
+      read = &Reconciliation.list_statements(context.operator, 73, context.bank_account.id, &1)
+
+      assert {:ok, [%{statement_number: 1}]} = read.(limit: 1)
+      assert {:ok, all} = Records.all_pages(read, 1)
+      assert Enum.map(all, & &1.statement_number) == [1, 2]
+      assert List.last(all).id == next.id
     end
 
     test "reads a file written newest first by following its running balance", context do

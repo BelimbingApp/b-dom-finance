@@ -41,6 +41,27 @@ defmodule Bilimbi.Finance.Reconciliation.Records do
   def page(query, limit, cursor),
     do: query |> where([r], r.id > ^cursor) |> order_by([r], asc: r.id) |> limit(^limit)
 
+  @doc """
+  Every record a paged read returns, oldest first. `read` takes the page
+  options and returns `{:ok, records}` or an error, which stops the walk.
+  """
+  def all_pages(read, page_size \\ 500), do: all_pages(read, page_size, nil, [])
+
+  defp all_pages(read, page_size, cursor, read_so_far) do
+    options = if cursor, do: [limit: page_size, after: cursor], else: [limit: page_size]
+
+    case read.(options) do
+      {:ok, records} when length(records) < page_size ->
+        {:ok, Enum.reverse(read_so_far, records)}
+
+      {:ok, records} ->
+        all_pages(read, page_size, List.last(records).id, Enum.reverse(records, read_so_far))
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @doc "The signed-in user and any impersonator behind an authorized scope."
   def actor_ids(scope) do
     %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)

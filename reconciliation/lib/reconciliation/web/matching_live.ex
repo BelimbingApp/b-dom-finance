@@ -14,6 +14,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.MatchingLive do
   alias Bilimbi.Base.UI.Params
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Reconciliation
+  alias Bilimbi.Finance.Reconciliation.Records
   alias Bilimbi.Finance.Reconciliation.Web.Format
 
   @zero Decimal.new(0)
@@ -47,7 +48,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.MatchingLive do
     with {:ok, account} <- Reconciliation.get_bank_account(scope, company_id, id),
          {:ok, unmatched} <- Reconciliation.unmatched_items(scope, company_id, id) do
       matches =
-        case Reconciliation.list_matches(scope, company_id, id, limit: 500) do
+        case Records.all_pages(&Reconciliation.list_matches(scope, company_id, id, &1)) do
           {:ok, matches} -> matches |> Enum.filter(&(&1.status == "matched")) |> Enum.reverse()
           {:error, _reason} -> []
         end

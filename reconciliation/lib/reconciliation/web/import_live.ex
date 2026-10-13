@@ -16,6 +16,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Reconciliation
   alias Bilimbi.Finance.Reconciliation.Csv
+  alias Bilimbi.Finance.Reconciliation.Records
   alias Bilimbi.Finance.Reconciliation.Web.Format
 
   @impl true
@@ -46,7 +47,9 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
 
     case Reconciliation.get_bank_account(scope, company_id, id) do
       {:ok, account} ->
-        statements = items(Reconciliation.list_statements(scope, company_id, id, limit: 500))
+        statements =
+          items(Records.all_pages(&Reconciliation.list_statements(scope, company_id, id, &1)))
+
         reconciliations = items(Reconciliation.list_reconciliations(scope, company_id, id))
 
         book =

@@ -2,6 +2,7 @@ defmodule Bilimbi.Finance.Reconciliation.MatchingTest do
   use Bilimbi.Finance.Reconciliation.ReconciliationCase
 
   alias Bilimbi.Base.Repo
+  alias Bilimbi.Finance.Reconciliation.Records
   alias Ecto.Adapters.SQL
 
   setup context do
@@ -144,6 +145,24 @@ defmodule Bilimbi.Finance.Reconciliation.MatchingTest do
       assert {:ok, [_, _, _]} = Reconciliation.list_matches(operator, 73, bank_account.id)
       assert {:ok, %{match_number: 1}} = Reconciliation.get_match(operator, 73, match.id)
       assert payment.id not in match.statement_line_ids
+    end
+
+    test "walks every page of matches, so the newest is listed", context do
+      %{operator: operator, bank_account: bank_account, lines: [deposit, payment | _]} = context
+
+      for {line, entry} <- [{deposit, context.deposit}, {payment, context.payment}] do
+        assert {:ok, _match} =
+                 Reconciliation.match(operator, 73, bank_account.id, %{
+                   statement_line_ids: [line.id],
+                   entry_ids: [entry.id]
+                 })
+      end
+
+      read = &Reconciliation.list_matches(operator, 73, bank_account.id, &1)
+
+      assert {:ok, [_only_the_oldest]} = read.(limit: 1)
+      assert {:ok, all} = Records.all_pages(read, 1)
+      assert Enum.map(all, & &1.match_number) == [1, 2]
     end
 
     test "refuses unbalanced, repeated, foreign, and empty selections", context do

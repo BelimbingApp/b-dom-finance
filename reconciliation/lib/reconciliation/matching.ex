@@ -463,7 +463,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
   def fetch!(scope, company_id, match_id),
     do: fetch(scope, company_id, match_id) || raise("match #{match_id} vanished")
 
-  @doc "The bank account's matches, newest first, paged by `limit` and `after`."
+  @doc "The bank account's matches, oldest first, paged by `limit` and `after`."
   def list(scope, company_id, bank_account_id, options) do
     with {:ok, limit, cursor} <- Records.page_options(options) do
       matches =
