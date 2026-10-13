@@ -55,7 +55,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     assert manifest["tenant_id"] == 41
     assert manifest["through_entry_number"] == 501
     assert manifest["timezone"] == "Etc/UTC"
-    assert manifest["generator_version"] == "6"
+    assert manifest["generator_version"] == "7"
     assert manifest["files"]["ledger-entry.csv"]["row_count"] == 501
     assert manifest["files"]["ledger-line.csv"]["row_count"] == 1002
     assert manifest["files"]["general-ledger.csv"]["row_count"] == 1002
@@ -270,6 +270,18 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     assert files["reconciliation-reconciliation_event.csv"] =~ "finalised"
     assert files["receivables-document.csv"] =~ invoice.document_reference
     assert files["payables-document.csv"] =~ "SOURCE-1"
+
+    # The statement's kept file is indexed by hash, and its attachment names the
+    # statement row whose import_mapping is the snapshot the file was read through.
+    assert manifest["files"]["attachments-attachment.csv"]["row_count"] == 1
+    assert files["attachments-attachment.csv"] =~ "\"legal_hold\""
+    assert files["attachments-attachment.csv"] =~ hash(csv)
+
+    assert files["attachments-attachment.csv"] =~
+             "\"reconciliation-statement.csv##{statement.id}\""
+
+    assert files["reconciliation-statement.csv"] =~ "\"import_mapping\""
+    assert files["reconciliation-statement.csv"] =~ "delimiter"
   end
 
   test "CSV quotes arbitrary text and neutralizes formula and whitespace prefixes" do

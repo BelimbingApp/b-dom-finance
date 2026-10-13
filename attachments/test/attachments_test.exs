@@ -767,6 +767,40 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "attachment_event")
       assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "retention_change")
     end
+
+    test "the index shows the retention in force, the legal hold and each attachment's standing",
+         %{operator: operator} do
+      StubSource.put_document!(3)
+
+      {:ok, extended} =
+        Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("x.txt"))
+
+      {:ok, held} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("y.txt"))
+      {:ok, removed} = Attachments.attach(operator, 73, StubSource, 3, TestFixtures.file("z.txt"))
+
+      {:ok, _} =
+        Attachments.extend_retention(operator, 73, extended.id, %{
+          retain_until: ~D[2040-01-01],
+          reason: "tax query"
+        })
+
+      {:ok, _} = Attachments.place_hold(operator, 73, held.id, %{reason: "case"})
+      {:ok, _} = Attachments.remove(operator, 73, removed.id, %{reason: "duplicate"})
+
+      rows = fn ->
+        {:ok, %{rows: rows}} = Attachments.evidence_page(operator, 73, "attachment")
+        Map.new(rows, &{&1.file_name, &1})
+      end
+
+      assert %{
+               "x.txt" => %{retain_until: ~U[2040-01-01 23:59:59.999999Z], legal_hold: false},
+               "y.txt" => %{legal_hold: true, status: "standing"},
+               "z.txt" => %{status: "removed", legal_hold: false}
+             } = rows.()
+
+      {:ok, _} = Attachments.release_hold(operator, 73, held.id, %{reason: "closed"})
+      assert %{"y.txt" => %{legal_hold: false}} = rows.()
+    end
   end
 
   describe "list_sources/2" do

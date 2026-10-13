@@ -47,6 +47,7 @@ defmodule Bilimbi.Finance.Reconciliation.Evidence do
          :statement_number,
          :file_name,
          :file_sha256,
+         :import_mapping,
          :line_count,
          :start_date,
          :end_date,

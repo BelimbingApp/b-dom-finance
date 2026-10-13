@@ -26,6 +26,8 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
          :sha256,
          :retention_years,
          :retain_until,
+         :legal_hold,
+         :status,
          :captured_by_user_id,
          :captured_by_impersonator_id,
          :captured_at
@@ -78,6 +80,40 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
 
   defp readable(query, _dataset, _scope, _company_id, _modules), do: query
 
+  # The attachment row keeps the retain-until it was captured with; the index
+  # answers with the one in force (the latest extension, as
+  # `Bilimbi.Finance.Attachments.get_attachment/3` does), whether a legal hold
+  # is on it (its latest hold event), and whether it still stands.
+  defp current(query, "attachment") do
+    select_merge(query, [r], %{
+      retain_until:
+        type(
+          fragment(
+            "GREATEST(?, (SELECT MAX(e.retain_until) FROM finance_attachment_events e WHERE e.attachment_id = ? AND e.event = 'retention_extended'))",
+            r.retain_until,
+            r.id
+          ),
+          :utc_datetime_usec
+        ),
+      legal_hold:
+        fragment(
+          "COALESCE((SELECT e.event = 'hold_placed' FROM finance_attachment_events e WHERE e.attachment_id = ? AND e.event IN ('hold_placed', 'hold_released') ORDER BY e.id DESC LIMIT 1), false)",
+          r.id
+        ),
+      status:
+        fragment(
+          "COALESCE((SELECT e.event FROM finance_attachment_events e WHERE e.attachment_id = ? AND e.event IN ('replaced', 'removed')), 'standing')",
+          r.id
+        )
+    })
+  end
+
+  defp current(query, _dataset), do: query
+
+  # Fields the index derives in the query rather than reading from a column.
+  defp computed("attachment"), do: [:legal_hold, :status]
+  defp computed(_dataset), do: []
+
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
 
   def tables do
@@ -90,14 +126,17 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
 
     with {:ok, {schema, fields}} <- Map.fetch(@datasets, dataset),
          true <- is_integer(limit) and limit in 1..500 and is_integer(cursor) and cursor >= 0 do
+      columns = fields -- computed(dataset)
+
       rows =
         from(r in Tenancy.scope_query(schema, scope),
           where: r.company_id == ^company_id and r.id > ^cursor,
           order_by: [asc: r.id],
           limit: ^limit,
-          select: map(r, ^fields)
+          select: map(r, ^columns)
         )
         |> readable(dataset, scope, company_id, readable_modules)
+        |> current(dataset)
         |> Repo.all()
 
       {:ok,

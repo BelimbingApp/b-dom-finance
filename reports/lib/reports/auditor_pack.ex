@@ -31,7 +31,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"attachments", Attachments}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "6"
+  @version "7"
 
   def sources, do: Enum.map(@owners, &elem(&1, 1))
 
@@ -97,6 +97,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
           meta =
             write_pages(directory, filename, fn cursor ->
               owner.evidence_page(scope, company_id, dataset, after: cursor)
+              |> reference(name, dataset)
             end)
 
           {filename, meta}
@@ -179,7 +180,8 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
          decimal_encoding: "exact decimal strings; CSV numeric cells are unrounded",
          csv_text_encoding: "UTF-8; formula-like text is prefixed with an apostrophe",
          source_files:
-           "bank input bytes are not retained; index carries original hashes; authority payloads are included",
+           "source file bytes (bank statements, supporting documents) are not in the pack; " <>
+             "the source-file and attachment indexes carry their SHA-256; authority payloads are included",
          files:
            evidence
            |> Map.put("general-ledger.csv", gl)
@@ -426,7 +428,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
       Enum.reduce(result.rows, {count, files}, fn row, {count, files} ->
         {name, sha, available, files} =
           if dataset == "statement" do
-            {row.file_name, row.file_sha256, "original bytes not retained", files}
+            {row.file_name, row.file_sha256, "not in pack; see attachments-attachment.csv", files}
           else
             name = "authority-payload-#{row.id}.json"
             File.write!(Path.join(directory, name), row.payload)
@@ -457,6 +459,27 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
         source_pages(file, scope, company, directory, owner, dataset, result.next, count, files),
       else: {count, files}
   end
+
+  # A bank statement's attachment names the import mapping its file was read
+  # through: the statement's own row (the attachment's document_id) in
+  # reconciliation-statement.csv, whose import_mapping is that snapshot. The
+  # attachments module cannot read the statement, so the pack adds the column.
+  defp reference({:ok, %{fields: fields, rows: rows} = page}, "attachments", "attachment") do
+    statement = Atom.to_string(Reconciliation.StatementSource)
+
+    rows =
+      Enum.map(rows, fn row ->
+        ref =
+          if row.source_module == statement,
+            do: "reconciliation-statement.csv##{row.document_id}"
+
+        Map.put(row, :import_mapping_ref, ref)
+      end)
+
+    {:ok, %{page | fields: fields ++ [:import_mapping_ref], rows: rows}}
+  end
+
+  defp reference(page, _name, _dataset), do: page
 
   defp summary_count(%{rows: rows}), do: length(rows)
 
