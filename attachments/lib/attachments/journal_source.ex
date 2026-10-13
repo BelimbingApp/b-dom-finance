@@ -23,6 +23,9 @@ defmodule Bilimbi.Finance.Attachments.JournalSource do
   def source_label, do: "Manual journal"
 
   @impl true
+  def view_capability, do: Ledger.view_capability()
+
+  @impl true
   def document(%Scope{} = scope, company_id, journal_id) do
     with {:ok, journal} <- Ledger.get_journal(scope, company_id, journal_id) do
       {:ok,

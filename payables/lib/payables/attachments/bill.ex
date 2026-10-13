@@ -20,6 +20,9 @@ defmodule Bilimbi.Finance.Payables.Attachments.Bill do
   def source_label, do: "Payables document"
 
   @impl true
+  def view_capability, do: Payables.view_capability()
+
+  @impl true
   def document(%Scope{} = scope, company_id, document_id) do
     with {:ok, document} <- Payables.get_document(scope, company_id, document_id) do
       {:ok,

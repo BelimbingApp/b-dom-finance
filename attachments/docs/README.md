@@ -20,7 +20,8 @@ captured it when, and never changed afterwards.
   and `read_attachment/3`.
 - `Bilimbi.Finance.Attachments.Source`, the behaviour a Finance module
   implements once per kind of record it keeps source documents for. The
-  module names the record (`source_id/0`, `source_label/0`) and reads it
+  module names the record (`source_id/0`, `source_label/0`), names the capability it asks to read
+  its records (`view_capability/0`), and reads it
   through its own facade (`document/3`: label, date, final?). Payables
   implements it for bills and payment requests, receivables for documents
   and payments, reconciliation for statements; the ledger has no pages, so
@@ -61,8 +62,14 @@ captured it when, and never changed afterwards.
   `finance.attachments.delete` removes; `finance.attachments.retention.manage`
   lengthens the company's retention or an attachment's and places or
   releases a hold. Reading a record through its source carries the owning
-  facade's capability too, and the retention reads the ledger's fiscal
-  years (`finance.ledger.view`). The verbs are Base Authz's; this module
+  facade's capability too, and so does reading an attachment's metadata
+  (the file name, label, date, hash, and who captured it): the lists and the
+  source documents page leave out the attachments of every source whose
+  `view_capability/0` the caller lacks (one check per source module), and
+  `get_attachment/3`, `extend_retention/4`, `place_hold/4`, and
+  `release_hold/4` refuse one with `:unauthorized`, so the attachments grant
+  alone discloses nothing about a bill, invoice, or statement. The retention
+  reads the ledger's fiscal years (`finance.ledger.view`). The verbs are Base Authz's; this module
   declares none of its own (see the repository guide).
 - **Storage order.** Base Artifacts stores outside any transaction, so a
   file is stored first, retained from creation, and the link recorded in

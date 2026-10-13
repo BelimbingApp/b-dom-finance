@@ -22,6 +22,9 @@ defmodule Bilimbi.Finance.Payables.Attachments.Payment do
   def source_label, do: "Payment request"
 
   @impl true
+  def view_capability, do: Payables.view_capability()
+
+  @impl true
   def document(%Scope{} = scope, company_id, request_id) do
     with {:ok, request} <- Payables.get_payment_request(scope, company_id, request_id) do
       {:ok,

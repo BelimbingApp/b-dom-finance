@@ -23,7 +23,12 @@ defmodule Bilimbi.Finance.Attachments do
   `Bilimbi.Finance.Attachments.Source` module of the Finance module that
   owns it, which reads the record through its own facade with the same
   scope: an attachment also needs whatever that facade asks to read the
-  record, and answers that facade's refusal when it is not readable.
+  record, and answers that facade's refusal when it is not readable. Reading
+  an attachment's metadata (`get_attachment/3`, the lists) needs the source's
+  `view_capability/0` as well as `finance.attachments.view`: a list leaves
+  out the attachments of every source the caller cannot read (one capability
+  check per source module), and a single read or a retention change of one
+  is `{:error, :unauthorized}`.
 
   The file's bytes are a records-grade document in `Bilimbi.Base.Artifacts`:
   stored once, hashed, and retained until the company's retention years
@@ -340,7 +345,7 @@ defmodule Bilimbi.Finance.Attachments do
   def extend_retention(%Scope{} = scope, company_id, attachment_id, attributes)
       when is_map(attributes) do
     with :ok <- authorize(scope, company_id, @manage_retention),
-         {:ok, attachment} <- any_attachment(scope, company_id, attachment_id),
+         {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id),
          {:ok, %Date{} = date} <- dated(fetch(attributes, :retain_until)),
          until = Retention.end_of_day(date),
          {:ok, reason} <- event_reason(attributes),
@@ -374,7 +379,7 @@ defmodule Bilimbi.Finance.Attachments do
 
   defp hold(scope, company_id, attachment_id, attributes, operation, event) do
     with :ok <- authorize(scope, company_id, @manage_retention),
-         {:ok, attachment} <- any_attachment(scope, company_id, attachment_id),
+         {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id),
          {:ok, reason} <- event_reason(attributes),
          {:ok, _stored} <-
            apply(Artifacts, operation, [
@@ -408,20 +413,25 @@ defmodule Bilimbi.Finance.Attachments do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, source} <- valid_source(source),
          {:ok, document_id} <- document_id(document_id) do
-      {:ok,
-       scope
-       |> attachments_query(company_id)
-       |> where([a], a.source == ^source.source_id() and a.document_id == ^document_id)
-       |> status_filter(scope, "standing")
-       |> order_by([a], asc: a.id)
-       |> preload_events(scope)
-       |> Repo.all()
-       |> Enum.map(&attachment_view/1)}
+      if readable?(scope, company_id, source) do
+        {:ok,
+         scope
+         |> attachments_query(company_id)
+         |> where([a], a.source == ^source.source_id() and a.document_id == ^document_id)
+         |> status_filter(scope, "standing")
+         |> order_by([a], asc: a.id)
+         |> preload_events(scope)
+         |> Repo.all()
+         |> Enum.map(&attachment_view/1)}
+      else
+        {:ok, []}
+      end
     end
   end
 
   @doc """
-  The company's attachments by number, as `get_attachment/3` shows them.
+  The company's attachments by number, as `get_attachment/3` shows them,
+  leaving out those of a source the caller cannot read.
   Options: `source` (a source ID, `"finance/payables/bill"`), `document_ids`
   (only the attachments of those records of `source`), `status`
   (one of `statuses/0`; by default only standing attachments), `limit`
@@ -437,6 +447,7 @@ defmodule Bilimbi.Finance.Attachments do
       {:ok,
        scope
        |> attachments_query(company_id)
+       |> where([a], a.source_module in ^readable_source_modules(scope, company_id))
        |> then(fn query ->
          if filters.source, do: where(query, [a], a.source == ^filters.source), else: query
        end)
@@ -464,16 +475,15 @@ defmodule Bilimbi.Finance.Attachments do
   `document_id`, `document_label`, `document_date`), the file (`file_name`,
   `content_type`, `byte_size`, `sha256`), its retention (`retention_years`,
   `retain_until`, which follows the latest extension, and `on_hold`), who captured it when, its `status`, and its `events`
-  oldest first.
+  oldest first. The caller must also be able to read the record's source
+  (`{:error, :unauthorized}` otherwise).
   """
   @spec get_attachment(Scope.t(), term(), term()) ::
-          {:ok, map()} | {:error, refusal() | :attachment_not_found}
+          {:ok, map()} | {:error, refusal() | :attachment_not_found | :source_unavailable}
   def get_attachment(%Scope{} = scope, company_id, attachment_id) do
-    with :ok <- authorize(scope, company_id, @view) do
-      case fetch_attachment(scope, company_id, attachment_id) do
-        nil -> {:error, :attachment_not_found}
-        attachment -> {:ok, attachment_view(attachment)}
-      end
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id) do
+      {:ok, attachment_view(attachment)}
     end
   end
 
@@ -488,7 +498,7 @@ defmodule Bilimbi.Finance.Attachments do
           {:ok, map()} | {:error, refusal() | :attachment_not_found | term()}
   def read_attachment(%Scope{} = scope, company_id, attachment_id) do
     with :ok <- authorize(scope, company_id, @view),
-         {:ok, attachment} <- any_attachment(scope, company_id, attachment_id),
+         {:ok, attachment} <- readable_attachment(scope, company_id, attachment_id),
          {:ok, source} <- source_of(attachment),
          {:ok, _document} <- source_document(scope, company_id, source, attachment.document_id),
          {:ok, %{bytes: bytes}} <-
@@ -576,6 +586,26 @@ defmodule Bilimbi.Finance.Attachments do
       nil -> {:error, :attachment_not_found}
       attachment -> {:ok, attachment}
     end
+  end
+
+  defp readable_attachment(scope, company_id, attachment_id) do
+    with {:ok, attachment} <- any_attachment(scope, company_id, attachment_id),
+         {:ok, source} <- source_of(attachment),
+         :ok <- authorize(scope, company_id, source.view_capability()) do
+      {:ok, attachment}
+    end
+  end
+
+  defp readable?(scope, company_id, source),
+    do: authorize(scope, company_id, source.view_capability()) == :ok
+
+  defp readable_source_modules(scope, company_id) do
+    scope
+    |> attachments_query(company_id)
+    |> distinct(true)
+    |> select([a], a.source_module)
+    |> Repo.all()
+    |> Enum.filter(&((source = Source.from_name(&1)) && readable?(scope, company_id, source)))
   end
 
   defp standing_attachment(scope, company_id, attachment_id) do

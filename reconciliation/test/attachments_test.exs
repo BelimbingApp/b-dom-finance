@@ -79,6 +79,27 @@ defmodule Bilimbi.Finance.Reconciliation.AttachmentsTest do
     assert {:ok, [_october]} = Attachments.list_company_attachments(context.operator, 73)
   end
 
+  test "a user with the attachments grant but no reconciliation view sees no statement's file",
+       context do
+    statement = import!(context, @rows, "october.csv")
+
+    reader =
+      TestFixtures.sign_in!(
+        context.first_scope,
+        73,
+        98,
+        ~w(finance.attachments.view)
+      )
+
+    assert {:ok, [attachment]} =
+             Attachments.list_attachments(context.operator, 73, StatementSource, statement.id)
+
+    assert {:ok, []} = Attachments.list_attachments(reader, 73, StatementSource, statement.id)
+    assert {:ok, []} = Attachments.list_company_attachments(reader, 73)
+    assert {:error, :unauthorized} = Attachments.get_attachment(reader, 73, attachment.id)
+    assert {:error, :unauthorized} = Attachments.read_attachment(reader, 73, attachment.id)
+  end
+
   test "an import needs the attachments create capability and Base Artifacts storage", context do
     importer =
       TestFixtures.sign_in!(

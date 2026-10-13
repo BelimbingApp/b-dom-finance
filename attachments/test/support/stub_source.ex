@@ -19,6 +19,9 @@ defmodule Bilimbi.Finance.Attachments.StubSource do
   def source_label, do: "Test record"
 
   @impl true
+  def view_capability, do: Bilimbi.Finance.Ledger.view_capability()
+
+  @impl true
   def document(%Scope{}, _company_id, id) do
     case Map.fetch(documents(), id) do
       {:ok, document} -> {:ok, document}
