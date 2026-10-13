@@ -73,7 +73,15 @@ defmodule Bilimbi.Finance.FixedAssets.AssetsTest do
     }
 
     assert {:error, :bill_not_posted} = FixedAssets.acquire_from_bill(c.keeper, 73, attrs)
-    {:ok, _} = Payables.approve_document(c.keeper, 73, bill.id)
+    assert {:error, :same_person} = Payables.approve_document(c.keeper, 73, bill.id)
+
+    approver =
+      Payables.TestFixtures.sign_in!(c.first_scope, 73, 92, [
+        "finance.payables.documents.approve",
+        "finance.ledger.view"
+      ])
+
+    {:ok, _} = Payables.approve_document(approver, 73, bill.id)
     {:ok, posted} = Payables.post_document(c.keeper, 73, bill.id)
     {:ok, asset} = FixedAssets.acquire_from_bill(c.keeper, 73, attrs)
     assert asset.entry_id == posted.entry_id
