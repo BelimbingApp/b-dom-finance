@@ -281,7 +281,7 @@ carries `import_mapping_ref`, `reconciliation-statement.csv#<id>`: the statement
 whose `import_mapping` column is the mapping its file was read through (that cell is
 empty for statements imported before the mapping was kept). The document bytes stay in Base
 Artifacts and are not in the pack: the index names them, and reading one remains an
-audited download. The source-file index also lists each statement's hash. Exact
+audited download. `source-file-index.csv` also lists each statement's hash. Exact
 authority submission payloads are included with their hashes.
 
 The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
