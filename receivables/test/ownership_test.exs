@@ -78,6 +78,34 @@ defmodule Bilimbi.Finance.Receivables.OwnershipTest do
       assert reversed_by == entry.id
     end
 
+    test "an owner passed from outside the module reverses the entry, and the tie-out shows it",
+         context do
+      %{operator: operator, invoice: invoice, payment: payment} = context
+      owner = %{module: @module, record: "payment:#{payment.id}"}
+
+      assert {:ok, %{tied_out?: true}} =
+               Receivables.tie_out_control_accounts(operator, 73, ~D[2026-10-31])
+
+      assert {:ok, reversal} =
+               Ledger.reverse_owned_entry(operator, 73, payment.ledger_entry_id, owner, %{
+                 entry_date: ~D[2026-10-12],
+                 description: "Reversed outside the module"
+               })
+
+      assert reversal.reverses_entry_id == payment.ledger_entry_id
+
+      assert {:ok, %{reversal: nil}} = Receivables.get_payment(operator, 73, payment.id)
+      assert owed(context, invoice) == "0.00"
+
+      assert {:ok, %{tied_out?: false, total_difference: total, accounts: [row]}} =
+               Receivables.tie_out_control_accounts(operator, 73, ~D[2026-10-31])
+
+      assert money(row.subledger_balance) == "0.00"
+      assert money(row.ledger_balance) == "100.00"
+      assert money(row.difference) == "-100.00"
+      assert money(total) == "-100.00"
+    end
+
     test "a ledger refusal of the reversal leaves no payment reversal either", context do
       %{operator: operator, first_scope: system, invoice: invoice, payment: payment} = context
 

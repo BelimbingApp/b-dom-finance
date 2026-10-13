@@ -101,6 +101,33 @@ defmodule BilimbiWeb.FinanceReconciliationReportLiveTest do
     assert Decimal.equal?(zero, 0)
   end
 
+  test "refuses to let whoever opened a reconciliation finalise it", %{conn: conn} = scene do
+    grant_capabilities!([@view, @manage, @finalise, @post, @ledger_view, @ledger_post])
+
+    {:ok, _} =
+      Reconciliation.abandon_reconciliation(scene.operator, 73, scene.reconciliation.id, %{
+        reason: "Redo"
+      })
+
+    {:ok, scope} = Bilimbi.Base.Tenancy.scope(41)
+    opener = Bilimbi.Finance.Reconciliation.TestFixtures.sign_in!(scope, 73, 91, [@manage])
+
+    {:ok, own} =
+      Reconciliation.open_reconciliation(opener, 73, scene.bank_account.id, %{
+        end_date: ~D[2026-10-31],
+        statement_balance: "995.00"
+      })
+
+    {:ok, view, _html} =
+      conn |> log_in_as() |> live(~p"/finance/reconciliation/reconciliations/#{own.id}")
+
+    view |> element("#item-#{scene.fee_line.id}-post-charge") |> render_click()
+    view |> element("#reconciliation-finalise") |> render_click()
+
+    assert has_element?(view, "#flash-error", "separates duties")
+    assert has_element?(view, "#reconciliation-status", "open")
+  end
+
   test "refuses to finalise a difference and abandons with a reason", %{conn: conn} = scene do
     grant_capabilities!([@view, @manage, @finalise, @ledger_view])
 

@@ -448,6 +448,11 @@ defmodule Bilimbi.Finance.Reconciliation do
   numbers they were read at, and the items that explain them, after which
   the reconciliation is immutable and the matches it counted are kept.
   Needs `finance.ledger.view`.
+
+  The finaliser differs from whoever opened it (`{:error, :same_person}`),
+  impersonation included, unless the company has turned separation of
+  duties off, when the finalisation is listed in the ledger's approval
+  exceptions (`Bilimbi.Finance.Ledger.check_approval/3`).
   """
   @spec finalise_reconciliation(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -456,6 +461,7 @@ defmodule Bilimbi.Finance.Reconciliation do
              | :reconciliation_not_found
              | :reconciliation_finalised
              | :reconciliation_abandoned
+             | :same_person
              | {:difference, Decimal.t()}
              | Changeset.t()}
   def finalise_reconciliation(%Scope{} = scope, company_id, reconciliation_id) do
@@ -557,7 +563,9 @@ defmodule Bilimbi.Finance.Reconciliation do
   `unmatched` event carrying the reason, and the entry is reversed through
   `Ledger.reverse_owned_entry/5` as the line's owner; the ledger's refusal
   (a closed period) rolls both back and is returned. A match a finalised
-  reconciliation counted is kept (`{:error, :match_finalised}`). The line
+  reconciliation counted is kept (`{:error, :match_finalised}`). An entry
+  posted before owners were recorded is reversed the same way when its match
+  is the one that posted it. The line
   is not posted again: the ledger holds an entry for it
   (`:statement_line_posted`), so the right figure is booked by a manual
   journal and matched. Needs `finance.reconciliation.statement-lines.manage`

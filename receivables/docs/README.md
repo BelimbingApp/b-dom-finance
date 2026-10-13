@@ -25,9 +25,9 @@ maps; the schemas are private.
 | `record_payment/3`, `reverse_payment/4` | `finance.receivables.payments.post` | Payments received, allocated to invoices, and their reversal |
 | `get_payment/3`, `list_payments/3` | view | Payments with their allocations and reversal |
 | `aged_receivables/4` | view | What each customer owes as of a date, by days past due |
-| `tie_out_control_accounts/4` | view | The receivable accounts' subledger balance against the ledger's, with every posting this module did not make |
 | `tax_totals/3` | view | Issued documents' tax per kind and tax code over a date window |
 | `received_tax_totals/3` | view | The tax share of payments received in a window, and of invoices unpaid past a period |
+| `tie_out_control_accounts/4` | view | The receivable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 The Tenant Owner role holds every receivables capability.
 
@@ -147,7 +147,7 @@ receivable account even when it has been deactivated since (for example
 after a reversal reopened an invoice, or a manual ledger entry moved the
 balance): a payment and a credit note pass the account to
 `Bilimbi.Finance.Ledger.post_entry/4` as a `settlement_account_ids` entry for
-that entry only, and a reversal posts through `reverse_entry/4`, which
+that entry only, and a reversal posts through `reverse_owned_entry/5`, which
 already takes inactive accounts.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a
@@ -332,10 +332,10 @@ sales ledger is held to. What this slice covers:
 Tax rules themselves (which rate applies to what, rounding a tax authority
 prescribes beyond half up per line) are a company's configuration;
 reporting a tax return is another module's, such as `finance/sst` (see For
-tax returns). The ledger refuses to reverse a receivables entry anywhere
-but through this module (see Ledger ownership); a manual journal posted
-straight to the receivable account still bypasses these records, and
-`tie_out_control_accounts/4` shows it as a difference.
+tax returns). The ledger refuses to reverse a receivables
+entry anywhere but through this module (see Ledger ownership); a manual
+journal posted straight to the receivable account still bypasses these
+records, and `tie_out_control_accounts/4` shows it as a difference.
 
 ## Tests
 

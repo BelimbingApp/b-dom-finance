@@ -4,11 +4,11 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
   @module "finance/payables"
 
   setup context do
-    %{accounts: accounts, operator: operator} = context
+    %{accounts: accounts} = context
     bill = post_bill!(context, bill("P-1", "INV-1", [line(accounts.expense, "100")]))
 
     {:ok, payment} =
-      Payables.post_payment(operator, 73, %{
+      pay(context, %{
         payment_date: ~D[2026-10-05],
         party_key: "P-1",
         paid_from_account_id: accounts.bank.id,
@@ -64,6 +64,35 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
       assert %{owner: ^owner, reverses_entry_id: reverses} = entry
       assert reverses == payment.entry_id
       assert owed(context, bill) == "100.00"
+    end
+
+    test "an owner passed from outside the module reverses the entry, and the tie-out shows it",
+         context do
+      %{operator: operator, bill: bill, payment: payment} = context
+      owner = %{module: @module, record: "payment:#{payment.id}"}
+
+      assert {:ok, %{tied_out?: true}} =
+               Payables.tie_out_control_accounts(operator, 73, ~D[2026-10-31])
+
+      assert {:ok, reversal} =
+               Ledger.reverse_owned_entry(operator, 73, payment.entry_id, owner, %{
+                 entry_date: ~D[2026-10-06],
+                 description: "Reversed outside the module"
+               })
+
+      assert reversal.reverses_entry_id == payment.entry_id
+
+      assert {:ok, %{reversed_by_payment_id: nil}} =
+               Payables.get_payment(operator, 73, payment.id)
+
+      assert owed(context, bill) == "0.00"
+
+      assert {:ok, %{tied_out?: false, accounts: [row]}} =
+               Payables.tie_out_control_accounts(operator, 73, ~D[2026-10-31])
+
+      assert money(row.subledger_balance) == "0.00"
+      assert money(row.ledger_balance) == "100.00"
+      assert money(row.difference) == "-100.00"
     end
 
     test "a ledger refusal of the reversal leaves no reversal payment either", context do

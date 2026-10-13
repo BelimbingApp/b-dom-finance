@@ -266,8 +266,7 @@ through the ledger (the issuer also needs `finance.ledger.view`) and refuses,
 with a `source` changeset error, an entry that does not exist, that the
 named module and record do not own, that is a reversal or was reversed, in
 another currency, or whose total differs from the document's; and a source
-another standing document already links (its latest status `submitted`,
-`valid`, `rejected`, or `consolidated`). The link is recorded with the
+another standing document already links (defined below). The link is recorded with the
 document, append-only, in `finance_einvoice_source_links`, and the view
 carries it as `source_links` with `recognised_by_source?`.
 
@@ -281,6 +280,14 @@ receivables credit note, a payment reversal) posts in that module, whose
 correcting record the credit or refund note issued for it links to in turn:
 a note whose original is linked and that names no `source` is refused with
 a `source` changeset error, so the owner's correction is the only one.
+A document stands for its source while its latest status is `submitted`,
+`valid`, `rejected`, or `consolidated`, and also while an attempt the
+authority may hold is outstanding: a submission stored after its latest
+status event, in flight or never answered. So a second document for the same
+source is refused at issue, at submission, and by the database from the moment
+the first one's bytes are stored, and it is freed when the authority's answer
+(`refused`, `invalid`) or a cancellation is recorded; an attempt that never got
+an answer holds the source until the document is submitted again and looked up.
 A document is not submitted while another standing document links one of
 its sources: `submit_document/3` refuses it (`{:error, :source_taken}`)
 unless an earlier attempt of the document is unresolved, and a job that is
@@ -500,8 +507,7 @@ PostgreSQL enforces what the facade checks:
   table and triggers;
 - a source link is written only in the transaction that records its
   document and once per source; a second link to a source is refused while
-  another document that links it stands (its latest status `submitted`,
-  `valid`, `rejected`, or `consolidated`), unless the new document is a
+  another document that links it stands (see Source links), unless the new document is a
   consolidated document covering that one; a document is not submitted
   while another standing document links one of its sources; links are
   append-only. The source links migration's `statements(temporary: true)`

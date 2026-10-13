@@ -15,13 +15,25 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261016100000_add_finance_ledger_duty_separation.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Ledger.Migrations.{AddEntryOwner, CreateClosing, CreateLedger}
-  alias Bilimbi.Finance.Ledger.Migrations.NotifyPostings
+
+  alias Bilimbi.Finance.Ledger.Migrations.{
+    AddDutySeparation,
+    AddEntryOwner,
+    CreateClosing,
+    CreateLedger,
+    NotifyPostings
+  }
+
   alias Bilimbi.Finance.Ledger.Postings
   alias Bilimbi.Finance.Ledger.SchemaContract
   alias Ecto.Adapters.SQL
@@ -46,9 +58,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       )
     )
 
-    [earlier, owner] =
+    [earlier, later] =
       SchemaContract.migration_versions()
-      |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner])
+      |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner, AddDutySeparation])
       |> Enum.split(3)
       |> Tuple.to_list()
 
@@ -60,9 +72,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
 
     migrate!.(earlier)
     # One test posts entries before owners were recorded and migrates itself.
-    unless context[:before_owner], do: migrate!.(owner)
+    unless context[:before_owner], do: migrate!.(later)
 
-    %{repo: repo, database: database, migrate_owner!: fn -> migrate!.(owner) end}
+    %{repo: repo, database: database, migrate_later!: fn -> migrate!.(later) end}
   end
 
   test "the fresh migration implements the complete ledger contract", %{repo: repo} do
@@ -72,7 +84,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   test "the migrations roll back in order", %{repo: repo} do
     for {version, migration} <-
           SchemaContract.migration_versions()
-          |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner])
+          |> Enum.zip([
+            CreateLedger,
+            NotifyPostings,
+            CreateClosing,
+            AddEntryOwner,
+            AddDutySeparation
+          ])
           |> Enum.reverse() do
       assert :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
     end
@@ -316,13 +334,91 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              )
   end
 
+  # A journal's lines land only in its own transaction, and it balances at
+  # commit; the duty separation migration also rolls back and reapplies.
+  @tag :capture_log
+  test "the duty separation migration keeps journals whole and rolls back", %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+        "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
+      ])
+
+    journal = fn id ->
+      "INSERT INTO finance_ledger_journals (id, tenant_id, company_id, journal_number, entry_date, description, currency_code, submitted_by_user_id, submitted_at) VALUES (#{id}, 1, 1, 99, '2026-10-01', 'Accrual', 'XTS', 1, '2000-01-01')"
+    end
+
+    line = fn journal_id, number, account_id, debit, credit ->
+      "INSERT INTO finance_ledger_journal_lines (tenant_id, company_id, journal_id, line_number, account_id, debit, credit) VALUES (1, 1, #{journal_id}, #{number}, #{account_id}, #{debit}, #{credit})"
+    end
+
+    assert {:ok, _} = in_transaction.([journal.(1), line.(1, 1, 1, 10, 0), line.(1, 2, 2, 0, 10)])
+
+    assert_raise Postgrex.Error, ~r/journal 2 does not balance/, fn ->
+      in_transaction.([journal.(2), line.(2, 1, 1, 10, 0), line.(2, 2, 2, 0, 9)])
+    end
+
+    assert_raise Postgrex.Error, ~r/journal 3 has no lines/, fn ->
+      in_transaction.([journal.(3)])
+    end
+
+    assert_raise Postgrex.Error, ~r/already submitted: a line cannot be added/, fn ->
+      in_transaction.([line.(1, 3, 1, 5, 0), line.(1, 4, 2, 0, 5)])
+    end
+
+    # Approved by another person: the event names the entry it posted.
+    assert {:ok, _} =
+             in_transaction.([
+               "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, posted_by_user_id, posted_at) VALUES (1, 1, 1, 1, '2026-10-01', 'Accrual', 'XTS', 2, now())",
+               "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, 1, 1, 1, 10, 0), (1, 1, 1, 2, 2, 0, 10)",
+               "INSERT INTO finance_ledger_journal_events (tenant_id, company_id, journal_id, event, entry_id, actor_user_id, occurred_at) VALUES (1, 1, 1, 'approved', 1, 2, now())"
+             ])
+
+    assert_raise Postgrex.Error, ~r/finance_ledger_journal_events_journal_unique/, fn ->
+      in_transaction.([
+        "INSERT INTO finance_ledger_journal_events (tenant_id, company_id, journal_id, event, reason, actor_user_id, occurred_at) VALUES (1, 1, 1, 'rejected', 'Late', 2, now())"
+      ])
+    end
+
+    assert %{rows: [[1, true]]} =
+             query!.(
+               "SELECT journal_number, submitted_at > '2026-01-01' FROM finance_ledger_journals"
+             )
+
+    assert :ok =
+             Ecto.Migrator.down(Repo, 20_261_016_100_000, AddDutySeparation,
+               log: false,
+               dynamic_repo: repo
+             )
+
+    assert %{rows: [[0]]} =
+             query!.(
+               "SELECT count(*) FROM pg_class WHERE relname LIKE 'finance_ledger_journal%' OR relname LIKE 'finance_ledger_approval%' OR relname LIKE 'finance_ledger_duty%'"
+             )
+
+    assert :ok =
+             Ecto.Migrator.up(Repo, 20_261_016_100_000, AddDutySeparation,
+               log: false,
+               dynamic_repo: repo
+             )
+
+    assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
   # Entries posted before the owner migration are legacy: an owning module's
   # migration claims each of its own once, and the row changes in no other
   # way. The migration's own triggers prove it here, outside the sandbox.
   @tag :before_owner
   @tag :capture_log
   test "the owner migration marks earlier entries legacy and lets an owner claim each once",
-       %{repo: repo, migrate_owner!: migrate_owner!} do
+       %{repo: repo, migrate_later!: migrate_later!} do
     Repo.put_dynamic_repo(repo)
     query! = fn sql -> SQL.query!(repo, sql, []) end
 
@@ -346,11 +442,17 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
     {:ok, _} = in_transaction.(entry.(1, nil))
     {:ok, _} = in_transaction.(entry.(2, 1))
     {:ok, _} = in_transaction.(entry.(3, nil))
+    {:ok, _} = in_transaction.(entry.(21, nil))
+    {:ok, _} = in_transaction.(entry.(22, 21))
+    {:ok, _} = in_transaction.(entry.(23, nil))
+    {:ok, _} = in_transaction.(entry.(24, 23))
 
-    migrate_owner!.()
+    migrate_later!.()
 
     assert %{rows: [[1, true, nil], [2, true, nil], [3, true, nil]]} =
-             query!.("SELECT id, legacy, owner_module FROM finance_ledger_entries ORDER BY id")
+             query!.(
+               "SELECT id, legacy, owner_module FROM finance_ledger_entries WHERE id < 10 ORDER BY id"
+             )
 
     claim = fn id, module, record ->
       "SELECT finance_ledger_claim_legacy_entry(#{id}, 1, '#{module}', '#{record}')"
@@ -364,8 +466,12 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       in_transaction.([claim.(1, "finance/payables", "payment:5")])
     end
 
-    # The reversal takes its original's owner and no other.
-    assert_raise Postgrex.Error, ~r/have one owner/, fn ->
+    # Claiming the original took its legacy reversal with the same owner, so
+    # the reversal takes no other.
+    assert %{rows: [["finance/receivables", "payment:5"]]} =
+             query!.("SELECT owner_module, owner_record FROM finance_ledger_entries WHERE id = 2")
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
       in_transaction.([claim.(2, "finance/payables", "payment:9")])
     end
 
@@ -401,8 +507,29 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              ]
            } =
              query!.(
-               "SELECT id, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+               "SELECT id, owner_module, owner_record FROM finance_ledger_entries WHERE id < 10 ORDER BY id"
              )
+
+    # An original and its legacy reversal are claimed together, whichever
+    # the owner names; the other side of a claimed pair is refused to others.
+    assert {:ok, _} = in_transaction.([claim.(21, "finance/reconciliation", "statement_line:30")])
+    assert {:ok, _} = in_transaction.([claim.(24, "finance/reconciliation", "statement_line:31")])
+
+    assert %{
+             rows: [
+               [21, true, "finance/reconciliation", "statement_line:30"],
+               [22, true, "finance/reconciliation", "statement_line:30"],
+               [23, true, "finance/reconciliation", "statement_line:31"],
+               [24, true, "finance/reconciliation", "statement_line:31"]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries WHERE id > 20 ORDER BY id"
+             )
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
+      in_transaction.([claim.(22, "finance/payables", "payment:9")])
+    end
 
     # One original entry per owned record; a reversal carries its original's owner.
     owned = fn id, reverses, module, record ->

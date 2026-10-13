@@ -452,12 +452,7 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
       assert [%{document_id: ^second_id}] = Repo.all(Submission)
     end
 
-    test "looks up an earlier attempt at the authority before refusing the source",
-         %{operator: op, accounts: accounts} do
-      entry = sale_entry!(op, accounts, "document:17")
-      first = linked_invoice!(op, entry, "document:17")
-      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
-
+    defp unresolved_attempt!(op, first) do
       TestFixtures.stub_authority!(%{
         {"POST", "/connect/token"} => &TestFixtures.token_response/1,
         {"POST", "/api/v1.0/documentsubmissions/"} => &Req.Test.transport_error(&1, :timeout),
@@ -466,19 +461,37 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
 
       assert {:retry, :authority_unavailable} =
                SubmitWorker.handle_job(args(first), execution(op))
+    end
 
-      TestFixtures.stub_authority!(%{
-        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", "/api/v1.0/documentsubmissions/"} =>
-          &TestFixtures.accepted_response(&1, "INV-2"),
-        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
-      })
+    test "a document with an unresolved attempt holds the source until it is looked up",
+         %{operator: op, accounts: accounts} do
+      entry = sale_entry!(op, accounts, "document:17")
+      first = linked_invoice!(op, entry, "document:17")
+      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+      unresolved_attempt!(op, first)
 
-      assert :ok = SubmitWorker.handle_job(args(second), execution(op))
-      assert {:ok, %{status: "submitted"}} = Einvoice.get_document(op, 73, second.id)
+      # The authority may hold the first, so nothing else is sent for the source.
+      assert {:error, :source_taken} = Einvoice.submit_document(op, 73, second.id)
+      assert {:cancel, :source_taken} = SubmitWorker.handle_job(args(second), execution(op))
 
-      # The authority holds the first attempt: the retry records it rather
-      # than cancelling it unlooked, and sends nothing.
+      assert {:ok, %{events: [_issued, %{event: "unsendable"}]}} =
+               Einvoice.get_document(op, 73, second.id)
+
+      assert {:error, changeset} =
+               Einvoice.issue_document(
+                 op,
+                 73,
+                 TestFixtures.invoice_attributes(%{
+                   code_number: "INV-3",
+                   source: source(entry, "document:17")
+                 })
+               )
+
+      assert %{source: ["is already the source of document #{first.id}, which stands"]} ==
+               errors_on(changeset)
+
+      # The retry looks the attempt up at the authority and records it, and
+      # sends nothing.
       held = [
         %{
           internalId: "JSON-INV12345",
@@ -503,63 +516,57 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
                Einvoice.get_document(op, 73, first.id)
 
       assert [_, %{event: "unavailable"}, %{event: "submitted"}] = events
-      assert length(Repo.all(Submission)) == 2
+      assert {:error, :source_taken} = Einvoice.submit_document(op, 73, second.id)
     end
 
     test "lets an operator resubmit a document with an unresolved attempt",
          %{operator: op, accounts: accounts} do
       entry = sale_entry!(op, accounts, "document:17")
       first = linked_invoice!(op, entry, "document:17")
-      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
-
-      TestFixtures.stub_authority!(%{
-        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", "/api/v1.0/documentsubmissions/"} => &Req.Test.transport_error(&1, :timeout),
-        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
-      })
-
-      assert {:retry, :authority_unavailable} =
-               SubmitWorker.handle_job(args(first), execution(op))
-
-      TestFixtures.stub_authority!(%{
-        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", "/api/v1.0/documentsubmissions/"} =>
-          &TestFixtures.accepted_response(&1, "INV-2"),
-        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
-      })
-
-      assert :ok = SubmitWorker.handle_job(args(second), execution(op))
+      _second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+      unresolved_attempt!(op, first)
 
       assert {:ok, %{job_id: _}} = Einvoice.submit_document(op, 73, first.id)
     end
 
-    test "cancels the source when the earlier attempt is not at the authority",
+    test "frees the source once the unresolved attempt is refused",
          %{operator: op, accounts: accounts} do
       entry = sale_entry!(op, accounts, "document:17")
       first = linked_invoice!(op, entry, "document:17")
       second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+      unresolved_attempt!(op, first)
+      assert {:cancel, :source_taken} = SubmitWorker.handle_job(args(second), execution(op))
 
       TestFixtures.stub_authority!(%{
         {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", "/api/v1.0/documentsubmissions/"} => &Req.Test.transport_error(&1, :timeout),
+        {"POST", "/api/v1.0/documentsubmissions/"} => fn conn ->
+          conn
+          |> Plug.Conn.put_status(202)
+          |> Req.Test.json(%{
+            submissionUid: "HJSD135P2S7D8IU",
+            acceptedDocuments: [],
+            rejectedDocuments: [
+              %{
+                invoiceCodeNumber: "JSON-INV12345",
+                error: %{code: "CF321", message: "Document is invalid", details: []}
+              }
+            ]
+          })
+        end,
         {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
       })
 
-      assert {:retry, :authority_unavailable} =
-               SubmitWorker.handle_job(args(first), execution(op))
+      assert :ok = SubmitWorker.handle_job(args(first), execution(op))
+      assert {:ok, %{status: "refused"}} = Einvoice.get_document(op, 73, first.id)
 
       TestFixtures.stub_authority!(%{
         {"POST", "/connect/token"} => &TestFixtures.token_response/1,
-        {"POST", "/api/v1.0/documentsubmissions/"} =>
-          &TestFixtures.accepted_response(&1, "INV-2"),
-        {"GET", "/api/v1.0/documents/recent"} => &recent_response(&1, [])
+        {"POST", "/api/v1.0/documentsubmissions/"} => &TestFixtures.accepted_response(&1, "INV-2")
       })
 
+      assert {:ok, %{job_id: _}} = Einvoice.submit_document(op, 73, second.id)
       assert :ok = SubmitWorker.handle_job(args(second), execution(op))
-      assert {:cancel, :source_taken} = SubmitWorker.handle_job(args(first), execution(op))
-
-      assert {:ok, %{status: "issued", events: events}} = Einvoice.get_document(op, 73, first.id)
-      assert [_, %{event: "unavailable"}, %{event: "unsendable"}] = events
+      assert {:ok, %{status: "submitted"}} = Einvoice.get_document(op, 73, second.id)
     end
 
     test "submits again once the standing document no longer stands",

@@ -15,9 +15,13 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks do
   - a link is written only in the transaction that records its document,
     and a document links each source once;
   - a source has one standing fiscal document: a second link to it is
-    refused while another document that links it stands (its latest status
-    is `submitted`, `valid`, `rejected`, or `consolidated`), unless the new
-    document is a consolidated document covering that one;
+    refused while another document that links it stands, unless the new
+    document is a consolidated document covering that one. A document
+    stands when its latest status is `submitted`, `valid`, `rejected`, or
+    `consolidated`, and also while an attempt to submit it may be held by
+    the authority: a stored submission recorded after its latest status
+    event (in flight, or never answered), which an `issued` document with
+    any submission has;
   - a document is not submitted while another standing document links one
     of its sources, by the same rule;
   - links are append-only.
@@ -95,7 +99,8 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks do
   end
 
   # A document stands for its source while its latest status is one the
-  # authority holds or will: submitted, valid, rejected, or consolidated.
+  # authority holds or will (submitted, valid, rejected, or consolidated), or
+  # a submission was stored after that status: the authority may hold it.
   @standing "('submitted', 'valid', 'rejected', 'consolidated')"
   @statuses "('issued', 'submitted', 'refused', 'valid', 'invalid', 'cancelled', 'rejected', " <>
               "'consolidated', 'released')"
@@ -119,9 +124,17 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks do
           AND other.source_module = link.source_module
           AND other.source_record = link.source_record
           AND other.document_id <> document
-          AND (SELECT e.event FROM finance_einvoice_status_events e
-               WHERE e.document_id = other.document_id AND e.event IN #{@statuses}
-               ORDER BY e.sequence DESC LIMIT 1) IN #{@standing}
+          AND (
+            (SELECT e.event FROM finance_einvoice_status_events e
+             WHERE e.document_id = other.document_id AND e.event IN #{@statuses}
+             ORDER BY e.sequence DESC LIMIT 1) IN #{@standing}
+            OR EXISTS (
+              SELECT 1 FROM finance_einvoice_submissions s
+              WHERE s.document_id = other.document_id
+                AND s.recorded_at > (
+                  SELECT e.recorded_at FROM finance_einvoice_status_events e
+                  WHERE e.document_id = other.document_id AND e.event IN #{@statuses}
+                  ORDER BY e.sequence DESC LIMIT 1)))
           AND NOT EXISTS (
             SELECT 1 FROM finance_einvoice_consolidated_sources c
             WHERE c.document_id = document AND c.source_document_id = other.document_id)

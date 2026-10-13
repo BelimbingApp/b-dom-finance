@@ -13,7 +13,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
 
   @doc "The migrations that build the schema, oldest first; the contract is their result."
   def migration_versions,
-    do: [20_261_012_170_100, 20_261_012_214_100, 20_261_013_101_700, 20_261_015_150_000]
+    do: [
+      20_261_012_170_100,
+      20_261_012_214_100,
+      20_261_013_101_700,
+      20_261_015_150_000,
+      20_261_016_100_000
+    ]
 
   @impl true
   def tables do
@@ -315,6 +321,230 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
               "(period_id IS NOT NULL OR (action)::text <> 'lock'::text) AND " <>
                 "((period_id IS NULL AND (action)::text = 'close'::text) OR " <>
                 "(entry_id IS NULL AND retained_earnings_account_id IS NULL))"
+            )
+        }
+      },
+      %{
+        name: "finance_ledger_duty_separation_changes",
+        columns:
+          owned_columns("finance_ledger_duty_separation_changes")
+          |> Map.merge(%{
+            "change_number" => column(:bigint, false),
+            "required" => column(:boolean, false),
+            "reason" => column({:varchar, 500}, true),
+            "changed_by_user_id" => column(:bigint, false),
+            "changed_by_impersonator_id" => column(:bigint, true),
+            "changed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_duty_separation_changes_pkey" => index(["id"], true),
+          "finance_ledger_duty_separation_changes_id_company_unique" =>
+            index(["id", "company_id"], true),
+          "finance_ledger_duty_separation_changes_company_number_unique" =>
+            index(["company_id", "change_number"], true),
+          "finance_ledger_duty_separation_changes_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{},
+        checks: %{
+          "finance_ledger_duty_separation_changes_change_number" => check("change_number > 0"),
+          "finance_ledger_duty_separation_changes_reason" =>
+            check("required OR (reason IS NOT NULL AND btrim((reason)::text) <> ''::text)")
+        }
+      },
+      %{
+        name: "finance_ledger_approval_exceptions",
+        columns:
+          owned_columns("finance_ledger_approval_exceptions")
+          |> Map.merge(%{
+            "exception_number" => column(:bigint, false),
+            "source" => column({:varchar, 64}, false),
+            "action" => column({:varchar, 40}, false),
+            "subject_type" => column({:varchar, 40}, false),
+            "subject_id" => column(:bigint, false),
+            "subject" => column({:varchar, 200}, false),
+            "same_person" => column(:boolean, false),
+            "override" => column(:boolean, false),
+            "prepared_by_user_id" => column(:bigint, true),
+            "prepared_by_impersonator_id" => column(:bigint, true),
+            "approved_by_user_id" => column(:bigint, false),
+            "approved_by_impersonator_id" => column(:bigint, true),
+            "reason" => column({:varchar, 500}, false),
+            "separation_change_id" => column(:bigint, true),
+            "recorded_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_approval_exceptions_pkey" => index(["id"], true),
+          "finance_ledger_approval_exceptions_id_company_unique" =>
+            index(["id", "company_id"], true),
+          "finance_ledger_approval_exceptions_company_number_unique" =>
+            index(["company_id", "exception_number"], true),
+          "finance_ledger_approval_exceptions_subject_index" =>
+            index(["company_id", "source", "subject_type", "subject_id"]),
+          "finance_ledger_approval_exceptions_recorded_index" =>
+            index(["company_id", "recorded_at"]),
+          "finance_ledger_approval_exceptions_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_approval_exceptions_separation_change_fkey" =>
+            company_reference("separation_change_id", "finance_ledger_duty_separation_changes")
+        },
+        checks: %{
+          "finance_ledger_approval_exceptions_exception_number" => check("exception_number > 0"),
+          "finance_ledger_approval_exceptions_codes" =>
+            check(
+              "(source)::text ~ '^[a-z][a-z0-9_/-]*$'::text AND " <>
+                "(action)::text ~ '^[a-z][a-z0-9_]*$'::text AND " <>
+                "(subject_type)::text ~ '^[a-z][a-z0-9_]*$'::text AND subject_id > 0 AND " <>
+                "btrim((subject)::text) <> ''::text AND btrim((reason)::text) <> ''::text"
+            ),
+          "finance_ledger_approval_exceptions_kind" => check("same_person OR override"),
+          "finance_ledger_approval_exceptions_same_person" =>
+            check(
+              "same_person = (COALESCE(approved_by_user_id = prepared_by_user_id OR " <>
+                "approved_by_user_id = prepared_by_impersonator_id, false) OR " <>
+                "COALESCE(approved_by_impersonator_id = prepared_by_user_id OR " <>
+                "approved_by_impersonator_id = prepared_by_impersonator_id, false)) AND " <>
+                "same_person = (separation_change_id IS NOT NULL)"
+            ),
+          "finance_ledger_approval_exceptions_preparer" =>
+            check("prepared_by_user_id IS NOT NULL OR prepared_by_impersonator_id IS NULL")
+        }
+      },
+      %{
+        name: "finance_ledger_approval_exception_reviews",
+        columns:
+          owned_columns("finance_ledger_approval_exception_reviews")
+          |> Map.merge(%{
+            "exception_id" => column(:bigint, false),
+            "note" => column({:varchar, 500}, true),
+            "reviewed_by_user_id" => column(:bigint, false),
+            "reviewed_by_impersonator_id" => column(:bigint, true),
+            "reviewed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_approval_exception_reviews_pkey" => index(["id"], true),
+          "finance_ledger_approval_exception_reviews_exception_unique" =>
+            index(["exception_id"], true),
+          "finance_ledger_approval_exception_reviews_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_approval_exception_reviews_exception_fkey" =>
+            company_reference("exception_id", "finance_ledger_approval_exceptions")
+        },
+        checks: %{}
+      },
+      %{
+        name: "finance_ledger_journals",
+        columns:
+          owned_columns("finance_ledger_journals")
+          |> Map.merge(%{
+            "journal_number" => column(:bigint, false),
+            "entry_date" => column(:date, false),
+            "description" => column({:varchar, 500}, false),
+            "reference" => column({:varchar, 100}, true),
+            "currency_code" => column({:varchar, 3}, false),
+            "submitted_by_user_id" => column(:bigint, false),
+            "submitted_by_impersonator_id" => column(:bigint, true),
+            "submitted_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_journals_pkey" => index(["id"], true),
+          "finance_ledger_journals_id_company_unique" => index(["id", "company_id"], true),
+          "finance_ledger_journals_company_number_unique" =>
+            index(["company_id", "journal_number"], true),
+          "finance_ledger_journals_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_journals_book_fkey" => %{
+            columns: ["company_id", "currency_code"],
+            references: {"finance_ledger_books", ["company_id", "currency_code"]},
+            on_delete: :restrict
+          }
+        },
+        checks: %{
+          "finance_ledger_journals_journal_number" => check("journal_number > 0")
+        }
+      },
+      %{
+        name: "finance_ledger_journal_lines",
+        columns:
+          owned_columns("finance_ledger_journal_lines")
+          |> Map.merge(%{
+            "journal_id" => column(:bigint, false),
+            "line_number" => column(:integer, false),
+            "account_id" => column(:bigint, false),
+            "debit" => column({:numeric, 20, 4}, false),
+            "credit" => column({:numeric, 20, 4}, false),
+            "description" => column({:varchar, 500}, true)
+          }),
+        indexes: %{
+          "finance_ledger_journal_lines_pkey" => index(["id"], true),
+          "finance_ledger_journal_lines_journal_line_unique" =>
+            index(["journal_id", "line_number"], true),
+          "finance_ledger_journal_lines_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_journal_lines_journal_fkey" =>
+            company_reference("journal_id", "finance_ledger_journals"),
+          "finance_ledger_journal_lines_account_fkey" =>
+            company_reference("account_id", "finance_ledger_accounts")
+        },
+        checks: %{
+          "finance_ledger_journal_lines_line_number" => check("line_number > 0"),
+          "finance_ledger_journal_lines_one_side" =>
+            check(
+              "debit >= (0)::numeric AND credit >= (0)::numeric AND " <>
+                "((debit = (0)::numeric) <> (credit = (0)::numeric))"
+            )
+        }
+      },
+      %{
+        name: "finance_ledger_journal_events",
+        columns:
+          owned_columns("finance_ledger_journal_events")
+          |> Map.merge(%{
+            "journal_id" => column(:bigint, false),
+            "event" => column({:varchar, 16}, false),
+            "reason" => column({:varchar, 500}, true),
+            "entry_id" => column(:bigint, true),
+            "actor_user_id" => column(:bigint, false),
+            "actor_impersonator_id" => column(:bigint, true),
+            "occurred_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_journal_events_pkey" => index(["id"], true),
+          "finance_ledger_journal_events_journal_unique" => index(["journal_id"], true),
+          "finance_ledger_journal_events_entry_unique" => %{
+            columns: ["entry_id"],
+            unique: true,
+            where: "(entry_id IS NOT NULL)"
+          },
+          "finance_ledger_journal_events_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_journal_events_journal_fkey" =>
+            company_reference("journal_id", "finance_ledger_journals"),
+          "finance_ledger_journal_events_entry_fkey" =>
+            company_reference("entry_id", "finance_ledger_entries")
+        },
+        checks: %{
+          "finance_ledger_journal_events_event" =>
+            check(
+              "(event)::text = ANY ((ARRAY['approved'::character varying, " <>
+                "'rejected'::character varying])::text[])"
+            ),
+          "finance_ledger_journal_events_entry" =>
+            check("((event)::text = 'approved'::text) = (entry_id IS NOT NULL)"),
+          "finance_ledger_journal_events_reason" =>
+            check(
+              "(event)::text <> 'rejected'::text OR " <>
+                "(reason IS NOT NULL AND btrim((reason)::text) <> ''::text)"
             )
         }
       }

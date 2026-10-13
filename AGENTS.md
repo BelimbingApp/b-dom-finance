@@ -24,8 +24,9 @@ here; they govern this code and are not copied here.
   fails. Namespaces are `Bilimbi.Finance.<Module>` with OTP app
   `:bilimbi_finance_<folder>`.
 - Domain code uses only meta-terms: book, account, account type, entry, line,
-  debit, credit, fiscal document, party, submission, status event, receivables'
-  customer, series, tax code, invoice, credit note, payment, allocation,
+  journal, duty separation, approval exception, debit, credit, fiscal
+  document, party, submission, status event, receivables' customer, series,
+  tax code, invoice, credit note, payment, payment request, allocation,
   reconciliation's bank account, statement, statement line, match,
   reconciliation, and SST's registration, taxable period, return, box,
   mapping, adjustment. A fixed chart of accounts or a currency is a company's data,
@@ -54,13 +55,30 @@ here; they govern this code and are not copied here.
   id>", record: "<kind>:<id>"}` (each module's `owner/2` builds it) and
   corrects that entry with `reverse_owned_entry/5` under the same owner, in
   the transaction that records its own reversal; `reverse_entry/4` is for
-  manual entries and refuses an owned one. A posted entry is never edited.
+  manual entries and refuses an owned one. `reverse_owned_entry/5` is for
+  the owning module's own correction path only: the ledger cannot
+  authenticate its caller, so anyone passing an entry's owner from elsewhere
+  reverses it without the owner's record, which the owner's tie-out shows as
+  a difference. A posted entry is never edited.
   Its `entry_date` must fall in an open period: handle that changeset
   error, never reopen a period to post. A module's entries posted before
   owners were recorded are claimed by that module's own migration through
   the ledger's `finance_ledger_claim_legacy_entry`
   (`receivables/priv/repo/migrations/20261015150100_*`), never by writing
   the ledger's table.
+- Ask `Bilimbi.Finance.Ledger.check_approval/3` inside the transaction of
+  every approval a module records (approve, post a submitted record,
+  finalise), with everyone who prepared the record as `prepared_by` and
+  `override: true` plus the reason for an override of a control; never
+  compare actor IDs yourself. It holds the company's separation of duties
+  (on by default, impersonation included) and lists same-person approvals
+  and overrides on the approval exceptions page
+  (`reports/lib/reports/web/approval_exceptions_live.ex`). A person's
+  manual journal is `Ledger.submit_journal/3` then `approve_journal/3`, and
+  a payables payment `submit_payment/3` then `approve_payment/3`;
+  `post_entry/3,4` is for a module posting a record it approved itself.
+  Module tests approve as a second signed-in user (the cases' `approver` or
+  `reviewer`) and turn separation off only in a test about it.
 - Keep a record's changing state (open, closed, approved, ...) as append-only
   events with actor, reason, and a database-stamped time, the latest deciding
   the state, as the ledger's closing log does; an updatable status column

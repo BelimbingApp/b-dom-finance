@@ -23,18 +23,21 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `create_tax_code/3`, `update_tax_code/4` | `finance.payables.settings.manage` | A tax code: `code`, `name`, `rate` (percent), `account_id`, `active`, and an optional `reason`; the code never changes |
 | `create_bill/3` | `finance.payables.documents.create` | Records a party's bill as a draft |
 | `create_debit_note/4` | `finance.payables.documents.create` | Records a debit note against a posted bill as a draft |
-| `approve_document/3` | `finance.payables.documents.approve` | Approves a draft |
+| `approve_document/3` | `finance.payables.documents.approve` | Approves a draft, by someone other than whoever recorded it while the company separates duties |
 | `void_document/4` | `finance.payables.documents.approve` | Voids a draft or approved document with a `void_reason` |
 | `post_document/3` | `finance.payables.documents.post` | Posts an approved or held document to the ledger and numbers it; a bill naming order lines is matched first, and held instead when outside tolerance |
-| `approve_match_exception/4` | `finance.payables.match.approve` | Approves a held bill's match exceptions with a `reason` and the `held_event_id` of the hold seen (`:stale_hold` when a newer hold exists), so it may be posted over them |
+| `approve_match_exception/4` | `finance.payables.match.approve` | Approves a held bill's match exceptions with a `reason` and the `held_event_id` of the hold seen (`:stale_hold` when a newer hold exists), so it may be posted over them; listed as an override for review |
 | `get_document/3`, `list_documents/3`, `page_documents/3` | `finance.payables.view` | Documents with lines, tax lines, `debit_note_ids`, `match_status`, and `match_events`; a posted bill shows `outstanding`; `page_documents/3` pages newest first for a list |
 | `billed_quantities/3` | `finance.payables.view` | The quantity posted bills billed against each order line, less posted debit notes |
-| `post_payment/3` | `finance.payables.payments.post` | Posts a payment allocated to one party's posted bills |
+| `submit_payment/3` | `finance.payables.payments.submit` | Submits a payment allocated to one party's posted bills for approval |
+| `approve_payment/3` | `finance.payables.payments.post` | Approves a submitted payment, posting it |
+| `reject_payment/4` | `finance.payables.payments.post` | Rejects a submitted payment with a `reason` |
+| `get_payment_request/3`, `list_payment_requests/3` | `finance.payables.view` | Payment requests with their allocations, status, and decision; `list_payment_requests/3` takes `status`, `limit`, and `after` |
 | `reverse_payment/4` | `finance.payables.payments.post` | Posts a payment's reversal |
 | `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
-| `tie_out_control_accounts/4` | `finance.payables.view` | The payable accounts' subledger balance against the ledger's, with every posting this module did not make |
 | `tax_totals/3` | `finance.payables.view` | Posted documents' tax per type and tax code over a date window, pinned to a ledger entry number |
+| `tie_out_control_accounts/4` | `finance.payables.view` | The payable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 ## Authorization and company scope
 
@@ -52,12 +55,24 @@ A write that touches the ledger calls its facade with the same scope, so the
 actor also needs the ledger capability that call asks for:
 `finance.ledger.view` to record documents, set the payable account, and keep
 tax codes (they read the book and chart of accounts), and
-`finance.ledger.entries.post` to post documents and payments. Reads need only
+`finance.ledger.entries.post` to post documents and payments, and
+`finance.ledger.view` to approve a document, a match exception, or a
+payment, which asks the ledger's separation of duties. Reads need only
 `finance.payables.view`. The Tenant Owner role holds every payables
-capability. Recording, approving, posting, and approving a match exception
-are separate capabilities, so a company can give them to different people;
-requiring that a document's approver differ from its recorder, or an
-exception's approver from its poster, is later work.
+capability. Recording, approving, posting, submitting a payment, posting a
+payment, and approving a match exception are separate capabilities, so a
+company can give them to different people.
+
+The company's separation of duties (the ledger's `set_duty_separation/3`,
+required unless turned off) also holds them apart for each record, through
+`Bilimbi.Finance.Ledger.check_approval/3`, impersonation included either
+way: a document's approver is not whoever recorded it; a match exception's
+approver is not whoever recorded the bill nor whoever posted it into the
+hold being approved; a payment's approver is not whoever submitted it. Each
+is `{:error, :same_person}` while separation is required. While it is not,
+the approval goes ahead and is listed in the ledger's approval exceptions
+with the reason separation was turned off. An approved match exception is
+listed there as an override whoever approves it, with its reason.
 
 A call that reads the order source (recording a bill naming order lines, and
 posting one) reads it with the same scope, so the actor also holds the
@@ -68,7 +83,9 @@ written.
 
 Every document records who recorded it (`created_by_user_id`), approved it,
 posted it, or voided it, each with any impersonator, and the database stamps
-each step's time. A payment records who posted it and when.
+each step's time. A payment request records who submitted it and when, and
+its decision who posted or rejected it and when; the payment records who
+posted it and when.
 
 ## Documents
 
@@ -213,7 +230,8 @@ work, as is a settings page for the payable account and tolerances.
 
 ## Payments
 
-`post_payment/3` posts a payment to one party on `payment_date` from
+A payment is submitted, then posted when someone approves it.
+`submit_payment/3` records a payment request to one party on `payment_date` from
 `paid_from_account_id` (an active asset or liability account, such as a bank
 account), with optional `reference` and `description`, and `allocations`,
 each `%{document_id, amount}` naming a posted bill of that party dated on or
@@ -223,6 +241,17 @@ payables, from `payment_date` on, so a bill is paid in one or more parts. The
 ledger entry debits each paid bill's own payable account and credits the
 paid-from account. Payments are numbered per company like documents. Paying
 ahead of a bill, and refunds from a party, are later work.
+
+The request checks everything the payment will need when it is submitted
+and is kept, numbered per company (`request_number`), with its allocations,
+the submitter, and the database's time; nothing posts. `approve_payment/3`
+checks it all again, now (a bill paid or corrected meanwhile is the payment
+changeset's error, and the request stays submitted), posts the payment as
+the approver, and records the request's `posted` event naming it; the result
+is the payment. `reject_payment/4` turns a request down with a reason. A
+request is decided once, by an append-only event, and its `status` is
+`submitted` until then. Its approver is not its submitter while the company
+separates duties (see Authorization and company scope).
 
 A posted payment is corrected by `reverse_payment/4`: the ledger reverses its
 entry, and its bills are owed again from the reversal's date. A payment is
@@ -314,9 +343,12 @@ tolerances to the settings and their history, `order_line_id` and
 `quantity` to document lines, the `held` status, and
 `finance_payables_match_events`, `finance_payables_match_lines`, and
 `finance_payables_match_exceptions`; it is self-contained and replaces the
-document transition function with the held rules. Each migration's
+document transition function with the held rules. `20261016100100` adds
+`finance_payables_payment_requests`,
+`finance_payables_payment_request_allocations`, and
+`finance_payables_payment_request_events`. Each migration's
 `statements/1` is the schema's one source: the migration runs it, and
-module tests run both with `temporary: true`, in order. PostgreSQL enforces
+module tests run all three with `temporary: true`, in order. PostgreSQL enforces
 the rules the facade checks, so no other writer can break them:
 
 - composite `(id, company_id)` foreign keys keep a line's document and tax
@@ -345,6 +377,13 @@ the rules the facade checks, so no other writer can break them:
 - a trigger refuses a line or tax line added to a document in a later
   transaction, or once it is no longer a draft, and an allocation added to a
   payment in a later transaction;
+- a trigger numbers payment requests without gaps and stamps their
+  submission; an allocation is added to a request only in its own
+  transaction, and a deferred constraint trigger refuses a commit in which a
+  request's allocations differ from its amount; a request is decided once,
+  a rejection needs a reason, and a trigger refuses a `posted` event unless
+  it names a payment of the request's party, date, paid-from account, and
+  amount; the three tables are append-only;
 - a trigger numbers payments without gaps and stamps their posting time; a
   deferred constraint trigger refuses a payment whose allocations differ from
   its amount, or a reversal with allocations; a partial unique index allows
@@ -371,10 +410,16 @@ payables are held to:
   one balanced ledger entry posted through the ledger's facade, which keeps
   its own integrity rules; the payables record keeps that entry's ID and
   number, so each posting traces both ways.
-- **Authorization and segregation.** Recording, approving, posting, paying,
-  and approving a match exception are separate capabilities, checked when
-  each call runs; nothing posts without an approval on record, and a held
-  bill posts over an exception only with a reasoned approval on record.
+- **Authorization and segregation.** Recording, approving, posting,
+  submitting and approving a payment, and approving a match exception are
+  separate capabilities, checked when each call runs; nothing posts without
+  an approval on record, no payment posts without an approval on record, and
+  a held bill posts over an exception only with a reasoned approval on
+  record. While the company separates duties (the default), nobody approves
+  a document, payment, or match exception they prepared, impersonation
+  included; a company that does not lists every same-person approval, and
+  every match override, in the ledger's approval exceptions for independent
+  review.
 - **Three-way match.** A bill naming order lines is paid only for what was
   ordered and received: posting compares each line with the order and the
   receipts within the company's tolerances, holds the bill otherwise, and

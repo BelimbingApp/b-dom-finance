@@ -6,6 +6,7 @@
   otp_app: :bilimbi_finance_reports,
   namespace: Bilimbi.Finance.Reports,
   dependencies: [
+    "base/authz",
     "base/module_registry",
     "base/settings",
     "base/tenancy",

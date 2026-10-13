@@ -37,12 +37,12 @@ defmodule Bilimbi.Finance.Receivables.SchemaContractTest do
     # The ledger's migrations come first, as in a composed database: the
     # claim migration calls the ledger's claim function.
     [create, claim] = TestFixtures.migrations()
-    {ledger, [owner]} = Enum.split(LedgerFixtures.migrations(), 3)
+    {ledger, ledger_later} = Enum.split(LedgerFixtures.migrations(), 3)
     migrate!.(ledger ++ [create])
     # One test posts before the ledger recorded owners and migrates itself.
-    unless context[:before_claim], do: migrate!.([owner, claim])
+    unless context[:before_claim], do: migrate!.(ledger_later ++ [claim])
 
-    %{repo: repo, migrate_claim!: fn -> migrate!.([owner, claim]) end}
+    %{repo: repo, migrate_claim!: fn -> migrate!.(ledger_later ++ [claim]) end}
   end
 
   test "the fresh migration implements the complete receivables contract", %{repo: repo} do

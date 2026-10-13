@@ -204,8 +204,8 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
     test "approves, then posts a balanced ledger entry and numbers the bill", context do
       %{operator: operator, bill: bill, accounts: accounts} = context
 
-      assert {:ok, %{status: "approved", approved_by_user_id: 91, approved_at: %DateTime{}}} =
-               Payables.approve_document(operator, 73, bill.id)
+      assert {:ok, %{status: "approved", approved_by_user_id: 92, approved_at: %DateTime{}}} =
+               Payables.approve_document(context.approver, 73, bill.id)
 
       assert {:ok, posted} = Payables.post_document(operator, 73, bill.id)
 
@@ -241,15 +241,15 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       %{operator: operator, bill: bill} = context
 
       assert {:error, :not_approved} = Payables.post_document(operator, 73, bill.id)
-      assert {:ok, _} = Payables.approve_document(operator, 73, bill.id)
-      assert {:error, :not_draft} = Payables.approve_document(operator, 73, bill.id)
+      assert {:ok, _} = Payables.approve_document(context.approver, 73, bill.id)
+      assert {:error, :not_draft} = Payables.approve_document(context.approver, 73, bill.id)
       assert {:ok, _} = Payables.post_document(operator, 73, bill.id)
       assert {:error, :not_approved} = Payables.post_document(operator, 73, bill.id)
 
       assert {:error, :not_voidable} =
                Payables.void_document(operator, 73, bill.id, %{void_reason: "Too late"})
 
-      assert {:error, :document_not_found} = Payables.approve_document(operator, 73, -1)
+      assert {:error, :document_not_found} = Payables.approve_document(context.approver, 73, -1)
       assert {:error, :document_not_found} = Payables.get_document(operator, 73, "1")
     end
 
@@ -262,13 +262,13 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       assert {:ok, %{status: "voided", voided_by_user_id: 91, void_reason: "Duplicate"}} =
                Payables.void_document(operator, 73, bill.id, %{void_reason: "Duplicate"})
 
-      assert {:error, :not_draft} = Payables.approve_document(operator, 73, bill.id)
+      assert {:error, :not_draft} = Payables.approve_document(context.approver, 73, bill.id)
 
       second = bill("P-1", "INV-2", [line(accounts.expense, "1")])
       {:ok, second} = Payables.create_bill(operator, 73, second)
-      {:ok, _} = Payables.approve_document(operator, 73, second.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, second.id)
 
-      assert {:ok, %{status: "voided", approved_by_user_id: 91}} =
+      assert {:ok, %{status: "voided", approved_by_user_id: 92}} =
                Payables.void_document(operator, 73, second.id, %{void_reason: "Wrong party"})
 
       assert {:ok, [_, _]} = Payables.list_documents(operator, 73, status: "voided")
@@ -294,7 +294,12 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       clerk =
         TestFixtures.sign_in!(system, 73, 95, ["finance.payables.documents.create" | ledger])
 
-      approver = TestFixtures.sign_in!(system, 73, 96, ["finance.payables.documents.approve"])
+      approver =
+        TestFixtures.sign_in!(system, 73, 96, [
+          "finance.payables.documents.approve",
+          "finance.ledger.view"
+        ])
+
       poster = TestFixtures.sign_in!(system, 73, 97, ["finance.payables.documents.post" | ledger])
 
       assert {:error, :unauthorized} = Payables.approve_document(clerk, 73, bill.id)
@@ -305,16 +310,21 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
 
     test "posting needs the ledger's posting grant too", context do
       %{first_scope: system, operator: operator, bill: bill} = context
-      {:ok, _} = Payables.approve_document(operator, 73, bill.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, bill.id)
 
       poster = TestFixtures.sign_in!(system, 73, 97, ["finance.payables.documents.post"])
       assert {:error, :unauthorized} = Payables.post_document(poster, 73, bill.id)
       assert {:ok, %{status: "approved"}} = Payables.get_document(operator, 73, bill.id)
     end
 
-    test "records the operator behind an impersonated session", context do
-      %{first_scope: system, bill: bill} = context
-      TestFixtures.sign_in!(system, 73, 95, ["finance.payables.documents.approve"])
+    test "refuses the recorder, or anyone they impersonate, while separation is required",
+         context do
+      %{first_scope: system, operator: operator, bill: bill} = context
+
+      TestFixtures.sign_in!(system, 73, 95, [
+        "finance.payables.documents.approve",
+        "finance.ledger.view"
+      ])
 
       impersonated =
         Authentication.sign_in(system, 95, 73,
@@ -322,7 +332,58 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
           impersonation_session_id: "borrowed-session"
         )
 
-      assert {:ok, %{approved_by_user_id: 95, approved_by_impersonator_id: 91}} =
+      assert {:error, :same_person} = Payables.approve_document(operator, 73, bill.id)
+      assert {:error, :same_person} = Payables.approve_document(impersonated, 73, bill.id)
+      assert {:ok, %{status: "draft"}} = Payables.get_document(operator, 73, bill.id)
+      assert {:ok, []} = Ledger.list_approval_exceptions(operator, 73)
+    end
+
+    test "lets the recorder approve while separation is off, as an approval exception",
+         context do
+      %{first_scope: system, operator: operator, bill: bill} = context
+      owner = TestFixtures.sign_in!(system, 73, 99, ["finance.ledger.duty-separation.manage"])
+
+      {:ok, _} =
+        Ledger.set_duty_separation(owner, 73, %{required: false, reason: "One bookkeeper"})
+
+      assert {:ok, %{approved_by_user_id: 91}} = Payables.approve_document(operator, 73, bill.id)
+
+      assert {:ok,
+              [
+                %{
+                  source: "finance/payables",
+                  action: "document_approval",
+                  subject_type: "bill",
+                  subject: "Bill INV-1 from Party P-1, 128 XTS",
+                  same_person: true,
+                  prepared_by_user_id: 91,
+                  approved_by_user_id: 91,
+                  reason: "One bookkeeper"
+                }
+              ]} = Ledger.list_approval_exceptions(operator, 73)
+    end
+
+    test "approving asks the ledger's view grant for separation of duties", context do
+      %{first_scope: system, bill: bill} = context
+      approver = TestFixtures.sign_in!(system, 73, 96, ["finance.payables.documents.approve"])
+      assert {:error, :unauthorized} = Payables.approve_document(approver, 73, bill.id)
+    end
+
+    test "records the operator behind an impersonated session", context do
+      %{first_scope: system, bill: bill} = context
+
+      TestFixtures.sign_in!(system, 73, 95, [
+        "finance.payables.documents.approve",
+        "finance.ledger.view"
+      ])
+
+      impersonated =
+        Authentication.sign_in(system, 95, 73,
+          impersonator_id: 98,
+          impersonation_session_id: "borrowed-session"
+        )
+
+      assert {:ok, %{approved_by_user_id: 95, approved_by_impersonator_id: 98}} =
                Payables.approve_document(impersonated, 73, bill.id)
     end
 
@@ -341,14 +402,15 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       {:ok, bill} =
         Payables.create_bill(sibling, 74, bill("P-1", "INV-1", [line(expense, "1")]))
 
-      {:ok, _} = Payables.approve_document(sibling, 74, bill.id)
+      checker = TestFixtures.sign_in!(system, 74, 93, all_capabilities())
+      {:ok, _} = Payables.approve_document(checker, 74, bill.id)
       assert {:error, :payables_not_configured} = Payables.post_document(sibling, 74, bill.id)
       assert {:error, :payables_not_configured} = Payables.get_settings(sibling, 74)
     end
 
     test "passes on the ledger's refusal of an account deactivated since", context do
       %{operator: operator, bill: bill, accounts: accounts} = context
-      {:ok, _} = Payables.approve_document(operator, 73, bill.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, bill.id)
       {:ok, _} = Ledger.update_account(operator, 73, accounts.stock.id, %{active: false})
 
       assert {:error, %Ecto.Changeset{}} = Payables.post_document(operator, 73, bill.id)
@@ -391,7 +453,7 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       assert corrected == bill.id
       assert decimal?(note.total, "27.00")
 
-      {:ok, _} = Payables.approve_document(operator, 73, note.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, note.id)
       assert {:ok, posted} = Payables.post_document(operator, 73, note.id)
       assert %{document_number: 1, status: "posted"} = posted
 
@@ -421,7 +483,7 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
           lines: [line(accounts.expense, "25")]
         })
 
-      {:ok, _} = Payables.approve_document(operator, 73, note.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, note.id)
       assert {:ok, posted} = Payables.post_document(operator, 73, note.id)
       assert posted.payable_account_id == accounts.payable.id
 
@@ -461,7 +523,8 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       {:ok, first} = Payables.create_debit_note(operator, 73, bill.id, note)
       {:ok, second} = Payables.create_debit_note(operator, 73, bill.id, note)
 
-      for id <- [first.id, second.id], do: {:ok, _} = Payables.approve_document(operator, 73, id)
+      for id <- [first.id, second.id],
+          do: {:ok, _} = Payables.approve_document(context.approver, 73, id)
 
       assert {:ok, _} = Payables.post_document(operator, 73, first.id)
       assert {:error, :exceeds_outstanding} = Payables.post_document(operator, 73, second.id)
@@ -471,10 +534,10 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       %{operator: operator, bill: bill, accounts: accounts} = context
       note = %{document_date: ~D[2026-10-10], lines: [line(accounts.expense, "10")]}
       {:ok, draft} = Payables.create_debit_note(operator, 73, bill.id, note)
-      {:ok, _} = Payables.approve_document(operator, 73, draft.id)
+      {:ok, _} = Payables.approve_document(context.approver, 73, draft.id)
 
       {:ok, payment} =
-        Payables.post_payment(operator, 73, %{
+        pay(context, %{
           payment_date: ~D[2026-10-05],
           party_key: "P-1",
           paid_from_account_id: accounts.bank.id,
