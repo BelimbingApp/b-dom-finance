@@ -367,21 +367,25 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
     end
 
     test "defaults the reversal date to the company's local today, not UTC's", context do
-      TestFixtures.put_company_timezone!(context.first_scope, 73, "Pacific/Pago_Pago")
+      before = DateTime.utc_now()
+      zone = if before.hour < 12, do: "Etc/GMT+12", else: "Pacific/Kiritimati"
+      TestFixtures.put_company_timezone!(context.first_scope, 73, zone)
       run!()
       {:ok, posting} = Payroll.post_payroll_run(context.operator, 73, 1)
-
-      {:ok, local_now} =
-        DateTime.shift_zone(
-          DateTime.utc_now(),
-          "Pacific/Pago_Pago",
-          Bilimbi.Base.DateTime.time_zone_database()
-        )
 
       assert {:ok, reversed} =
                Payroll.reverse_posting(context.operator, 73, posting.id, %{reason: "wrong month"})
 
-      assert reversed.reversal.entry_date == DateTime.to_date(local_now)
+      local_dates =
+        for instant <- [before, DateTime.utc_now()] do
+          {:ok, local} =
+            DateTime.shift_zone(instant, zone, Bilimbi.Base.DateTime.time_zone_database())
+
+          DateTime.to_date(local)
+        end
+
+      refute DateTime.to_date(before) in local_dates
+      assert reversed.reversal.entry_date in local_dates
     end
 
     test "records a refused reversal and the database refuses a reversal of nothing", context do
