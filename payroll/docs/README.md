@@ -27,7 +27,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `put_mapping/3` | `finance.payroll.settings.manage` | Adds a mapping by `kind`, `code`, `direction`, or changes an existing one's accounts, with an optional `reason` |
 | `list_mapping_changes/2` | `finance.payroll.view` | The change log of the mappings |
 | `list_payroll_runs/2`, `list_claims/2` | `finance.payroll.view` and the source's | The source's runs and approved claims, each with its `posting` and `last_failure` |
-| `post_payroll_run/3`, `post_claim/3` | `finance.payroll.postings.post` | Posts one entry through the ledger and records the outcome |
+| `post_payroll_run/3`, `post_claim/3`, `post_claims/3` | `finance.payroll.postings.post` | Posts one entry through the ledger and records the outcome |
 | `reverse_posting/4` | `finance.payroll.postings.post` | Reverses a posting's entry with a `reason` and records it |
 | `list_postings/2`, `get_posting/3` | `finance.payroll.view` | What was posted, with each reversal, from this module's own events |
 | `list_posting_events/2` | `finance.payroll.view` | Every `posted`, `posting_failed`, `reversed`, and `reversal_failed` event |
@@ -76,7 +76,16 @@ lines summed per pay item `code` and `direction` (`earning`, `deduction`, or
 People, once the run has its calculation and an approved decision). A claim
 is `%{id, reference, approved_on, currency_code, amount, category_code,
 claim_type_code, status}`; approved and reimbursed claims are both listed,
-because both were approved. People offers no event or facade that voids or
+because both were approved. People stores a claim's approval time as naive
+UTC; its `approved_on`, and so the ledger date, is the company's local
+calendar date of it, in the company's time zone from Base DateTime
+(`localization.timezone`, the app's configured zone when the company has not
+set one), so an approval at 00:30 local time on the 1st is dated the 1st. A
+run whose pay date the source cannot read is listed with no pay date and
+refused at posting with a recorded reason, as is a claim whose date cannot be
+worked out; neither breaks the listing. A claim is read from one list of the
+company's claims, so `post_claims/3` reads the source once for a batch, not
+once per claim, and the page's "post every unposted claim" uses it. People offers no event or facade that voids or
 reverses a run or an approval, so a reversal here is a user's decision with
 a reason (`reverse_posting/4`), never a reaction to the source.
 
@@ -109,7 +118,7 @@ exceed earnings). Each component's total is rounded to the book's minor
 units, half away from zero, and net pay is the difference of the rounded
 earnings and deductions, so the entry balances in the book's units; the
 source keeps its finer figures. `post_claim/3` posts the approved amount
-dated the approval date: a debit to the category's expense account and a
+dated the company's local approval date: a debit to the category's expense account and a
 credit to the claims payable account.
 
 The entry and the `posted` event that names it are one transaction, so a

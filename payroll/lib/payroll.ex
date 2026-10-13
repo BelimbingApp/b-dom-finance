@@ -347,8 +347,8 @@ defmodule Bilimbi.Finance.Payroll do
   end
 
   @doc """
-  Posts the approved claim's entry, dated its approval date, and records
-  the outcome, as `post_payroll_run/3` does for a run.
+  Posts the approved claim's entry, dated the company's local date of its
+  approval, and records the outcome, as `post_payroll_run/3` does for a run.
   """
   @spec post_claim(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -359,19 +359,42 @@ defmodule Bilimbi.Finance.Payroll do
              | :already_posted
              | {:failed, String.t()}}
   def post_claim(%Scope{} = scope, company_id, claim_id) do
+    with {:ok, [{_claim_id, outcome}]} <- post_claims(scope, company_id, [claim_id]),
+         do: outcome
+  end
+
+  @doc """
+  Posts each of the claims `claim_ids` names, as `post_claim/3` does, and
+  returns `{:ok, [{claim_id, outcome}]}` in the order given. The source's
+  claims are read once for the whole batch and every claim is posted from
+  that read, so a batch costs one read, not one per claim; a claim already
+  posted is refused under the company's lock whatever the read says. A
+  refusal that holds for the whole batch (`:unauthorized`,
+  `:people_unavailable`, ...) is returned alone.
+  """
+  @spec post_claims(Scope.t(), term(), [term()]) ::
+          {:ok, [{term(), {:ok, map()} | {:error, term()}}]}
+          | {:error, refusal() | :people_unavailable | term()}
+  def post_claims(%Scope{} = scope, company_id, claim_ids) when is_list(claim_ids) do
     with :ok <- authorize(scope, company_id, @post_postings),
-         {:ok, claim_id} <- positive_id(claim_id),
-         {:ok, _claim} <- source(PeopleSource.claim(scope, company_id, claim_id)) do
-      Posting.post_claim(
-        scope,
-        company_id,
-        claim_id,
-        fn -> PeopleSource.claim(scope, company_id, claim_id) end,
-        fn -> configuration(scope, company_id) end
-      )
+         {:ok, claims} <- PeopleSource.claims(scope, company_id) do
+      by_id = Map.new(claims, &{&1.id, &1})
+
+      {:ok,
+       for claim_id <- claim_ids do
+         {claim_id, post_listed_claim(scope, company_id, by_id, claim_id)}
+       end}
+    end
+  end
+
+  defp post_listed_claim(scope, company_id, by_id, claim_id) do
+    with {:ok, id} <- positive_id(claim_id),
+         {:ok, claim} <- Map.fetch(by_id, id) do
+      Posting.post_claim(scope, company_id, id, fn -> {:ok, claim} end, fn ->
+        configuration(scope, company_id)
+      end)
     else
-      :error -> {:error, :source_not_found}
-      error -> error
+      _unknown -> {:error, :source_not_found}
     end
   end
 

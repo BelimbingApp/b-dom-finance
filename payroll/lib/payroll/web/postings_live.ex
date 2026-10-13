@@ -88,20 +88,21 @@ defmodule Bilimbi.Finance.Payroll.Web.PostingsLive do
           {:error, _reason} -> []
         end
 
-      {posted, failed} =
-        Enum.reduce(pending, {0, 0}, fn claim, {posted, failed} ->
-          case Payroll.post_claim(scope, company_id, claim.id) do
-            {:ok, _posting} -> {posted + 1, failed}
-            {:error, _reason} -> {posted, failed + 1}
-          end
-        end)
+      case Payroll.post_claims(scope, company_id, Enum.map(pending, & &1.id)) do
+        {:ok, outcomes} ->
+          posted = Enum.count(outcomes, &match?({_id, {:ok, _posting}}, &1))
+          failed = length(outcomes) - posted
 
-      socket
-      |> put_flash(
-        if(failed == 0, do: :success, else: :error),
-        "#{posted} claims posted, #{failed} failed."
-      )
-      |> load()
+          socket
+          |> put_flash(
+            if(failed == 0, do: :success, else: :error),
+            "#{posted} claims posted, #{failed} failed."
+          )
+          |> load()
+
+        {:error, reason} ->
+          socket |> put_flash(:error, Format.refusal(reason)) |> load()
+      end
     end)
   end
 
@@ -209,7 +210,7 @@ defmodule Bilimbi.Finance.Payroll.Web.PostingsLive do
             row_id={&"payroll-run-#{&1.id}"}
           >
             <:col :let={run} label="Run">{run.reference}</:col>
-            <:col :let={run} label="Pay date">{run.pay_date}</:col>
+            <:col :let={run} label="Pay date">{run.pay_date || "missing or invalid"}</:col>
             <:col :let={run} label="Run status">{run.status}</:col>
             <:col :let={run} label="In the books">
               <.badge kind={Format.standing_kind(run)}>{standing(run)}</.badge>
@@ -271,7 +272,7 @@ defmodule Bilimbi.Finance.Payroll.Web.PostingsLive do
           >
             <:col :let={claim} label="Claim">{claim.reference}</:col>
             <:col :let={claim} label="Category">{claim.category_code || "—"}</:col>
-            <:col :let={claim} label="Approved on">{claim.approved_on}</:col>
+            <:col :let={claim} label="Approved on">{claim.approved_on || "unknown"}</:col>
             <:col :let={claim} label="Amount" align={:right}>
               <span class="tabular-nums">{Format.money(claim.amount, @minor_units)} {claim.currency_code}</span>
             </:col>

@@ -23,7 +23,11 @@ defmodule Bilimbi.Finance.Payroll.StubPeopleSource do
     Application.delete_env(@env, @runs)
     Application.delete_env(@env, @claims)
     Application.delete_env(@env, :stub_refused_user)
+    Application.delete_env(@env, :stub_claims_reads)
   end
+
+  @doc "How many times `claims/2` has been read since the stub was installed."
+  def claims_reads, do: Application.get_env(@env, :stub_claims_reads, 0)
 
   @doc """
   Puts one run: `id`, and optionally `company_id` (default 73), `reference`,
@@ -107,17 +111,8 @@ defmodule Bilimbi.Finance.Payroll.StubPeopleSource do
   @impl true
   def claims(%Scope{} = scope, company_id) do
     with :ok <- allowed(scope) do
+      Application.put_env(@env, :stub_claims_reads, claims_reads() + 1)
       {:ok, claims() |> Map.values() |> of_company(company_id)}
-    end
-  end
-
-  @impl true
-  def claim(%Scope{} = scope, company_id, claim_id) do
-    with :ok <- allowed(scope) do
-      case Map.get(claims(), claim_id) do
-        %{company_id: ^company_id} = claim -> {:ok, Map.delete(claim, :company_id)}
-        _other -> {:error, :not_found}
-      end
     end
   end
 

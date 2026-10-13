@@ -205,6 +205,21 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
                Payroll.post_payroll_run(context.operator, 73, 2)
     end
 
+    test "records a run whose pay date is missing or invalid as a failure and still lists it",
+         context do
+      run!(1, %{pay_date: nil})
+
+      assert {:ok, [listed]} = Payroll.list_payroll_runs(context.operator, 73)
+      assert listed.pay_date == nil
+
+      assert {:error, {:failed, "the run's pay date is missing or invalid"}} =
+               Payroll.post_payroll_run(context.operator, 73, 1)
+
+      assert {:ok, [failed]} = Payroll.list_payroll_runs(context.operator, 73)
+      assert failed.last_failure.reason == "the run's pay date is missing or invalid"
+      assert failed.posting == nil
+    end
+
     test "needs the posting capability, the ledger's, and the source's", context do
       run!()
       viewer = TestFixtures.sign_in!(context.first_scope, 73, 92, ["finance.payroll.view"])
@@ -261,6 +276,52 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
       assert {:ok, [eight, nine]} = Payroll.list_claims(context.operator, 73)
       assert eight.last_failure.reason =~ "meals"
       assert nine.last_failure.reason =~ "unknown"
+    end
+  end
+
+  describe "post_claim/3 dates" do
+    test "records a claim whose approval date cannot be worked out as a failure", context do
+      StubPeopleSource.put_claim!(%{id: 11, approved_on: nil})
+
+      assert {:error, {:failed, "the claim's approval date could not be worked out"}} =
+               Payroll.post_claim(context.operator, 73, 11)
+
+      assert {:ok, [claim]} = Payroll.list_claims(context.operator, 73)
+      assert claim.approved_on == nil
+      assert claim.last_failure.reason =~ "approval date"
+    end
+  end
+
+  describe "post_claims/3" do
+    test "posts a batch from one read of the source, and reports each claim", context do
+      StubPeopleSource.put_claim!(%{id: 1, amount: "10.00"})
+      StubPeopleSource.put_claim!(%{id: 2, amount: "20.00"})
+      StubPeopleSource.put_claim!(%{id: 3, category_code: "meals"})
+      {:ok, _first} = Payroll.post_claim(context.operator, 73, 1)
+      before = StubPeopleSource.claims_reads()
+
+      assert {:ok, outcomes} = Payroll.post_claims(context.operator, 73, [1, 2, 3, 4, "x"])
+      assert StubPeopleSource.claims_reads() == before + 1
+
+      assert [
+               {1, {:error, :already_posted}},
+               {2, {:ok, two}},
+               {3, {:error, {:failed, "claim category not mapped to an account: meals"}}},
+               {4, {:error, :source_not_found}},
+               {"x", {:error, :source_not_found}}
+             ] = outcomes
+
+      assert two.source_id == 2
+      assert decimal?(two.total, "20.00")
+    end
+
+    test "is refused as a whole without the capability or the source", context do
+      StubPeopleSource.put_claim!(%{id: 1})
+      viewer = TestFixtures.sign_in!(context.first_scope, 73, 92, ["finance.payroll.view"])
+      assert {:error, :unauthorized} = Payroll.post_claims(viewer, 73, [1])
+
+      StubPeopleSource.uninstall!()
+      assert {:error, :people_unavailable} = Payroll.post_claims(context.operator, 73, [1])
     end
   end
 

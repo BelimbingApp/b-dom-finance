@@ -8,7 +8,9 @@
   dependencies: [
     "base/authz",
     "base/database",
+    "base/datetime",
     "base/module_registry",
+    "base/settings",
     "base/tenancy",
     "base/ui",
     "core/company",

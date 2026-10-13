@@ -8,9 +8,14 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
   # per run, its output: the calculation (lines of `item_code`, `direction`,
   # and `amount`) and the independent decision. A run is finalised when its
   # decision is an approval. The claims facade lists an operator's queue by
-  # status; approved and reimbursed claims both carry an approved amount.
+  # status; approved and reimbursed claims both carry an approved amount. A
+  # claim's approval time is stored as naive UTC; its ledger date is the
+  # company's local calendar date of it.
   @behaviour Bilimbi.Finance.Payroll.PeopleSource
 
+  alias Bilimbi.Base.DateTime, as: BaseDateTime
+  alias Bilimbi.Base.Settings
+  alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Finance.Payroll.PeopleSource
 
   @impl true
@@ -49,20 +54,12 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
          {:ok, categories} <- category_codes(claims, scope, company_id),
          {:ok, approved} <- apply(claims, :claim_queue, [scope, company_id, "approved"]),
          {:ok, reimbursed} <- apply(claims, :claim_queue, [scope, company_id, "reimbursed"]) do
+      timezone = company_timezone(scope, company_id)
+
       {:ok,
        (approved ++ reimbursed)
        |> Enum.sort_by(& &1.id)
-       |> Enum.map(&claim_view(&1, categories))}
-    end
-  end
-
-  @impl true
-  def claim(scope, company_id, claim_id) do
-    with {:ok, claims} <- claims(scope, company_id) do
-      case Enum.find(claims, &(&1.id == claim_id)) do
-        nil -> {:error, :not_found}
-        claim -> {:ok, claim}
-      end
+       |> Enum.map(&claim_view(&1, categories, timezone))}
     end
   end
 
@@ -85,7 +82,7 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
        %{
          id: run.id,
          reference: String.trim("#{period["code"]} #{run.currency}"),
-         pay_date: Date.from_iso8601!(period["pay_on"]),
+         pay_date: pay_date(period["pay_on"]),
          currency_code: run.currency,
          status: status,
          finalised: status == "approved",
@@ -93,6 +90,15 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
        }}
     end
   end
+
+  defp pay_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp pay_date(_value), do: nil
 
   defp components(nil), do: []
 
@@ -119,13 +125,28 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource.Installed do
     end
   end
 
-  defp claim_view(claim, categories) do
+  # The company's own time zone, from Base DateTime, which falls back to the
+  # app's configured zone when the company has not set one.
+  defp company_timezone(scope, company_id) do
+    BaseDateTime.company_timezone(Settings.Scope.company(company_id, Scope.tenant_id(scope)))
+  end
+
+  @doc false
+  # The company's local calendar date of an approval stored as naive UTC.
+  def approved_on(decided_at, timezone) do
+    case BaseDateTime.shift(decided_at, timezone) do
+      {:ok, local} -> DateTime.to_date(local)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp claim_view(claim, categories, timezone) do
     {type_code, category_code} = Map.get(categories, claim.claim_type_id, {nil, nil})
 
     %{
       id: claim.id,
       reference: String.trim("claim #{claim.id} #{type_code}"),
-      approved_on: NaiveDateTime.to_date(claim.decided_at),
+      approved_on: approved_on(claim.decided_at, timezone),
       currency_code: claim.currency,
       amount: claim.approved_amount,
       category_code: category_code,

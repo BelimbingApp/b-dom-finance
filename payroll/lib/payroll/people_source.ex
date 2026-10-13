@@ -27,11 +27,15 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource do
       `payroll_run/3` is one of them or `{:error, :not_found}`. `finalised`
       is true once the run's figures are final and approved; `components`
       are its lines summed per pay item `code` and `direction` (`earning`,
-      `deduction`, or `employer`), each `%{code, direction, amount}`.
+      `deduction`, or `employer`), each `%{code, direction, amount}`. A run
+      whose pay date the source cannot read is listed with a nil
+      `pay_date`, and posting refuses it with a recorded reason.
     * `claims/2` lists the company's approved claims (reimbursed ones
       included: they were approved first), each `%{id, reference,
       approved_on, currency_code, amount, category_code, claim_type_code,
-      status}`, and `claim/3` is one of them or `{:error, :not_found}`.
+      status}`. `approved_on` is the company's local calendar date of the
+      approval (nil if it cannot be worked out). A claim is read from this
+      one list, so a batch of claims is read once, never one read per claim.
 
   A test substitutes a source through the `:people_source` key of this
   module's application environment.
@@ -45,7 +49,7 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource do
   @type run :: %{
           id: pos_integer(),
           reference: String.t(),
-          pay_date: Date.t(),
+          pay_date: Date.t() | nil,
           currency_code: String.t(),
           status: String.t(),
           finalised: boolean(),
@@ -55,7 +59,7 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource do
   @type claim :: %{
           id: pos_integer(),
           reference: String.t(),
-          approved_on: Date.t(),
+          approved_on: Date.t() | nil,
           currency_code: String.t(),
           amount: Decimal.t(),
           category_code: String.t() | nil,
@@ -66,7 +70,6 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource do
   @callback payroll_runs(Scope.t(), term()) :: {:ok, [run()]} | {:error, term()}
   @callback payroll_run(Scope.t(), term(), term()) :: {:ok, run()} | {:error, term()}
   @callback claims(Scope.t(), term()) :: {:ok, [claim()]} | {:error, term()}
-  @callback claim(Scope.t(), term(), term()) :: {:ok, claim()} | {:error, term()}
 
   @doc "The source in use: the test substitute, else the installed one, else `:unavailable`."
   @spec source() :: module() | :unavailable
@@ -93,11 +96,6 @@ defmodule Bilimbi.Finance.Payroll.PeopleSource do
   @doc "The company's approved claims, through the source in use."
   @spec claims(Scope.t(), term()) :: {:ok, [claim()]} | {:error, term()}
   def claims(%Scope{} = scope, company_id), do: call(:claims, [scope, company_id])
-
-  @doc "One approved claim, through the source in use."
-  @spec claim(Scope.t(), term(), term()) :: {:ok, claim()} | {:error, term()}
-  def claim(%Scope{} = scope, company_id, claim_id),
-    do: call(:claim, [scope, company_id, claim_id])
 
   defp call(function, arguments) do
     case source() do

@@ -12,8 +12,8 @@ defmodule Bilimbi.Finance.Payroll.Posting do
   expense and credits its liability (what is owed to the authority). Net
   pay, the earnings less the deductions, is credited to the settings' net
   pay account (what is owed to staff), or debited when the deductions
-  exceed the earnings. A claim posts one entry dated its approval date:
-  its approved amount debits the expense account its category's mapping
+  exceed the earnings. A claim posts one entry dated the company's local
+  date of its approval: its approved amount debits the expense account its category's mapping
   names and credits the settings' claims payable account.
 
   Each component's total is rounded to the book's minor units, half away
@@ -22,8 +22,9 @@ defmodule Bilimbi.Finance.Payroll.Posting do
   its own finer figures. A component with a zero total posts no line.
 
   The entry and the `posted` event that names it are one transaction under
-  the company's writable lock, after the source is read again under that
-  lock, so a source never has an entry without its event and the database
+  the company's writable lock, after a run is read again under that lock
+  (a claim is posted from the batch its caller read once, so a loop of
+  claims is not a loop of reads), so a source never has an entry without its event and the database
   refuses a second `posted` event for a source. The ledger rolls back the
   transaction it joins when it refuses an entry, so a failure (accounts
   unset or unmapped, the book not open or kept in another currency, a
@@ -68,7 +69,10 @@ defmodule Bilimbi.Finance.Payroll.Posting do
     post(scope, company_id, @run_kind, run_id, read, configuration, &run_entry/3)
   end
 
-  @doc "Posts the entry for an approved claim and records the outcome, as `post_run/5` does."
+  @doc """
+  Posts the entry for an approved claim and records the outcome, as
+  `post_run/5` does. `read` answers from a read the caller already made.
+  """
   @spec post_claim(Scope.t(), term(), term(), (-> {:ok, map()} | {:error, term()}), (-> map())) ::
           {:ok, map()} | {:error, :already_posted | {:failed, String.t()}}
   def post_claim(%Scope{} = scope, company_id, claim_id, read, configuration)
@@ -255,9 +259,17 @@ defmodule Bilimbi.Finance.Payroll.Posting do
     error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, error}
   end
 
-  defp postable(@run_kind, %{finalised: true}), do: :ok
+  defp postable(@run_kind, %{finalised: true, pay_date: %Date{}}), do: :ok
+
+  defp postable(@run_kind, %{finalised: true}),
+    do: {:error, "the run's pay date is missing or invalid"}
+
   defp postable(@run_kind, _run), do: {:error, "the run is not finalised"}
-  defp postable(@claim_kind, %{amount: %Decimal{}}), do: :ok
+  defp postable(@claim_kind, %{amount: %Decimal{}, approved_on: %Date{}}), do: :ok
+
+  defp postable(@claim_kind, %{amount: %Decimal{}}),
+    do: {:error, "the claim's approval date could not be worked out"}
+
   defp postable(@claim_kind, _claim), do: {:error, "the claim is not approved"}
 
   defp book(scope, company_id, source) do
