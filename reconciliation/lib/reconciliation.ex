@@ -214,8 +214,7 @@ defmodule Bilimbi.Finance.Reconciliation do
          {:ok, account} <- bank_account(scope, company_id, bank_account_id),
          {:ok, limit, cursor} <- Records.page_options(options) do
       statements =
-        Statement
-        |> Records.query(scope, company_id)
+        Records.query(Statement, scope, company_id)
         |> where([s], s.bank_account_id == ^account.id)
         |> Records.page(limit, cursor)
         |> Repo.all()
@@ -231,8 +230,7 @@ defmodule Bilimbi.Finance.Reconciliation do
   def get_statement(%Scope{} = scope, company_id, statement_id) do
     with :ok <- authorize(scope, company_id, @view),
          statement when not is_nil(statement) <-
-           Statement
-           |> Records.query(scope, company_id)
+           Records.query(Statement, scope, company_id)
            |> where([s], s.id == ^(Records.id(statement_id) || 0))
            |> preload(lines: ^Import.ordered_lines(scope, company_id))
            |> Repo.one() do

@@ -55,8 +55,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
   defp hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
   defp fresh_file(scope, company_id, sha256) do
-    case Statement
-         |> Records.query(scope, company_id)
+    case Records.query(Statement, scope, company_id)
          |> where([s], s.file_sha256 == ^sha256)
          |> select([s], s.statement_number)
          |> Repo.one() do
@@ -372,8 +371,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
   end
 
   defp read_back(statement, scope, company_id) do
-    Statement
-    |> Records.query(scope, company_id)
+    Records.query(Statement, scope, company_id)
     |> where([s], s.id == ^statement.id)
     |> preload(lines: ^ordered_lines(scope, company_id))
     |> Repo.one!()
@@ -381,7 +379,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
 
   @doc "A statement's lines in line order, as a preload query."
   def ordered_lines(scope, company_id) do
-    StatementLine |> Records.query(scope, company_id) |> order_by([l], asc: l.line_number)
+    Records.query(StatementLine, scope, company_id) |> order_by([l], asc: l.line_number)
   end
 
   ## Views

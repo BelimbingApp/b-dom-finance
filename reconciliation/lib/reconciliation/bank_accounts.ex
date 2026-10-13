@@ -13,8 +13,7 @@ defmodule Bilimbi.Finance.Reconciliation.BankAccounts do
   alias Ecto.Changeset
 
   def list(scope, company_id) do
-    BankAccount
-    |> Records.query(scope, company_id)
+    Records.query(BankAccount, scope, company_id)
     |> order_by([a], asc: a.name)
     |> Repo.all()
   end
@@ -140,8 +139,7 @@ defmodule Bilimbi.Finance.Reconciliation.BankAccounts do
   def list_changes(scope, company_id, bank_account_id, options) do
     with {:ok, limit, cursor} <- Records.page_options(options) do
       changes =
-        BankAccountChange
-        |> Records.query(scope, company_id)
+        Records.query(BankAccountChange, scope, company_id)
         |> where([c], c.bank_account_id == ^bank_account_id)
         |> Records.page(limit, cursor)
         |> Repo.all()

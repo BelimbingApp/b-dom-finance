@@ -85,8 +85,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
   # `matched` event is numbered through it and no `unmatched` event is.
   defp standing_query(scope, company_id, bank_account_id, through) do
     unmatched =
-      MatchEvent
-      |> Records.query(scope, company_id)
+      Records.query(MatchEvent, scope, company_id)
       |> where([e], e.action == "unmatched")
       |> through_bound(through)
 
@@ -112,8 +111,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
   def standing_matches(scope, company_id, bank_account_id, through \\ nil) do
     ids = standing_query(scope, company_id, bank_account_id, through)
 
-    Match
-    |> Records.query(scope, company_id)
+    Records.query(Match, scope, company_id)
     |> where([m], m.id in subquery(ids))
     |> preload_parts(scope, company_id)
     |> order_by([m], asc: m.match_number)
@@ -130,16 +128,14 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
 
   @doc "The latest match-event number of the company, 0 before any."
   def last_event_number(scope, company_id) do
-    MatchEvent
-    |> Records.query(scope, company_id)
+    Records.query(MatchEvent, scope, company_id)
     |> select([e], coalesce(max(e.event_number), 0))
     |> Repo.one()
   end
 
   @doc "The latest statement number of the company, 0 before any."
   def last_statement_number(scope, company_id) do
-    Statement
-    |> Records.query(scope, company_id)
+    Records.query(Statement, scope, company_id)
     |> select([s], coalesce(max(s.statement_number), 0))
     |> Repo.one()
   end
@@ -178,15 +174,13 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
     ids = standing_query(scope, company_id, bank_account_id, through)
 
     lines =
-      MatchLine
-      |> Records.query(scope, company_id)
+      Records.query(MatchLine, scope, company_id)
       |> where([l], l.match_id in subquery(ids))
       |> select([l], l.statement_line_id)
       |> Repo.all()
 
     entries =
-      MatchEntry
-      |> Records.query(scope, company_id)
+      Records.query(MatchEntry, scope, company_id)
       |> where([e], e.match_id in subquery(ids))
       |> select([e], e.entry_id)
       |> Repo.all()
@@ -300,8 +294,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
 
   defp own_lines(scope, company_id, bank_account_id, line_ids) do
     lines =
-      StatementLine
-      |> Records.query(scope, company_id)
+      Records.query(StatementLine, scope, company_id)
       |> where([l], l.bank_account_id == ^bank_account_id and l.id in ^line_ids)
       |> Repo.all()
 
@@ -461,8 +454,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
   ## Reading
 
   def fetch(scope, company_id, match_id) do
-    Match
-    |> Records.query(scope, company_id)
+    Records.query(Match, scope, company_id)
     |> where([m], m.id == ^match_id)
     |> preload_parts(scope, company_id)
     |> Repo.one()
@@ -475,8 +467,7 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
   def list(scope, company_id, bank_account_id, options) do
     with {:ok, limit, cursor} <- Records.page_options(options) do
       matches =
-        Match
-        |> Records.query(scope, company_id)
+        Records.query(Match, scope, company_id)
         |> where([m], m.bank_account_id == ^bank_account_id)
         |> Records.page(limit, cursor)
         |> preload_parts(scope, company_id)

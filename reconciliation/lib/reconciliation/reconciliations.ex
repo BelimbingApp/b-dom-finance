@@ -130,8 +130,7 @@ defmodule Bilimbi.Finance.Reconciliation.Reconciliations do
     line_ids = Enum.map(match.lines, & &1.statement_line_id)
 
     statement_side =
-      StatementLine
-      |> Records.query(scope, company_id)
+      Records.query(StatementLine, scope, company_id)
       |> where([l], l.id in ^line_ids and l.line_date <= ^end_date)
       |> select([l], coalesce(sum(l.amount), 0))
       |> Repo.one()
@@ -148,8 +147,7 @@ defmodule Bilimbi.Finance.Reconciliation.Reconciliations do
     else
       dates =
         Enum.map(match.entries, & &1.entry_date) ++
-          (StatementLine
-           |> Records.query(scope, company_id)
+          (Records.query(StatementLine, scope, company_id)
            |> where([l], l.id in ^line_ids)
            |> select([l], l.line_date)
            |> Repo.all())
@@ -358,8 +356,7 @@ defmodule Bilimbi.Finance.Reconciliation.Reconciliations do
   ## Reading
 
   def fetch(scope, company_id, reconciliation_id) do
-    ReconciliationRecord
-    |> Records.query(scope, company_id)
+    Records.query(ReconciliationRecord, scope, company_id)
     |> where([r], r.id == ^reconciliation_id)
     |> preload_parts(scope, company_id)
     |> Repo.one()
@@ -371,8 +368,7 @@ defmodule Bilimbi.Finance.Reconciliation.Reconciliations do
         raise("reconciliation #{reconciliation_id} vanished")
 
   defp list_records(scope, company_id, bank_account_id) do
-    ReconciliationRecord
-    |> Records.query(scope, company_id)
+    Records.query(ReconciliationRecord, scope, company_id)
     |> where([r], r.bank_account_id == ^bank_account_id)
     |> order_by([r], asc: r.reconciliation_number)
     |> preload_parts(scope, company_id)
