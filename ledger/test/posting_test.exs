@@ -414,7 +414,9 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
       assert {:ok, [_original, _reversal]} = Ledger.list_entries(operator, 73)
 
       assert {:ok, %{entry_number: 3}} =
-               Ledger.post_entry(operator, 73, entry(lines), owner: %{@owner | record: "payment:18"})
+               Ledger.post_entry(operator, 73, entry(lines),
+                 owner: %{@owner | record: "payment:18"}
+               )
     end
 
     test "a manual entry has no owner and is reversed directly", context do
@@ -453,7 +455,12 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
 
     test "the database keeps a reversal's owner equal to its original's", context do
       %{operator: operator, cash: cash, income: income} = context
-      {:ok, owned} = Ledger.post_entry(operator, 73, entry([debit(cash, "1"), credit(income, "1")]), owner: @owner)
+
+      {:ok, owned} =
+        Ledger.post_entry(operator, 73, entry([debit(cash, "1"), credit(income, "1")]),
+          owner: @owner
+        )
+
       {:ok, manual} = post(context, [debit(cash, "1"), credit(income, "1")])
 
       raw = fn reverses, module, record ->

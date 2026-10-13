@@ -548,11 +548,16 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
 
   @doc "The consolidation migration's module, loaded from its file once."
   def consolidation_migration,
-    do: load_migration(Bilimbi.Finance.Einvoice.Migrations.AddConsolidation, @consolidation_migration)
+    do:
+      load_migration(
+        Bilimbi.Finance.Einvoice.Migrations.AddConsolidation,
+        @consolidation_migration
+      )
 
   @doc "The source links migration's module, loaded from its file once."
   def source_links_migration,
-    do: load_migration(Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks, @source_links_migration)
+    do:
+      load_migration(Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks, @source_links_migration)
 
   defp load_migration(module, file) do
     unless Code.ensure_loaded?(module),

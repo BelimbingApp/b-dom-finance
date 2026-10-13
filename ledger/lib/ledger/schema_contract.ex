@@ -142,9 +142,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
           "finance_ledger_entries_owner_pair" =>
             check("(owner_module IS NULL) = (owner_record IS NULL)"),
           "finance_ledger_entries_owner_module" =>
-            check("owner_module IS NULL OR (owner_module)::text ~ '^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$'::text"),
+            check(
+              "owner_module IS NULL OR (owner_module)::text ~ '^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$'::text"
+            ),
           "finance_ledger_entries_owner_record" =>
-            check("owner_record IS NULL OR (owner_record)::text ~ '^[a-z][a-z0-9_]*:[1-9][0-9]*$'::text")
+            check(
+              "owner_record IS NULL OR (owner_record)::text ~ '^[a-z][a-z0-9_]*:[1-9][0-9]*$'::text"
+            )
         }
       },
       %{

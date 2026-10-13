@@ -213,11 +213,17 @@ defmodule Bilimbi.Finance.Einvoice.Posting do
 
   defp reverse_entry(scope, company_id, document, now) do
     with {:ok, entry} <-
-           Ledger.reverse_owned_entry(scope, company_id, document.ledger_entry_id, owner(document), %{
-             entry_date: DateTime.to_date(now),
-             description: "Reversal of " <> description(document),
-             reference: reference(document)
-           }) do
+           Ledger.reverse_owned_entry(
+             scope,
+             company_id,
+             document.ledger_entry_id,
+             owner(document),
+             %{
+               entry_date: DateTime.to_date(now),
+               description: "Reversal of " <> description(document),
+               reference: reference(document)
+             }
+           ) do
       Documents.record_event!(scope, company_id, document.id, %{
         event: "posting_reversed",
         ledger_entry_id: entry.id,

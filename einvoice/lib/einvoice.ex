@@ -356,7 +356,8 @@ defmodule Bilimbi.Finance.Einvoice do
           document = record_document!(scope, company_id, profile, draft, details, nil)
           Consolidation.record_sources!(scope, company_id, document, groups)
 
-          for source <- sources, link <- Map.get(links, source.id, []),
+          for source <- sources,
+              link <- Map.get(links, source.id, []),
               do: Documents.record_source_link!(scope, company_id, document.id, link)
 
           view = get_view(scope, company_id, document.id)
@@ -997,7 +998,8 @@ defmodule Bilimbi.Finance.Einvoice do
         end
 
       _other ->
-        {:error, Changeset.add_error(changeset, :source, "names a module, a record, and a ledger entry")}
+        {:error,
+         Changeset.add_error(changeset, :source, "names a module, a record, and a ledger entry")}
     end
   end
 
@@ -1014,9 +1016,14 @@ defmodule Bilimbi.Finance.Einvoice do
 
   defp source_entry(scope, company_id, entry_id) do
     case Ledger.get_entry(scope, company_id, entry_id) do
-      {:ok, entry} -> {:ok, entry}
-      {:error, :entry_not_found} -> {:error, "names ledger entry #{entry_id}, which does not exist"}
-      {:error, reason} -> {:error, "cannot read ledger entry #{entry_id}: #{inspect(reason)}"}
+      {:ok, entry} ->
+        {:ok, entry}
+
+      {:error, :entry_not_found} ->
+        {:error, "names ledger entry #{entry_id}, which does not exist"}
+
+      {:error, reason} ->
+        {:error, "cannot read ledger entry #{entry_id}: #{inspect(reason)}"}
     end
   end
 

@@ -37,6 +37,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
 | `tax_totals/3` | `finance.payables.view` | Posted documents' tax per type and tax code over a date window, pinned to a ledger entry number |
+| `tie_out_control_accounts/4` | `finance.payables.view` | The payable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 ## Authorization and company scope
 

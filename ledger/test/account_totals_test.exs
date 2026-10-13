@@ -140,7 +140,10 @@ defmodule Bilimbi.Finance.Ledger.AccountTotalsTest do
         )
 
       assert {:ok, totals} =
-               Ledger.account_totals_by_owner(operator, 73, from: ~D[2026-10-01], to: ~D[2026-10-31])
+               Ledger.account_totals_by_owner(operator, 73,
+                 from: ~D[2026-10-01],
+                 to: ~D[2026-10-31]
+               )
 
       assert %{through_entry_number: 4, currency_code: "XTS", minor_units: 2} = totals
 
