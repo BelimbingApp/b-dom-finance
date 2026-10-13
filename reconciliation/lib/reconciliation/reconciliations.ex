@@ -224,13 +224,31 @@ defmodule Bilimbi.Finance.Reconciliation.Reconciliations do
   end
 
   @doc """
-  Finalises an open reconciliation: reads its figures now, refuses a
-  difference other than zero (`{:error, {:difference, amount}}`), and
+  Finalises an open reconciliation: refuses the person who opened it while
+  the company separates duties (`{:error, :same_person}`), reads its
+  figures now, refuses a difference other than zero
+  (`{:error, {:difference, amount}}`), and
   records the `finalised` event with the figures and the numbers they were
   read at, and the items as they stood.
   """
   def finalise(scope, company_id, reconciliation, bank_account) do
     with :ok <- open?(reconciliation),
+         :ok <-
+           Ledger.check_approval(scope, company_id, %{
+             source: "finance/reconciliation",
+             action: "reconciliation_finalisation",
+             subject_type: "reconciliation",
+             subject_id: reconciliation.id,
+             subject:
+               "Reconciliation #{reconciliation.reconciliation_number} of " <>
+                 "#{bank_account.name} to #{reconciliation.end_date}",
+             prepared_by: [
+               %{
+                 user_id: reconciliation.opened_by_user_id,
+                 impersonator_id: reconciliation.opened_by_impersonator_id
+               }
+             ]
+           }),
          {:ok, figures} <-
            compute(
              scope,

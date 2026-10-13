@@ -8,6 +8,11 @@ defmodule Bilimbi.Finance.Ledger.Contributions do
   @manage_periods "finance.ledger.periods.manage"
   @reopen_periods "finance.ledger.periods.reopen"
   @lock_periods "finance.ledger.periods.lock"
+  # "manage", "submit", "approve", and "review" are Base Authz's verbs.
+  @manage_duty_separation "finance.ledger.duty-separation.manage"
+  @submit_journals "finance.ledger.journals.submit"
+  @approve_journals "finance.ledger.journals.approve"
+  @review_exceptions "finance.ledger.approval-exceptions.review"
 
   @capabilities [
     @view,
@@ -15,7 +20,11 @@ defmodule Bilimbi.Finance.Ledger.Contributions do
     @post_entries,
     @manage_periods,
     @reopen_periods,
-    @lock_periods
+    @lock_periods,
+    @manage_duty_separation,
+    @submit_journals,
+    @approve_journals,
+    @review_exceptions
   ]
 
   @impl true

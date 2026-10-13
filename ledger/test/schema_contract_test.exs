@@ -10,12 +10,24 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261016100000_add_finance_ledger_duty_separation.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.Finance.Ledger.Migrations.{CreateClosing, CreateLedger, NotifyPostings}
+
+  alias Bilimbi.Finance.Ledger.Migrations.{
+    AddDutySeparation,
+    CreateClosing,
+    CreateLedger,
+    NotifyPostings
+  }
+
   alias Bilimbi.Finance.Ledger.Postings
   alias Bilimbi.Finance.Ledger.SchemaContract
   alias Ecto.Adapters.SQL
@@ -44,7 +56,8 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
           Enum.zip(SchemaContract.migration_versions(), [
             CreateLedger,
             NotifyPostings,
-            CreateClosing
+            CreateClosing,
+            AddDutySeparation
           ]) do
       assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
     end
@@ -285,5 +298,83 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              query!.(
                "SELECT event_number, recorded_at > '2026-01-01' FROM finance_ledger_closing_events ORDER BY id"
              )
+  end
+
+  # A journal's lines land only in its own transaction, and it balances at
+  # commit; the duty separation migration also rolls back and reapplies.
+  @tag :capture_log
+  test "the duty separation migration keeps journals whole and rolls back", %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+        "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
+      ])
+
+    journal = fn id ->
+      "INSERT INTO finance_ledger_journals (id, tenant_id, company_id, journal_number, entry_date, description, currency_code, submitted_by_user_id, submitted_at) VALUES (#{id}, 1, 1, 99, '2026-10-01', 'Accrual', 'XTS', 1, '2000-01-01')"
+    end
+
+    line = fn journal_id, number, account_id, debit, credit ->
+      "INSERT INTO finance_ledger_journal_lines (tenant_id, company_id, journal_id, line_number, account_id, debit, credit) VALUES (1, 1, #{journal_id}, #{number}, #{account_id}, #{debit}, #{credit})"
+    end
+
+    assert {:ok, _} = in_transaction.([journal.(1), line.(1, 1, 1, 10, 0), line.(1, 2, 2, 0, 10)])
+
+    assert_raise Postgrex.Error, ~r/journal 2 does not balance/, fn ->
+      in_transaction.([journal.(2), line.(2, 1, 1, 10, 0), line.(2, 2, 2, 0, 9)])
+    end
+
+    assert_raise Postgrex.Error, ~r/journal 3 has no lines/, fn ->
+      in_transaction.([journal.(3)])
+    end
+
+    assert_raise Postgrex.Error, ~r/already submitted: a line cannot be added/, fn ->
+      in_transaction.([line.(1, 3, 1, 5, 0), line.(1, 4, 2, 0, 5)])
+    end
+
+    # Approved by another person: the event names the entry it posted.
+    assert {:ok, _} =
+             in_transaction.([
+               "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, posted_by_user_id, posted_at) VALUES (1, 1, 1, 1, '2026-10-01', 'Accrual', 'XTS', 2, now())",
+               "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, 1, 1, 1, 10, 0), (1, 1, 1, 2, 2, 0, 10)",
+               "INSERT INTO finance_ledger_journal_events (tenant_id, company_id, journal_id, event, entry_id, actor_user_id, occurred_at) VALUES (1, 1, 1, 'approved', 1, 2, now())"
+             ])
+
+    assert_raise Postgrex.Error, ~r/finance_ledger_journal_events_journal_unique/, fn ->
+      in_transaction.([
+        "INSERT INTO finance_ledger_journal_events (tenant_id, company_id, journal_id, event, reason, actor_user_id, occurred_at) VALUES (1, 1, 1, 'rejected', 'Late', 2, now())"
+      ])
+    end
+
+    assert %{rows: [[1, true]]} =
+             query!.(
+               "SELECT journal_number, submitted_at > '2026-01-01' FROM finance_ledger_journals"
+             )
+
+    assert :ok =
+             Ecto.Migrator.down(Repo, 20_261_016_100_000, AddDutySeparation,
+               log: false,
+               dynamic_repo: repo
+             )
+
+    assert %{rows: [[0]]} =
+             query!.(
+               "SELECT count(*) FROM pg_class WHERE relname LIKE 'finance_ledger_journal%' OR relname LIKE 'finance_ledger_approval%' OR relname LIKE 'finance_ledger_duty%'"
+             )
+
+    assert :ok =
+             Ecto.Migrator.up(Repo, 20_261_016_100_000, AddDutySeparation,
+               log: false,
+               dynamic_repo: repo
+             )
+
+    assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end
 end

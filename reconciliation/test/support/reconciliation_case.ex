@@ -1,7 +1,9 @@
 defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
   @moduledoc """
   A company with an open ledger book, a small chart, and one bank account
-  mapped to its bank ledger account, for the module's suites.
+  mapped to its bank ledger account, for the module's suites. The
+  `operator` does the work; the `reviewer`, another user with the same
+  capabilities, finalises, since the company requires separation of duties.
 
   The contribution registry snapshot is process-global, so suites using this
   case do not run alongside other suites.
@@ -53,6 +55,7 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
     on_exit(&ContributionRegistry.clear_for_test!/0)
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, all_capabilities())
+    reviewer = TestFixtures.sign_in!(context.first_scope, 73, 96, all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
 
     accounts =
@@ -87,7 +90,12 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
         import_mapping: TestFixtures.mapping()
       })
 
-    Map.merge(context, %{operator: operator, accounts: accounts, bank_account: bank_account})
+    Map.merge(context, %{
+      operator: operator,
+      reviewer: reviewer,
+      accounts: accounts,
+      bank_account: bank_account
+    })
   end
 
   @doc "Posts one entry of `{account key, :debit | :credit, amount}` lines on `date`."
