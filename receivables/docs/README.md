@@ -25,6 +25,8 @@ maps; the schemas are private.
 | `record_payment/3`, `reverse_payment/4` | `finance.receivables.payments.post` | Payments received, allocated to invoices, and their reversal |
 | `get_payment/3`, `list_payments/3` | view | Payments with their allocations and reversal |
 | `aged_receivables/4` | view | What each customer owes as of a date, by days past due |
+| `tax_totals/3`, `list_tax_lines/3` | view | Issued documents' tax per kind and tax code over a date window, and the tax lines behind it |
+| `received_tax_totals/3` | view | The tax share of payments received in a window, and of invoices unpaid past a period |
 
 The Tenant Owner role holds every receivables capability.
 
@@ -193,6 +195,22 @@ also posts a document to the ledger when the authority validates it (its
 `Bilimbi.Finance.Einvoice` must keep that sale from being posted a second
 time.
 
+## For tax returns
+
+A module that reports tax to an authority, such as `finance/sst`, reads it
+here and never from the tables. `tax_totals/3` sums, in PostgreSQL, the
+tax lines of issued documents dated in a window per document kind, tax
+code, rate, and tax account, flagging a credit note whose invoice was
+issued before the window (`credits_prior_period`); `list_tax_lines/3` lists
+the lines behind it. For tax due when payment is received,
+`received_tax_totals/3` gives the tax share of each payment allocated in
+the window (less the share of payments reversed in it), of each invoice
+still owing on the day after `unpaid_months` months from its issue date
+have run, and of credit notes issued after that day. Every reading takes
+`through_entry_number` and counts each document, payment, and reversal by
+the ledger entry it posted, so a reading pinned to an entry number
+reproduces exactly.
+
 ## Database
 
 The migration `20261012214517` is `:bilimbi_only` and creates
@@ -270,8 +288,9 @@ sales ledger is held to. What this slice covers:
   be kept is law, not code.
 
 Tax rules themselves (which rate applies to what, rounding a tax authority
-prescribes beyond half up per line, reporting returns) are a company's
-configuration or later modules. Posting directly through the ledger to the
+prescribes beyond half up per line) are a company's configuration;
+reporting a tax return is another module's, such as `finance/sst` (see For
+tax returns). Posting directly through the ledger to the
 receivable account, or reversing a receivables entry through
 `Bilimbi.Finance.Ledger.reverse_entry/4` rather than this module, bypasses
 these records; correct receivables only through this facade.

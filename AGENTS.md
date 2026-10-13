@@ -25,15 +25,17 @@ here; they govern this code and are not copied here.
   `:bilimbi_finance_<folder>`.
 - Domain code uses only meta-terms: book, account, account type, entry, line,
   debit, credit, fiscal document, party, submission, status event, receivables'
-  customer, series, tax code, invoice, credit note, payment, allocation, and
+  customer, series, tax code, invoice, credit note, payment, allocation,
   reconciliation's bank account, statement, statement line, match,
-  reconciliation. A fixed chart of accounts or a currency is a company's data,
+  reconciliation, and SST's registration, taxable period, return, box,
+  mapping, adjustment. A fixed chart of accounts or a currency is a company's data,
   never a code identifier, schema constant, inclusion list, or default; so is
   a bank's CSV layout, which is a bank account's `import_mapping`
   (`reconciliation/lib/reconciliation/mapping.ex`), never a parser per bank.
   The five account types are the one fixed classification. A tax authority's own rules,
   formats, and code lists live only behind `Bilimbi.Finance.Einvoice.Authority`
-  in that authority's namespace (`einvoice/lib/einvoice/my_invois/`).
+  in that authority's namespace (`einvoice/lib/einvoice/my_invois/`), and the
+  SST-02 return's items only in `sst/lib/sst/form.ex`.
 - Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
   (a month's consolidated document through `issue_consolidated_document/3`)
   with plain attributes, never by writing its tables: it derives every amount

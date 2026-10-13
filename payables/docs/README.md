@@ -33,6 +33,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `reverse_payment/4` | `finance.payables.payments.post` | Posts a payment's reversal |
 | `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
+| `tax_totals/3`, `list_tax_lines/3` | `finance.payables.view` | Posted documents' tax per type and tax code over a date window, pinned to a ledger entry number, and the tax lines behind it |
 
 ## Authorization and company scope
 

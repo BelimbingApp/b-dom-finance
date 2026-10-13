@@ -13,6 +13,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
 | [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference and kept with their figures |
 | [`payroll/`](payroll/docs/README.md) | `finance/payroll` | each company's mapping of payroll components and claim categories to ledger accounts with its change history, one balanced entry per finalised payroll run and per approved staff claim posted once through the ledger, reversals with reasons, and the append-only record of every attempt; the runs and claims come from the People Domain when it is mounted |
+| [`sst/`](sst/docs/README.md) | `finance/sst` | Malaysia's Sales and Service Tax return (SST-02): the registration and tax code mappings as numbered versions, and returns per tax and taxable period computed from posted documents, reconciled with the tax accounts, finalised into immutable snapshots, and amended by new versions |
 
 The ledger is the first module. Other Finance modules, such as receivables,
 payables, e-invoicing, and reports, sit beside it as sibling module folders
@@ -28,9 +29,12 @@ charges and interest through the ledger's facade, and has pages for its
 bank accounts, statements, matching, and reconciliations. Payroll posting
 reads finalised payroll runs and approved claims from the People Domain
 through a seam that finds it at run time, posts them through the ledger's
-facade, and has pages for its postings and its account mappings. Each
-module's "Standards addressed" section says which bookkeeping and audit
-standards it meets.
+facade, and has pages for its postings and its account mappings. SST returns
+read receivables' and payables' document tax and the tax accounts' postings
+through their facades, and have pages to prepare, review, finalise, amend,
+and export each return and to set up the registration and tax code
+mappings. Each module's "Standards addressed" section says which bookkeeping
+and audit standards it meets.
 
 ## Mount
 
