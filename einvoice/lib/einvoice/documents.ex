@@ -14,7 +14,15 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
   alias Bilimbi.Finance.Einvoice.{ConsolidatedSource, Consolidation}
-  alias Bilimbi.Finance.Einvoice.{Document, Line, SourceLink, StatusEvent, SubmitWorker}
+
+  alias Bilimbi.Finance.Einvoice.{
+    Document,
+    Line,
+    SourceLink,
+    StatusEvent,
+    Submission,
+    SubmitWorker
+  }
 
   @max_bigint 9_223_372_036_854_775_807
   @reason_length 300
@@ -116,8 +124,10 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   end
 
   @doc """
-  The document that stands for the source (its latest status is one of
-  `#{inspect(@standing_statuses)}`) among those linking it, or `nil`;
+  The document that stands for the source among those linking it, or
+  `nil`: its latest status is one of `#{inspect(@standing_statuses)}`, or a
+  submission was stored after its latest status event (an attempt the
+  authority may hold, in flight or never answered);
   `except` names documents to leave out (one about to be recorded, and the
   documents a consolidated one covers).
   """
@@ -131,11 +141,36 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
       )
       |> Repo.all()
 
-    scope
-    |> statuses(company_id, ids)
-    |> Enum.filter(fn {_id, status} -> status in @standing_statuses end)
-    |> Enum.map(&elem(&1, 0))
+    standing =
+      for {id, status} <- statuses(scope, company_id, ids),
+          status in @standing_statuses,
+          do: id
+
+    (standing ++ attempted(scope, company_id, ids))
     |> Enum.min(fn -> nil end)
+  end
+
+  defp attempted(_scope, _company_id, []), do: []
+
+  defp attempted(%Scope{} = scope, company_id, document_ids) do
+    latest =
+      from(e in Tenancy.scope_query(StatusEvent, scope),
+        where:
+          e.company_id == ^company_id and e.document_id in ^document_ids and
+            e.event in ^@status_events,
+        distinct: e.document_id,
+        order_by: [asc: e.document_id, desc: e.sequence],
+        select: %{document_id: e.document_id, recorded_at: e.recorded_at}
+      )
+
+    from(s in Tenancy.scope_query(Submission, scope),
+      join: l in subquery(latest),
+      on: l.document_id == s.document_id,
+      where: s.company_id == ^company_id and s.recorded_at > l.recorded_at,
+      distinct: s.document_id,
+      select: s.document_id
+    )
+    |> Repo.all()
   end
 
   @doc """

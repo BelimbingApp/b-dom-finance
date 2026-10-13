@@ -281,6 +281,14 @@ receivables credit note, a payment reversal) posts in that module, whose
 correcting record the credit or refund note issued for it links to in turn:
 a note whose original is linked and that names no `source` is refused with
 a `source` changeset error, so the owner's correction is the only one.
+A document stands for its source while its latest status is `submitted`,
+`valid`, `rejected`, or `consolidated`, and also while an attempt the
+authority may hold is outstanding: a submission stored after its latest
+status event, in flight or never answered. So a second document for the same
+source is refused at issue, at submission, and by the database from the moment
+the first one's bytes are stored, and it is freed when the authority's answer
+(`refused`, `invalid`) or a cancellation is recorded; an attempt that never got
+an answer holds the source until the document is submitted again and looked up.
 A document is not submitted while another standing document links one of
 its sources: `submit_document/3` refuses it (`{:error, :source_taken}`)
 unless an earlier attempt of the document is unresolved, and a job that is

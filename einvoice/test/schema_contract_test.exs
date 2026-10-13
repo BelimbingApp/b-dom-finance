@@ -512,6 +512,27 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     assert {:ok, _} = in_transaction.([submission.(5), event.(5, "submitted")])
 
+    # A submission stored after a document's latest status makes it stand,
+    # in flight or never answered, until the authority's answer is recorded.
+    assert {:ok, _} =
+             in_transaction.(document.(6) ++ [link.(6, "document:20"), event.(6, "issued")])
+
+    assert {:ok, _} =
+             in_transaction.(document.(7) ++ [link.(7, "document:20"), event.(7, "issued")])
+
+    assert {:ok, _} = in_transaction.([submission.(6)])
+
+    assert_raise Postgrex.Error,
+                 ~r/document 7 is not submitted: .* source of document 6, which stands/,
+                 fn -> in_transaction.([submission.(7)]) end
+
+    assert_raise Postgrex.Error, ~r/source of document 6, which stands/, fn ->
+      in_transaction.(document.(8) ++ [link.(8, "document:20"), event.(8, "issued")])
+    end
+
+    assert {:ok, _} = in_transaction.([event.(6, "refused")])
+    assert {:ok, _} = in_transaction.([submission.(7), event.(7, "submitted")])
+
     # Links are append-only.
     for sql <- [
           "UPDATE finance_einvoice_source_links SET ledger_entry_id = 9",
