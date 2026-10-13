@@ -42,6 +42,25 @@ defmodule Bilimbi.Finance.FixedAssets.Web.AssetLive do
     end
   end
 
+  def handle_event("void", %{"asset" => attrs}, socket) do
+    case LiveAuthorization.authorize_event(socket, FixedAssets.void_capability()) do
+      {:denied, socket} ->
+        {:noreply, socket}
+
+      {:ok, socket} ->
+        complete(
+          socket,
+          FixedAssets.void_acquisition(
+            socket.assigns.current_scope.scope,
+            socket.assigns.company_id,
+            socket.assigns.asset_id,
+            attrs
+          ),
+          attrs
+        )
+    end
+  end
+
   def handle_event("reverse", %{"asset" => attrs}, socket) do
     case LiveAuthorization.authorize_event(socket, FixedAssets.reverse_capability()) do
       {:denied, socket} ->
@@ -121,6 +140,9 @@ defmodule Bilimbi.Finance.FixedAssets.Web.AssetLive do
             <p>
               Acquisition entry {@detail.asset.entry_number}, line {@detail.asset.entry_line_number}.
             </p>
+            <p :if={@detail.voided?} id="asset-voided">
+              Acquisition voided: this asset is excluded from depreciation runs and reconciliation.
+            </p>
             <p>
               Recorded by user {@detail.asset.recorded_by_user_id}<span :if={
                 @detail.asset.recorded_by_impersonator_id
@@ -164,7 +186,7 @@ defmodule Bilimbi.Finance.FixedAssets.Web.AssetLive do
             <:col :let={e} label="Recorded">
               <.datetime id={"asset-event-#{e.id}-at"} value={e.recorded_at} />
             </:col>
-            <:empty>No disposal events.</:empty>
+            <:empty>No disposal or void events.</:empty>
           </.table>
           <.card class="mt-4">
             <h2 class="font-medium">Sale or write-off</h2>
@@ -189,6 +211,34 @@ defmodule Bilimbi.Finance.FixedAssets.Web.AssetLive do
               id="asset-dispose-withheld"
               title="Disposal unavailable"
               reason="Ask your company administrator for asset disposal permission."
+            />
+          </.card>
+          <.card :if={!@detail.voided?} class="mt-4">
+            <h2 class="font-medium">Void acquisition</h2>
+            <p>
+              For an asset whose acquisition entry was reversed in the ledger. Depreciation already posted for this asset is reversed; other assets keep theirs. This cannot be undone.
+            </p>
+            <.form
+              :if={LiveAuthorization.allowed_now?(@current_scope, FixedAssets.void_capability())}
+              for={@form}
+              id="asset-void-form"
+              phx-submit="void"
+            >
+              <.input
+                id="asset-void-date"
+                field={@form[:effective_date]}
+                type="date"
+                label="Void date"
+                required
+              />
+              <.input id="asset-void-reason" field={@form[:reason]} label="Reason" required />
+              <.button id="asset-void" type="submit">Void acquisition</.button>
+            </.form>
+            <.empty_state
+              :if={!LiveAuthorization.allowed_now?(@current_scope, FixedAssets.void_capability())}
+              id="asset-void-withheld"
+              title="Void unavailable"
+              reason="Ask your company administrator for asset void permission."
             />
           </.card>
           <.card class="mt-4">

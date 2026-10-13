@@ -110,6 +110,14 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContractTest do
 
     assert_raise Postgrex.Error, ~r/already recorded/, fn -> SQL.query!(repo, item, []) end
 
+    assert_raise Postgrex.Error, ~r/already recorded/, fn ->
+      SQL.query!(
+        repo,
+        "INSERT INTO finance_fixed_assets_run_exceptions (tenant_id,company_id,run_id,asset_id,recorded_by_user_id) VALUES (41,73,1,1,91)",
+        []
+      )
+    end
+
     assert_raise Postgrex.Error, ~r/runs_period/, fn ->
       SQL.query!(repo, String.replace(run, "(1,41", "(2,41"), [])
     end
@@ -142,6 +150,31 @@ defmodule Bilimbi.Finance.FixedAssets.SchemaContractTest do
 
     assert_raise Postgrex.Error, ~r/retain every record/, fn ->
       SQL.query!(repo, "DELETE FROM finance_fixed_assets_events", [])
+    end
+  end
+
+  test "a voided acquisition is recorded once, entry-less only when nothing was reversed, and blocks disposal",
+       %{repo: repo} do
+    category!(repo)
+    SQL.query!(repo, asset_sql(1), [])
+
+    void = fn accumulated, entry ->
+      "INSERT INTO finance_fixed_assets_events (tenant_id,company_id,asset_id,action,effective_date,entry_id,entry_number,accumulated,reason,recorded_by_user_id) VALUES (41,73,1,'acquisition_voided','2026-02-01',#{entry},#{entry},#{accumulated},'Cancelled',91)"
+    end
+
+    assert_raise Postgrex.Error, ~r/entry_check/, fn ->
+      SQL.query!(repo, void.(100, "NULL"), [])
+    end
+
+    SQL.query!(repo, void.(0, "NULL"), [])
+    assert_raise Postgrex.Error, ~r/events_void/, fn -> SQL.query!(repo, void.(0, "NULL"), []) end
+
+    assert_raise Postgrex.Error, ~r/acquisition voided/, fn ->
+      SQL.query!(
+        repo,
+        "INSERT INTO finance_fixed_assets_events (tenant_id,company_id,asset_id,action,effective_date,entry_id,entry_number,proceeds,accumulated,reason,recorded_by_user_id) VALUES (41,73,1,'disposed','2026-02-02',2,2,0,0,'Write off',91)",
+        []
+      )
     end
   end
 end

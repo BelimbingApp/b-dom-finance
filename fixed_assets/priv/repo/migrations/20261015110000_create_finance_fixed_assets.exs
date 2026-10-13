@@ -1,14 +1,14 @@
 defmodule Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets do
   @moduledoc """
   Bilimbi-only, permanently retained fixed asset records. Category changes are
-  new revisions. Assets, monthly runs and their items, disposals and reversals
-  are immutable. PostgreSQL stamps actors' records, numbers assets and events
+  new revisions. Assets, monthly runs with their items and exceptions, disposals,
+  voided acquisitions and reversals are immutable. PostgreSQL stamps actors' records, numbers assets and events
   per company under a transaction lock, and refuses updates, deletes and truncation.
   Tests build temporary tables from these same statements.
   """
   use Ecto.Migration
 
-  @tables ~w(categories category_revisions assets runs run_items events)
+  @tables ~w(categories category_revisions assets runs run_items run_exceptions events)
   def up, do: Enum.each(statements(), &execute/1)
 
   def down do
@@ -65,16 +65,24 @@ defmodule Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets do
          FOREIGN KEY (run_id, tenant_id, company_id) REFERENCES finance_fixed_assets_runs (id, tenant_id, company_id) ON DELETE RESTRICT,
          FOREIGN KEY (asset_id, tenant_id, company_id) REFERENCES finance_fixed_assets_assets (id, tenant_id, company_id) ON DELETE RESTRICT
        """},
+      {"run_exceptions",
+       """
+         run_id bigint NOT NULL, asset_id bigint NOT NULL,
+         FOREIGN KEY (run_id, tenant_id, company_id) REFERENCES finance_fixed_assets_runs (id, tenant_id, company_id) ON DELETE RESTRICT,
+         FOREIGN KEY (asset_id, tenant_id, company_id) REFERENCES finance_fixed_assets_assets (id, tenant_id, company_id) ON DELETE RESTRICT
+       """},
       {"events",
        """
          event_number bigint NOT NULL CHECK (event_number > 0), asset_id bigint, run_id bigint,
-         action varchar(20) NOT NULL CHECK (action IN ('run_reversed', 'disposed', 'disposal_reversed')),
-         effective_date date NOT NULL, entry_id bigint NOT NULL, entry_number bigint NOT NULL,
+         action varchar(20) NOT NULL CHECK (action IN ('run_reversed', 'disposed', 'disposal_reversed', 'acquisition_voided')),
+         effective_date date NOT NULL, entry_id bigint, entry_number bigint,
          reverses_event_id bigint, proceeds numeric(20,4), accumulated numeric(20,4),
          reason varchar(500) NOT NULL CHECK (btrim(reason) <> ''),
          CHECK ((action = 'run_reversed' AND run_id IS NOT NULL AND asset_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NULL AND accumulated IS NULL)
            OR (action = 'disposed' AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NOT NULL AND accumulated IS NOT NULL AND proceeds >= 0 AND accumulated >= 0)
-           OR (action = 'disposal_reversed' AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NOT NULL AND proceeds IS NULL AND accumulated IS NULL)),
+           OR (action = 'disposal_reversed' AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NOT NULL AND proceeds IS NULL AND accumulated IS NULL)
+           OR (action = 'acquisition_voided' AND asset_id IS NOT NULL AND run_id IS NULL AND reverses_event_id IS NULL AND proceeds IS NULL AND accumulated IS NOT NULL AND accumulated >= 0)),
+         CONSTRAINT finance_fixed_assets_events_entry_check CHECK ((entry_id IS NOT NULL AND entry_number IS NOT NULL) OR (action = 'acquisition_voided' AND accumulated = 0 AND entry_id IS NULL AND entry_number IS NULL)),
          FOREIGN KEY (run_id, tenant_id, company_id) REFERENCES finance_fixed_assets_runs (id, tenant_id, company_id) ON DELETE RESTRICT,
          FOREIGN KEY (asset_id, tenant_id, company_id) REFERENCES finance_fixed_assets_assets (id, tenant_id, company_id) ON DELETE RESTRICT,
          FOREIGN KEY (reverses_event_id, tenant_id, company_id) REFERENCES finance_fixed_assets_events (id, tenant_id, company_id) ON DELETE RESTRICT
@@ -97,8 +105,10 @@ defmodule Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets do
       "CREATE UNIQUE INDEX finance_fixed_assets_assets_source ON finance_fixed_assets_assets (company_id, entry_id, entry_line_number)",
       "CREATE UNIQUE INDEX finance_fixed_assets_runs_period ON finance_fixed_assets_runs (company_id, period)",
       "CREATE UNIQUE INDEX finance_fixed_assets_run_items_asset ON finance_fixed_assets_run_items (run_id, asset_id)",
+      "CREATE UNIQUE INDEX finance_fixed_assets_run_exceptions_asset ON finance_fixed_assets_run_exceptions (run_id, asset_id)",
       "CREATE UNIQUE INDEX finance_fixed_assets_events_number ON finance_fixed_assets_events (company_id, event_number)",
       "CREATE UNIQUE INDEX finance_fixed_assets_events_run_reversal ON finance_fixed_assets_events (run_id) WHERE action = 'run_reversed'",
+      "CREATE UNIQUE INDEX finance_fixed_assets_events_void ON finance_fixed_assets_events (asset_id) WHERE action = 'acquisition_voided'",
       "CREATE UNIQUE INDEX finance_fixed_assets_events_disposal_reversal ON finance_fixed_assets_events (reverses_event_id) WHERE reverses_event_id IS NOT NULL"
     ]
 
@@ -119,6 +129,10 @@ defmodule Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets do
         IF NEW.action = 'disposed' THEN
           SELECT action INTO previous_action FROM finance_fixed_assets_events WHERE asset_id = NEW.asset_id ORDER BY event_number DESC LIMIT 1;
           IF previous_action = 'disposed' THEN RAISE EXCEPTION 'fixed asset already disposed'; END IF;
+          IF EXISTS (SELECT 1 FROM finance_fixed_assets_events WHERE asset_id = NEW.asset_id AND action = 'acquisition_voided') THEN RAISE EXCEPTION 'fixed asset acquisition voided'; END IF;
+        ELSIF NEW.action = 'acquisition_voided' THEN
+          SELECT action INTO previous_action FROM finance_fixed_assets_events WHERE asset_id = NEW.asset_id ORDER BY event_number DESC LIMIT 1;
+          IF previous_action = 'disposed' THEN RAISE EXCEPTION 'fixed asset acquisition void is invalid'; END IF;
         ELSIF NEW.action = 'disposal_reversed' THEN
           SELECT action INTO previous_action FROM finance_fixed_assets_events WHERE asset_id = NEW.asset_id ORDER BY event_number DESC LIMIT 1;
           IF previous_action IS DISTINCT FROM 'disposed' OR NOT EXISTS (
@@ -176,6 +190,7 @@ defmodule Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets do
       triggers ++
       [
         "CREATE TRIGGER finance_fixed_assets_run_items_closed BEFORE INSERT ON finance_fixed_assets_run_items FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_fixed_assets_item()",
+        "CREATE TRIGGER finance_fixed_assets_run_exceptions_closed BEFORE INSERT ON finance_fixed_assets_run_exceptions FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_fixed_assets_item()",
         "CREATE CONSTRAINT TRIGGER finance_fixed_assets_runs_total AFTER INSERT ON finance_fixed_assets_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_fixed_assets_check_run()",
         "CREATE TRIGGER finance_fixed_assets_events_transition BEFORE INSERT ON finance_fixed_assets_events FOR EACH ROW EXECUTE FUNCTION #{prefix}finance_fixed_assets_event()"
       ]

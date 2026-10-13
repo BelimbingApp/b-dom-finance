@@ -97,10 +97,12 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
               )
 
             case result do
-              {:ok, _} ->
+              {:ok, saved} ->
+                {level, text} = ListPage.recorded_flash(@kind, saved)
+
                 {:noreply,
                  socket
-                 |> put_flash(:success, "Recorded.")
+                 |> put_flash(level, text)
                  |> assign(:form, to_form(%{}, as: "asset"))
                  |> load(socket.assigns.state)}
 
@@ -162,7 +164,10 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
             {:ok, %{rows: rows} = report} ->
               {Enum.map(
                  rows,
-                 &Map.merge(&1.asset, Map.take(&1, [:accumulated, :carrying_value, :disposed?]))
+                 &Map.merge(
+                   &1.asset,
+                   Map.take(&1, [:accumulated, :carrying_value, :disposed?, :voided?])
+                 )
                ), report, nil}
 
             {:ok, rows} ->
@@ -216,7 +221,8 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
           {"description", "Asset"},
           {"cost", "Cost"},
           {"accumulated", "Depreciation"},
-          {"carrying", "Carrying value"}
+          {"carrying", "Carrying value"},
+          {"status", "Status"}
         ],
         &column/1
       )
@@ -242,7 +248,8 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
           {"period", "Period"},
           {"total", "Depreciation"},
           {"entry", "Entry"},
-          {"reversed", "Reversed"}
+          {"reversed", "Reversed"},
+          {"exceptions", "Skipped assets"}
         ],
         &column/1
       )
@@ -285,6 +292,24 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
       _ -> {:error, :invalid_period}
     end
   end
+
+  def recorded_flash(:runs, %{exceptions: [_ | _] = skipped}) do
+    assets = Enum.map_join(skipped, ", ", &"##{&1.asset_number}")
+
+    {:error,
+     "Recorded without asset #{assets}: its acquisition entry was reversed. Void the acquisition from the asset page."}
+  end
+
+  def recorded_flash(_kind, _saved), do: {:success, "Recorded."}
+
+  def status(%{voided?: true}), do: "Voided"
+  def status(%{disposed?: true}), do: "Disposed"
+  def status(_row), do: "In service"
+
+  def skipped(%{exceptions: [_ | _] = skipped}),
+    do: Enum.map_join(skipped, ", ", &"##{&1.asset_number} #{&1.description}")
+
+  def skipped(_run), do: "None"
 
   def money(%Decimal{} = value), do: Decimal.to_string(value, :normal)
   def money(nil), do: "—"
@@ -347,6 +372,8 @@ defmodule Bilimbi.Finance.FixedAssets.Web.ListPage do
           <:col :let={%{record: r}} id="cost">{money(Map.get(r, :cost))}</:col>
           <:col :let={%{record: r}} id="accumulated">{money(Map.get(r, :accumulated))}</:col>
           <:col :let={%{record: r}} id="carrying">{money(Map.get(r, :carrying_value))}</:col>
+          <:col :let={%{record: r}} id="status">{status(r)}</:col>
+          <:col :let={%{record: r}} id="exceptions">{skipped(r)}</:col>
           <:col :let={%{record: r}} id="name">{Map.get(r, :name)}</:col>
           <:col :let={%{record: r}} id="method">{get_in(r, [:revision, :method])}</:col>
           <:col :let={%{record: r}} id="life">{get_in(r, [:revision, :life_months])}</:col>

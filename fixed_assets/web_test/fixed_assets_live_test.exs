@@ -118,4 +118,33 @@ defmodule BilimbiWeb.FixedAssetsLiveTest do
     {:ok, detail} = FixedAssets.get_asset(c.keeper, 73, asset.id)
     assert Enum.map(detail.events, & &1.action) == ["disposed", "disposal_reversed"]
   end
+
+  test "a reversed acquisition is listed on the runs page and voided from the asset page", c do
+    asset = Fixtures.acquisition!(c)
+
+    {:ok, _} =
+      Ledger.reverse_entry(c.keeper, 73, asset.entry_id, %{
+        entry_date: ~D[2026-01-02],
+        description: "Bill voided"
+      })
+
+    reader!(c.scope, Fixtures.capabilities())
+    {:ok, runs, _} = c.conn |> log_in_as() |> live(~p"/finance/fixed-assets/runs")
+    runs |> form("#assets-write-form", asset: %{period: "2026-01-01"}) |> render_submit()
+    assert render(runs) =~ "Void the acquisition from the asset page"
+    assert {:ok, [%{exceptions: [%{asset_id: id}]}]} = FixedAssets.list_runs(c.keeper, 73)
+    assert id == asset.id
+
+    {:ok, view, _} = c.conn |> log_in_as() |> live(~p"/finance/fixed-assets/register/#{asset.id}")
+    refute has_element?(view, "#asset-voided")
+
+    view
+    |> form("#asset-void-form", asset: %{effective_date: "2026-02-01", reason: "Bill cancelled"})
+    |> render_submit()
+
+    assert has_element?(view, "#asset-voided")
+    refute has_element?(view, "#asset-void-form")
+    {:ok, detail} = FixedAssets.get_asset(c.keeper, 73, asset.id)
+    assert [%{action: "acquisition_voided"}] = detail.events
+  end
 end

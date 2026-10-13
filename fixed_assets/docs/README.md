@@ -1,8 +1,8 @@
 # Fixed assets
 
 `finance/fixed_assets` owns a company's permanent asset register, category
-revisions, monthly depreciation runs and their items, and disposal/reversal
-events. It depends on Ledger for the books and Payables for acquisition from
+revisions, monthly depreciation runs with their items and exceptions, and
+disposal, void and reversal events. It depends on Ledger for the books and Payables for acquisition from
 posted supplier bills; Supply Chain remains optional behind Payables' own
 three-way-match seam. It reads and posts through both public facades.
 
@@ -40,6 +40,21 @@ three-way-match seam. It reads and posts through both public facades.
    A reversed month's run stays recorded; the next new monthly run catches up
    outstanding scheduled depreciation. A disposal reversal restores the asset,
    and a later run catches up its remaining scheduled charges.
+
+6. When an acquisition entry is reversed in the ledger (for example by voiding
+   the supplier bill), a depreciation run never stops for it: the asset is
+   skipped, recorded as an exception on that run (shown in the run result and
+   the runs page's "Skipped assets" column), and every other asset is charged
+   as usual. Retire it with "Void acquisition" on its detail page, under its
+   own `finance-asset-void` capability. The append-only `acquisition_voided`
+   event records the actor, reason and database time. Only an asset whose
+   acquisition entry is reversed can be voided, and a standing disposal must be
+   reversed first. Its unreversed depreciation is mirrored in one entry that
+   touches only that asset's amounts; a month's other assets keep their posted
+   charges. The asset then drops out of runs and reconciliation, the register
+   shows it as voided with zero carrying value, and disposal is refused. A void
+   cannot be undone; an asset with nothing to reverse records an event without
+   a ledger entry. Reversing a run later leaves a voided asset's charge alone.
 
 Every action rechecks its own `finance.fixed-assets` capability. Its verb names
 start with `finance-asset-` and cannot duplicate another Domain's `post` verb.
@@ -94,8 +109,9 @@ watermark, so closing the books does not erase the schedule's expense figures.
 It displays differences, including unregistered acquisitions and
 external postings on those accounts. Shared category accounts are aggregated;
 using an account for unrelated balances therefore produces an explicit difference.
-Acquisition reversals made directly through Ledger also produce a difference and
-prevent further charges/disposal until the accounting discrepancy is addressed.
+Acquisition reversals made directly through Ledger also produce a difference
+until the asset is voided; meanwhile runs skip the asset and disposal is refused.
+A voided asset contributes nothing to the registered balances.
 
 ## Standards addressed and limits
 
