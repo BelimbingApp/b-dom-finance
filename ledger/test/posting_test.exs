@@ -383,6 +383,185 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
     end
   end
 
+  describe "ownership" do
+    @owner %{module: "finance/receivables", record: "payment:17"}
+
+    test "an owned entry is corrected only through its owner, which reverses it once", context do
+      %{operator: operator, cash: cash, income: income} = context
+      lines = [debit(cash, "40"), credit(income, "40")]
+
+      assert {:ok, original} = Ledger.post_entry(operator, 73, entry(lines), owner: @owner)
+      assert %{owner: @owner, legacy: false} = original
+      assert {:ok, ^original} = Ledger.get_entry(operator, 73, original.id)
+
+      assert {:error, {:owned_by, @owner}} = reverse(context, original.id, ~D[2026-10-05])
+
+      assert {:error, :not_the_owner} =
+               reverse_owned(context, original.id, %{@owner | record: "payment:18"})
+
+      assert {:error, :not_the_owner} =
+               reverse_owned(context, original.id, %{@owner | module: "finance/payables"})
+
+      assert {:ok, reversal} = reverse_owned(context, original.id, @owner)
+      assert %{owner: @owner, reverses_entry_id: reverses} = reversal
+      assert reverses == original.id
+      assert {:error, :already_reversed} = reverse_owned(context, original.id, @owner)
+      assert {:error, :reversal_not_reversible} = reverse_owned(context, reversal.id, @owner)
+
+      # The record keeps one original entry, reversed or not.
+      assert {:error, changeset} = Ledger.post_entry(operator, 73, entry(lines), owner: @owner)
+      assert %{owner_record: ["already has an entry"]} = errors_on(changeset)
+      assert {:ok, [_original, _reversal]} = Ledger.list_entries(operator, 73)
+
+      assert {:ok, %{entry_number: 3}} =
+               Ledger.post_entry(operator, 73, entry(lines),
+                 owner: %{@owner | record: "payment:18"}
+               )
+    end
+
+    test "a manual entry has no owner and is reversed directly", context do
+      %{operator: operator, cash: cash, income: income} = context
+      {:ok, manual} = post(context, [debit(cash, "40"), credit(income, "40")])
+      assert %{owner: nil, legacy: false} = manual
+
+      assert {:error, :not_owned} = reverse_owned(context, manual.id, @owner)
+      assert {:ok, %{owner: nil}} = reverse(context, manual.id, ~D[2026-10-05])
+      assert {:ok, [_manual, _reversal]} = Ledger.list_entries(operator, 73)
+    end
+
+    test "refuses an owner of another shape", context do
+      lines = [debit(context.cash, "1"), credit(context.income, "1")]
+
+      for owner <- [
+            %{module: "finance/receivables"},
+            %{module: "finance/receivables", record: "payment:17", extra: true},
+            %{module: "Finance/Receivables", record: "payment:17"},
+            %{module: "receivables", record: "payment:17"},
+            %{module: "finance/receivables", record: "payment:0"},
+            %{module: "finance/receivables", record: "payment 17"},
+            %{module: "finance/receivables", record: 17},
+            {"finance/receivables", "payment:17"},
+            "finance/receivables payment:17"
+          ] do
+        assert {:error, :invalid_option} =
+                 Ledger.post_entry(context.operator, 73, entry(lines), owner: owner)
+
+        assert {:error, :invalid_option} =
+                 Ledger.reverse_owned_entry(context.operator, 73, 1, owner, %{})
+      end
+
+      assert {:ok, []} = Ledger.list_entries(context.operator, 73)
+    end
+
+    test "the database keeps a reversal's owner equal to its original's", context do
+      %{operator: operator, cash: cash, income: income} = context
+
+      {:ok, owned} =
+        Ledger.post_entry(operator, 73, entry([debit(cash, "1"), credit(income, "1")]),
+          owner: @owner
+        )
+
+      {:ok, manual} = post(context, [debit(cash, "1"), credit(income, "1")])
+
+      raw = fn reverses, module, record ->
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO finance_ledger_entries
+            (tenant_id, company_id, entry_number, entry_date, description, currency_code,
+             reverses_entry_id, owner_module, owner_record, posted_by_user_id, posted_at)
+          VALUES (41, 73, 1, '2026-10-01', 'Raw', 'XTS', $1, $2, $3, 91, '2000-01-01')
+          """,
+          [reverses, module, record]
+        )
+      end
+
+      assert_raise Postgrex.Error, ~r/is reversed through that module/, fn ->
+        raw.(owned.id, nil, nil)
+      end
+
+      assert_raise Postgrex.Error, ~r/is reversed through that module/, fn ->
+        raw.(owned.id, "finance/receivables", "payment:18")
+      end
+
+      assert_raise Postgrex.Error, ~r/has no owner: its reversal has none either/, fn ->
+        raw.(manual.id, "finance/receivables", "payment:17")
+      end
+    end
+
+    test "a legacy entry is claimed by its owner once and reversed by that owner", context do
+      %{operator: operator, cash: cash, income: income} = context
+
+      # Posted before owners were recorded: the migration marks it legacy.
+      %{rows: [[legacy_id]]} =
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO finance_ledger_entries
+            (tenant_id, company_id, entry_number, entry_date, description, currency_code,
+             legacy, posted_by_user_id, posted_at)
+          VALUES (41, 73, 1, '2026-10-01', 'Legacy', 'XTS', true, 91, '2000-01-01')
+          RETURNING id
+          """,
+          []
+        )
+
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO finance_ledger_entry_lines
+          (tenant_id, company_id, entry_id, line_number, account_id, debit, credit)
+        VALUES (41, 73, $1, 1, $2, 40, 0), (41, 73, $1, 2, $3, 0, 40)
+        """,
+        [legacy_id, cash.id, income.id]
+      )
+
+      assert {:ok, %{owner: nil, legacy: true}} = Ledger.get_entry(operator, 73, legacy_id)
+
+      # Unclaimed, the module whose record names it still reverses it, as itself.
+      assert {:ok, %{owner: nil, legacy: false}} = reverse_owned(context, legacy_id, @owner)
+
+      %{rows: [[other_id]]} =
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO finance_ledger_entries
+            (tenant_id, company_id, entry_number, entry_date, description, currency_code,
+             legacy, posted_by_user_id, posted_at)
+          VALUES (41, 73, 1, '2026-10-01', 'Legacy', 'XTS', true, 91, '2000-01-01')
+          RETURNING id
+          """,
+          []
+        )
+
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO finance_ledger_entry_lines
+          (tenant_id, company_id, entry_id, line_number, account_id, debit, credit)
+        VALUES (41, 73, $1, 1, $2, 40, 0), (41, 73, $1, 2, $3, 0, 40)
+        """,
+        [other_id, cash.id, income.id]
+      )
+
+      # The fixtures' functions live in pg_temp; the migration's are unqualified.
+      claim = fn module, record ->
+        SQL.query!(
+          Repo,
+          "SELECT pg_temp.finance_ledger_claim_legacy_entry($1, 73, $2, $3)",
+          [other_id, module, record]
+        )
+      end
+
+      claim.("finance/payables", "payment:3")
+      claimed = %{module: "finance/payables", record: "payment:3"}
+      assert {:ok, %{owner: ^claimed, legacy: true}} = Ledger.get_entry(operator, 73, other_id)
+      assert {:error, {:owned_by, ^claimed}} = reverse(context, other_id, ~D[2026-10-05])
+      assert {:error, :not_the_owner} = reverse_owned(context, other_id, @owner)
+      assert {:ok, %{owner: ^claimed}} = reverse_owned(context, other_id, claimed)
+    end
+  end
+
   describe "the database" do
     setup context do
       {:ok, original} =
@@ -480,6 +659,13 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
   defp reverse(context, entry_id, date) do
     Ledger.reverse_entry(context.operator, 73, entry_id, %{
       entry_date: date,
+      description: "Reversal"
+    })
+  end
+
+  defp reverse_owned(context, entry_id, owner) do
+    Ledger.reverse_owned_entry(context.operator, 73, entry_id, owner, %{
+      entry_date: ~D[2026-10-05],
       description: "Reversal"
     })
   end

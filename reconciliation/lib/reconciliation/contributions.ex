@@ -3,7 +3,7 @@ defmodule Bilimbi.Finance.Reconciliation.Contributions do
   @behaviour Bilimbi.Base.ModuleRegistry.ContributionProvider
 
   # The "finance" domain and the "post" verb are finance/ledger's; "import"
-  # and "finalise" are this module's.
+  # and "finalise" are this module's; "manage" is Base's.
   @view "finance.reconciliation.view"
   @manage_bank_accounts "finance.reconciliation.bank-accounts.manage"
   @import_statements "finance.reconciliation.statements.import"
@@ -11,6 +11,7 @@ defmodule Bilimbi.Finance.Reconciliation.Contributions do
   @manage_reconciliations "finance.reconciliation.reconciliations.manage"
   @finalise_reconciliations "finance.reconciliation.reconciliations.finalise"
   @post_statement_lines "finance.reconciliation.statement-lines.post"
+  @manage_statement_lines "finance.reconciliation.statement-lines.manage"
 
   @capabilities [
     @view,
@@ -19,7 +20,8 @@ defmodule Bilimbi.Finance.Reconciliation.Contributions do
     @manage_matches,
     @manage_reconciliations,
     @finalise_reconciliations,
-    @post_statement_lines
+    @post_statement_lines,
+    @manage_statement_lines
   ]
 
   @impl true

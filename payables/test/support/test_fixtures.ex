@@ -32,6 +32,8 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
      "20261012213700_create_finance_payables.exs"},
     {20_261_014_100_000, Bilimbi.Finance.Payables.Migrations.AddMatching,
      "20261014100000_add_finance_payables_matching.exs"},
+    {20_261_015_150_200, Bilimbi.Finance.Payables.Migrations.ClaimEntries,
+     "20261015150200_claim_finance_payables_entries.exs"},
     {20_261_016_100_100, Bilimbi.Finance.Payables.Migrations.AddPaymentRequests,
      "20261016100100_add_finance_payables_payment_requests.exs"}
   ]

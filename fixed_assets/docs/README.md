@@ -113,6 +113,28 @@ Acquisition reversals made directly through Ledger also produce a difference
 until the asset is voided; meanwhile runs skip the asset and disposal is refused.
 A voided asset contributes nothing to the registered balances.
 
+## Ledger ownership
+
+Every entry this module posts names it as the owner, with the record the
+entry recognises: `finance/fixed_assets` and `run:<id>` for a depreciation
+run (and for that run's reversal), `event:<id>` for a disposal (and for its
+reversal), for the mirror a void posts, and for the mirror a run reversal
+posts when some of the run's assets were voided
+(`Bilimbi.Finance.Ledger.post_entry/4`'s `owner` option;
+`Bilimbi.Finance.FixedAssets.Ownership` names them). The ledger then refuses
+a second entry for the same record, and refuses `Ledger.reverse_entry/4` on
+any of them (`{:error, {:owned_by, owner}}`): a run or a disposal is
+reversed only through `reverse_run/4` and `reverse_disposal/4`, which record
+their event and reverse the entry through `Ledger.reverse_owned_entry/5` in
+the same transaction, so the register and the ledger never disagree about a
+charge. An asset's acquisition entry is not this module's: it belongs to
+whoever posted it (a payables bill, a manual journal) and is reversed there,
+which is what step 6 of the workflow reacts to. Entries posted before the
+ledger recorded owners were claimed by the migration `20261015150700`,
+through the ledger's own claim function; the mirror a partial run reversal
+posted before then stays unowned, as nothing in this module's records tells
+it from the run's own reversal.
+
 ## Standards addressed and limits
 
 The register supports systematic allocation of depreciable cost and disposal
@@ -138,6 +160,7 @@ Mount a real copy at `apps/domains/finance` in an isolated Bilimbi checkout.
 Run `mix test` in its `fixed_assets` folder and the module's `web_test` through
 the Web host. Run `mix precommit` from the Bilimbi root. Tests build temporary
 copies from the migration's `statements(temporary: true)`; the fresh-database
-contract suite runs the actual migration and proves commit-time totals,
-rollback-safe numbering, the standing disposal rules and permanent retention.
+contract suite runs the actual migrations and proves commit-time totals,
+rollback-safe numbering, the standing disposal rules, permanent retention and
+the claim of earlier runs, disposals and voids.
 The descriptor deliberately excludes this Bilimbi-only schema from adoption.

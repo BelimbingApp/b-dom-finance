@@ -1,7 +1,10 @@
 defmodule Bilimbi.Finance.FixedAssets.SchemaContract do
   @moduledoc "Fresh Bilimbi-only structure, verified after migration rather than during adoption."
   @behaviour Bilimbi.Base.Database.SchemaContract
-  def migration_version, do: 20_261_015_110_000
+  @doc "The migrations that build this contract, in order."
+  def migration_versions, do: [20_261_015_110_000, 20_261_015_150_700]
+
+  def migration_version, do: List.last(migration_versions())
   @impl true
   def tables,
     do: [

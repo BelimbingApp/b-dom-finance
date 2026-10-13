@@ -21,6 +21,10 @@ defmodule Bilimbi.Finance.Payroll.Posting do
   deductions, so the entry balances in the book's units; the source keeps
   its own finer figures. A component with a zero total posts no line.
 
+  The entry names this module and the source as its owner
+  (`finance/payroll`, `payroll_run:<id>` or `claim:<id>`), so the ledger
+  refuses a second entry for the source and a reversal from anywhere but
+  `reverse/4`, which posts it through `Ledger.reverse_owned_entry/5`.
   The entry and the `posted` event that names it are one transaction under
   the company's writable lock, after a run is read again under that lock
   (a claim is posted from the batch its caller read once, so a loop of
@@ -91,7 +95,8 @@ defmodule Bilimbi.Finance.Payroll.Posting do
                {:ok, book} <- book(scope, company_id, source),
                {:ok, attributes} <-
                  entry.(source, book, %{settings: settings, mappings: mappings}),
-               {:ok, ledger_entry} <- Ledger.post_entry(scope, company_id, attributes) do
+               {:ok, ledger_entry} <-
+                 Ledger.post_entry(scope, company_id, attributes, owner: owner(kind, source_id)) do
             event =
               Events.record!(scope, company_id, %{
                 source_kind: kind,
@@ -167,12 +172,18 @@ defmodule Bilimbi.Finance.Payroll.Posting do
     entry_date = Map.get(attributes, :entry_date, Map.get(attributes, "entry_date"))
 
     with {:ok, entry} <-
-           Ledger.reverse_entry(scope, company_id, posted.entry_id, %{
-             entry_date: entry_date,
-             description:
-               "Reversal of #{description(posted.source_kind, posted.source_reference)}",
-             reference: reference(posted.source_kind, posted.source_id, posted.source_reference)
-           }),
+           Ledger.reverse_owned_entry(
+             scope,
+             company_id,
+             posted.entry_id,
+             owner(posted.source_kind, posted.source_id),
+             %{
+               entry_date: entry_date,
+               description:
+                 "Reversal of #{description(posted.source_kind, posted.source_reference)}",
+               reference: reference(posted.source_kind, posted.source_id, posted.source_reference)
+             }
+           ),
          {:ok, reversed} <-
            Events.record(scope, company_id, %{
              source_kind: posted.source_kind,
@@ -189,6 +200,15 @@ defmodule Bilimbi.Finance.Payroll.Posting do
       {:ok, Events.posting_view(posted, reversed)}
     end
   end
+
+  @module_id "finance/payroll"
+
+  @doc "This module's descriptor ID, the `owner_module` of every entry it posts."
+  def module_id, do: @module_id
+
+  @doc "The owner identity of the entry a source posted: the module and `<kind>:<id>`."
+  def owner(kind, source_id) when kind in [@run_kind, @claim_kind],
+    do: %{module: @module_id, record: "#{kind}:#{source_id}"}
 
   @doc """
   Runs `fun`, a whole transaction returning `{:ok, _}` or `{:error, _}`. A

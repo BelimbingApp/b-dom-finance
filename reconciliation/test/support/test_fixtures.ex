@@ -27,16 +27,26 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
   alias Bilimbi.Finance.Reconciliation
   alias Ecto.Adapters.SQL
 
-  @migration Path.expand(
-               "../../priv/repo/migrations/20261014090000_create_finance_reconciliation.exs",
-               __DIR__
-             )
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
-  @doc "The migration module, loaded from its file once."
-  def migration do
-    module = Bilimbi.Finance.Reconciliation.Migrations.CreateReconciliation
-    unless Code.ensure_loaded?(module), do: Code.require_file(@migration)
-    module
+  @migration_files [
+    {20_261_014_090_000, Bilimbi.Finance.Reconciliation.Migrations.CreateReconciliation,
+     "20261014090000_create_finance_reconciliation.exs"},
+    {20_261_015_150_600, Bilimbi.Finance.Reconciliation.Migrations.ClaimEntries,
+     "20261015150600_claim_finance_reconciliation_entries.exs"}
+  ]
+
+  @doc "The first migration's module, loaded from its file once."
+  def migration, do: migrations() |> hd() |> elem(1)
+
+  @doc "The module's migrations as `{version, module}` in version order, each loaded once."
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
   end
 
   @doc """
