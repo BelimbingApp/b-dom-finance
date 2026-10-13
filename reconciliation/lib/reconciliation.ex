@@ -222,7 +222,8 @@ defmodule Bilimbi.Finance.Reconciliation do
              prepared.end_date
            ) do
       write(scope, company_id, @import_statements, fn ->
-        with {:ok, statement} <- Import.insert(scope, company_id, prepared),
+        with {:ok, _account} <- active_bank_account(scope, company_id, account.id),
+             {:ok, statement} <- Import.insert(scope, company_id, prepared),
              {:ok, _attachment} <-
                Attachments.attach_capture(
                  scope,

@@ -422,7 +422,8 @@ defmodule Bilimbi.Finance.Attachments do
 
   @doc """
   The company's attachments by number, as `get_attachment/3` shows them.
-  Options: `source` (a source ID, `"finance/payables/bill"`), `status`
+  Options: `source` (a source ID, `"finance/payables/bill"`), `document_ids`
+  (only the attachments of those records of `source`), `status`
   (one of `statuses/0`; by default only standing attachments), `limit`
   (default 100, at most 500), and `after`, the last `attachment_number` of
   the previous page.
@@ -438,6 +439,11 @@ defmodule Bilimbi.Finance.Attachments do
        |> attachments_query(company_id)
        |> then(fn query ->
          if filters.source, do: where(query, [a], a.source == ^filters.source), else: query
+       end)
+       |> then(fn query ->
+         if filters.document_ids,
+           do: where(query, [a], a.document_id in ^filters.document_ids),
+           else: query
        end)
        |> status_filter(scope, filters.status)
        |> then(fn query ->
@@ -457,7 +463,7 @@ defmodule Bilimbi.Finance.Attachments do
   One attachment: the record it supports (`source`, `source_label`,
   `document_id`, `document_label`, `document_date`), the file (`file_name`,
   `content_type`, `byte_size`, `sha256`), its retention (`retention_years`,
-  `retain_until`), who captured it when, its `status`, and its `events`
+  `retain_until`, which follows the latest extension, and `on_hold`), who captured it when, its `status`, and its `events`
   oldest first.
   """
   @spec get_attachment(Scope.t(), term(), term()) ::
@@ -619,7 +625,7 @@ defmodule Bilimbi.Finance.Attachments do
   defp file_attributes(file) do
     name = fetch(file, :file_name)
     content = fetch(file, :content)
-    type = fetch(file, :content_type) || @default_content_type
+    type = blank_to_nil(fetch(file, :content_type)) || @default_content_type
 
     cond do
       not is_binary(name) or String.trim(name) == "" or String.length(String.trim(name)) > 255 ->
@@ -657,12 +663,14 @@ defmodule Bilimbi.Finance.Attachments do
          {:ok, filters} <-
            Keyword.validate(options,
              source: nil,
+             document_ids: nil,
              status: "standing",
              limit: @default_limit,
              after: nil
            ),
          filters = Map.new(filters),
          true <- is_nil(filters.source) or is_binary(filters.source),
+         true <- is_nil(filters.document_ids) or valid_document_ids?(filters.document_ids),
          true <- filters.status in ["all" | Attachment.statuses()],
          true <- is_integer(filters.limit) and filters.limit in 1..@max_limit,
          true <- is_nil(filters.after) or (is_integer(filters.after) and filters.after >= 0) do
@@ -671,6 +679,8 @@ defmodule Bilimbi.Finance.Attachments do
       _invalid -> {:error, :invalid_option}
     end
   end
+
+  defp valid_document_ids?(ids), do: is_list(ids) and Enum.all?(ids, &(id(&1) == &1))
 
   ## Queries
 
@@ -763,10 +773,28 @@ defmodule Bilimbi.Finance.Attachments do
       :captured_at
     ])
     |> Map.merge(%{
+      retain_until: effective_retain_until(attachment),
+      on_hold: on_hold?(attachment),
       source_label: source && source.source_label(),
       status: Attachment.status(attachment),
       events: Enum.map(attachment.events, &event_view/1)
     })
+  end
+
+  defp effective_retain_until(%Attachment{events: events} = attachment) do
+    events
+    |> Enum.filter(&(&1.event == "retention_extended"))
+    |> Enum.map(& &1.retain_until)
+    |> Enum.reduce(attachment.retain_until, fn until, latest ->
+      if DateTime.compare(until, latest) == :gt, do: until, else: latest
+    end)
+  end
+
+  defp on_hold?(%Attachment{events: events}) do
+    events
+    |> Enum.filter(&(&1.event in ~w(hold_placed hold_released)))
+    |> List.last()
+    |> then(&(&1 != nil and &1.event == "hold_placed"))
   end
 
   defp event_view(%AttachmentEvent{} = event) do
@@ -788,6 +816,11 @@ defmodule Bilimbi.Finance.Attachments do
     %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
     {user_id, impersonator_id}
   end
+
+  defp blank_to_nil(value) when is_binary(value),
+    do: if(String.trim(value) == "", do: nil, else: value)
+
+  defp blank_to_nil(value), do: value
 
   defp fetch(attributes, key), do: Map.get(attributes, key, Map.get(attributes, to_string(key)))
 

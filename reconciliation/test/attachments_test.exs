@@ -48,6 +48,18 @@ defmodule Bilimbi.Finance.Reconciliation.AttachmentsTest do
              })
   end
 
+  test "a blank content type from the browser is a CSV", context do
+    {:ok, statement} =
+      Reconciliation.import_statement(context.operator, 73, context.bank_account.id, %{
+        file_name: "october.csv",
+        content: TestFixtures.csv(@rows),
+        content_type: ""
+      })
+
+    assert {:ok, [%{content_type: "text/csv"}]} =
+             Attachments.list_attachments(context.operator, 73, StatementSource, statement.id)
+  end
+
   test "a refused import stores no file", context do
     content = TestFixtures.csv(@rows)
     _statement = import!(context, @rows, "october.csv")

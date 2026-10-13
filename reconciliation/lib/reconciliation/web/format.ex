@@ -69,6 +69,11 @@ defmodule Bilimbi.Finance.Reconciliation.Web.Format do
   def refusal(:no_lines), do: "The file holds no statement lines."
   def refusal(:too_large), do: "The file is larger than the import allows."
   def refusal(:not_utf8), do: "The file is not UTF-8 text."
+  def refusal(:invalid_content_type), do: "The file's type could not be recognised."
+
+  def refusal(:retention_not_configured),
+    do: "Source documents cannot be kept yet; an operator must set up the file storage."
+
   def refusal(:invalid_option), do: "The request was malformed."
 
   def refusal({:unbalanced, statement_side, ledger_side}),

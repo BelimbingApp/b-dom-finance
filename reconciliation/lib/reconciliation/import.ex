@@ -34,7 +34,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
   def prepare(scope, company_id, bank_account, book, attributes) do
     file_name = Records.fetch(attributes, :file_name)
     content = Records.fetch(attributes, :content)
-    content_type = Records.fetch(attributes, :content_type) || @default_content_type
+    content_type = content_type(Records.fetch(attributes, :content_type))
 
     with :ok <- file_attributes(file_name, content),
          sha256 = hash(content),
@@ -79,6 +79,13 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
       )
     end
   end
+
+  defp content_type(type) when is_binary(type) do
+    if String.trim(type) == "", do: @default_content_type, else: type
+  end
+
+  defp content_type(nil), do: @default_content_type
+  defp content_type(type), do: type
 
   defp file_attributes(file_name, content) do
     cond do

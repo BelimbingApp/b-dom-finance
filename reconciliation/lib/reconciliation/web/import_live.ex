@@ -52,7 +52,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
           items(Records.all_pages(&Reconciliation.list_statements(scope, company_id, id, &1)))
 
         reconciliations = items(Reconciliation.list_reconciliations(scope, company_id, id))
-        files = statement_files(scope, company_id)
+        files = statement_files(scope, company_id, statements)
 
         book =
           case Ledger.get_book(scope, company_id) do
@@ -155,14 +155,20 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
 
   # The standing source document of each statement, by statement ID, for
   # the download link; a statement imported before files were kept has none.
-  defp statement_files(scope, company_id) do
-    case Attachments.list_company_attachments(scope, company_id,
-           source: Reconciliation.StatementSource.source_id(),
-           limit: 500
-         ) do
-      {:ok, attachments} -> Map.new(attachments, &{&1.document_id, &1})
-      {:error, _reason} -> %{}
-    end
+  defp statement_files(scope, company_id, statements) do
+    statements
+    |> Enum.map(& &1.id)
+    |> Enum.chunk_every(100)
+    |> Enum.flat_map(fn ids ->
+      case Attachments.list_company_attachments(scope, company_id,
+             source: Reconciliation.StatementSource.source_id(),
+             document_ids: ids
+           ) do
+        {:ok, attachments} -> attachments
+        {:error, _reason} -> []
+      end
+    end)
+    |> Map.new(&{&1.document_id, &1})
   end
 
   # The uploaded bytes are read once, here, and handed to the facade, which
@@ -371,7 +377,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
                     {statement.file_name}
                   </.link>
                 <% else %>
-                  <span title={"SHA-256 #{statement.file_sha256}; the file itself was not kept"}>
+                  <span title={"SHA-256 #{statement.file_sha256}; no source file is linked"}>
                     {statement.file_name}
                   </span>
                 <% end %>
