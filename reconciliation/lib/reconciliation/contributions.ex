@@ -34,7 +34,7 @@ defmodule Bilimbi.Finance.Reconciliation.Contributions do
         %{
           id: "finance.reconciliation",
           label: "Bank reconciliation",
-          icon: "scale",
+          icon: "building-library",
           parent: "finance",
           route: "/finance/reconciliation",
           capability: @view,

@@ -254,7 +254,10 @@ defmodule Bilimbi.Finance.Reconciliation.Web.BankAccountsLive do
         nil
 
       trimmed ->
-        if Regex.match?(~r/^\d+$/, trimmed), do: String.to_integer(trimmed), else: trimmed
+        case Integer.parse(trimmed) do
+          {position, ""} when position > 0 -> position
+          _header -> trimmed
+        end
     end
   end
 
