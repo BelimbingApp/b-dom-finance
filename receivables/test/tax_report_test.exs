@@ -125,23 +125,23 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
     test "makes an invoice still unpaid after the unpaid period due, and later credit notes deductible",
          context do
       %{operator: operator, standard_tax: standard} = context
-      invoice = issue!(context, "invoice", ~D[2025-09-10], [taxed("100", standard)])
-      {:ok, _part} = pay(context, invoice, "22", ~D[2025-12-01])
+      invoice = issue!(context, "invoice", ~D[2026-09-10], [taxed("100", standard)])
+      {:ok, _part} = pay(context, invoice, "22", ~D[2026-12-01])
 
       _early_credit =
-        issue!(context, "credit_note", ~D[2026-01-05], [taxed("20", standard)], invoice)
+        issue!(context, "credit_note", ~D[2027-01-05], [taxed("20", standard)], invoice)
 
-      # Twelve months from 10 September 2025 run from the 11th to 10
-      # September 2026, so the tax on what is still owed is due on the 11th.
-      {:ok, _late_payment} = pay(context, invoice, "11", ~D[2026-09-20])
+      # Twelve months from 10 September 2026 run from the 11th to 10
+      # September 2027, so the tax on what is still owed is due on the 11th.
+      {:ok, _late_payment} = pay(context, invoice, "11", ~D[2027-09-20])
 
       _late_credit =
-        issue!(context, "credit_note", ~D[2026-09-25], [taxed("10", standard)], invoice)
+        issue!(context, "credit_note", ~D[2027-09-25], [taxed("10", standard)], invoice)
 
       assert {:ok, rows} =
                Receivables.received_tax_totals(operator, 73,
-                 from: ~D[2026-09-01],
-                 to: ~D[2026-10-31]
+                 from: ~D[2027-09-01],
+                 to: ~D[2027-10-31]
                )
 
       assert [credited, unpaid] = rows
@@ -154,14 +154,14 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
 
       assert {:ok, []} =
                Receivables.received_tax_totals(operator, 73,
-                 from: ~D[2026-09-01],
-                 to: ~D[2026-09-10]
+                 from: ~D[2027-09-01],
+                 to: ~D[2027-09-10]
                )
 
       assert {:ok, [%{measure: "unpaid"}]} =
                Receivables.received_tax_totals(operator, 73,
-                 from: ~D[2026-09-11],
-                 to: ~D[2026-09-11]
+                 from: ~D[2027-09-11],
+                 to: ~D[2027-09-11]
                )
     end
 

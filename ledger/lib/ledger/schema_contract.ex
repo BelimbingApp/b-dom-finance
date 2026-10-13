@@ -18,7 +18,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
       20_261_012_214_100,
       20_261_013_101_700,
       20_261_015_150_000,
-      20_261_016_100_000
+      20_261_016_100_000,
+      20_261_017_100_000,
+      20_261_017_100_100
     ]
 
   @impl true
@@ -501,6 +503,58 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
               "debit >= (0)::numeric AND credit >= (0)::numeric AND " <>
                 "((debit = (0)::numeric) <> (credit = (0)::numeric))"
             )
+        }
+      },
+      %{
+        name: "finance_ledger_bookkeeping_changes",
+        columns:
+          owned_columns("finance_ledger_bookkeeping_changes")
+          |> Map.merge(%{
+            "change_number" => column(:bigint, false),
+            "controlled" => column(:boolean, false),
+            "reason" => column({:varchar, 500}, true),
+            "changed_by_user_id" => column(:bigint, false),
+            "changed_by_impersonator_id" => column(:bigint, true),
+            "changed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_bookkeeping_changes_pkey" => index(["id"], true),
+          "finance_ledger_bookkeeping_changes_company_number_unique" =>
+            index(["company_id", "change_number"], true),
+          "finance_ledger_bookkeeping_changes_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{},
+        checks: %{
+          "finance_ledger_bookkeeping_changes_change_number" => check("change_number > 0"),
+          "finance_ledger_bookkeeping_changes_reason" =>
+            check("controlled OR (reason IS NOT NULL AND btrim((reason)::text) <> ''::text)")
+        }
+      },
+      %{
+        name: "finance_ledger_late_recording_reviews",
+        columns:
+          owned_columns("finance_ledger_late_recording_reviews")
+          |> Map.merge(%{
+            "entry_id" => column(:bigint, false),
+            "reason" => column({:varchar, 500}, false),
+            "reviewed_by_user_id" => column(:bigint, false),
+            "reviewed_by_impersonator_id" => column(:bigint, true),
+            "reviewed_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_ledger_late_recording_reviews_pkey" => index(["id"], true),
+          "finance_ledger_late_recording_reviews_entry_unique" => index(["entry_id"], true),
+          "finance_ledger_late_recording_reviews_tenant_company_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_ledger_late_recording_reviews_entry_fkey" =>
+            company_reference("entry_id", "finance_ledger_entries")
+        },
+        checks: %{
+          "finance_ledger_late_recording_reviews_reason" =>
+            check("btrim((reason)::text) <> ''::text")
         }
       },
       %{

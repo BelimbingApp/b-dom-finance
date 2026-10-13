@@ -147,13 +147,21 @@ defmodule Bilimbi.Finance.Ledger.ClosingTest do
       end
     end
 
-    test "refuse postings before the first fiscal year, not after the last", context do
+    test "refuse postings before the first fiscal year, and after the last while controlled",
+         context do
       assert {:error, changeset} = post(context, ~D[2025-12-31], "10")
       assert %{entry_date: ["is before the first fiscal year"]} = errors_on(changeset)
-      assert {:ok, _} = post(context, ~D[2027-01-01], "10")
+      assert {:error, changeset} = post(context, ~D[2027-01-01], "10")
+      assert %{entry_date: ["falls in no fiscal period" <> _]} = errors_on(changeset)
 
       assert_raise Postgrex.Error, ~r/before the first fiscal year/, fn ->
         insert_entry_directly!(~D[2025-06-30])
+      end
+    end
+
+    test "a controlled company's database refuses a date after its last year", _context do
+      assert_raise Postgrex.Error, ~r/falls in no fiscal period/, fn ->
+        insert_entry_directly!(~D[2027-01-01])
       end
     end
 

@@ -115,10 +115,7 @@ defmodule Bilimbi.Finance.Receivables.OwnershipTest do
           "finance.ledger.periods.manage"
         ])
 
-      {:ok, %{periods: [october | _]}} =
-        Ledger.open_fiscal_year(manager, 73, %{start_date: ~D[2026-10-01]})
-
-      {:ok, _} = Ledger.close_period(manager, 73, october.id)
+      Bilimbi.Finance.Ledger.TestFixtures.close_periods_through!(manager, 73, ~D[2026-10-01])
 
       assert {:error, changeset} =
                Receivables.reverse_payment(operator, 73, payment.id, %{

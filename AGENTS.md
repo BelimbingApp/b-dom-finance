@@ -61,7 +61,11 @@ here; they govern this code and are not copied here.
   reverses it without the owner's record, which the owner's tie-out shows as
   a difference. A posted entry is never edited.
   Its `entry_date` must fall in an open period: handle that changeset
-  error, never reopen a period to post. A module's entries posted before
+  error, never reopen a period to post. A new company is controlled, so a
+  date no fiscal year covers is refused too. Module fixtures open the years
+  with `Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!/2` right after
+  `Ledger.open_book`; a test that needs a year reuses the one it opens, since
+  years cannot overlap. A module's entries posted before
   owners were recorded are claimed by that module's own migration through
   the ledger's `finance_ledger_claim_legacy_entry`
   (`receivables/priv/repo/migrations/20261015150100_*`), never by writing

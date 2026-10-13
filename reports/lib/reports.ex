@@ -1,9 +1,10 @@
 defmodule Bilimbi.Finance.Reports do
   @moduledoc """
-  A company's financial statements, read live from its general ledger:
-  profit and loss for date ranges, the balance sheet and the cash position
-  as of dates, headline figures for a period against the one before it, and
-  the entries behind any account's figure.
+  A company's management reports, read live from its general ledger: profit
+  and loss for date ranges, the balance sheet and the cash position as of
+  dates, headline figures for a period against the one before it, and the
+  entries behind any account's figure. They are management reports for the
+  company's own use, not statutory financial statements.
 
   Every figure comes from `Bilimbi.Finance.Ledger`'s facade; this module
   stores issued snapshots and reads none of the ledger's tables. Each function takes the

@@ -1,13 +1,26 @@
 # Reports
 
-Module ID: `finance/reports`. A company's financial statements, read live
+Module ID: `finance/reports`. A company's management reports, read live
 from its general ledger: profit and loss for any date range, the balance
 sheet and the cash position as of any date, headline figures against the
-previous period, and the entries behind any account's figure; and the page
-an independent reviewer reads the ledger's approval exceptions on. It stores
+previous period, and the entries behind any account's figure; and the pages
+an independent reviewer reads the ledger's approval exceptions and entries
+recorded late on, with the company's bookkeeping controls. It stores
 immutable issued snapshots; ledger figures come through `finance/ledger`'s
-facade, and the only other writes its pages make (the separation setting, a
-review) are that facade's calls.
+facade, and the only other writes its pages make (the separation setting,
+controlled bookkeeping, a fiscal year, a review) are that facade's calls.
+
+## Management reports, not statutory statements
+
+Profit and loss, the balance sheet, and the cash position are management
+reports for the company's own use. Every page that shows them says so, and
+their exports, if any are added, must carry the same label: the Reports page
+states it above the figures, each statement is labelled "Management report:",
+and the overview's headings say "(management)". They are not statutory
+financial statements. There is no cash flow statement, no statement of
+changes in equity or other comprehensive income, no notes, and no
+consolidation, and currency translation is not built in. A statement layout
+that a standard requires (MFRS, IFRS, or another) is not produced here.
 
 ## Public API
 
@@ -131,14 +144,30 @@ through this facade.
 ## Pages
 
 `/finance/reports` (menu Finance › Reports, route capability
-`finance.ledger.view`) shows one period, chosen with the shared period
-filter, in four tabs: an overview of the headline figures against the
-previous period, profit and loss, balance sheet, and cash position. Each
+`finance.ledger.view`, titled Management reports) shows one period, chosen
+with the shared period filter, in four tabs: an overview of the headline
+figures against the previous period, profit and loss, balance sheet, and cash
+position, each labelled as a management report. Each
 account's amount links to `/finance/reports/accounts/:account_id`, which
 lists the entries behind it with who posted each and when. The page reads
 again when an entry posts. "Pin these figures" adds the report's entry
 number to the address and stops automatic posting updates. The address
 freezes ledger postings; it is not an issued copy and metadata can still change.
+
+`/finance/reports/bookkeeping` (menu Finance › Bookkeeping, route capability
+`finance.ledger.view`) shows whether the company is controlled, and why it
+was last changed, with every change. A controlled company with no fiscal year
+is told so, and the first year is opened on this page (`open_fiscal_year/3`,
+`finance.ledger.periods.manage`), explicitly, before anything posts; turning
+controlled bookkeeping on (`finance.ledger.controlled-bookkeeping.manage`) is
+one button, and turning it off asks for a reason, which the approval
+exceptions then list. Below it are the entries recorded 45 or more days after
+their transaction dates, approaching (45 to 60 days) or late (over 60), with
+who posted each and its review; an independent reviewer records the reason
+for each with `finance.ledger.late-recordings.review`, which the ledger's
+facade refuses from whoever posted the entry. The list leaves out the
+year-end closing entries and reopen reversals the ledger writes itself, as
+the figures' `exclude_closing` does. The ledger's README describes both rules.
 
 `/finance/reports/approval-exceptions` (menu Finance › Approval
 exceptions, route capability `finance.ledger.view`) is the ledger's approval
@@ -162,8 +191,8 @@ four columns, and the overview four windows.
 
 ## Standards addressed
 
-The module is built to the audit and reporting standards a company's
-accounts are held to. What this slice covers:
+The module supports the audit trail a company's accounts are reviewed on.
+What it covers:
 
 - **Issued reports.** `issue_report/5` stores the figures, dates, entry cutoff,
   chart, layout, labels, generator version, issuer and database-stamped time.
@@ -183,13 +212,24 @@ accounts are held to. What this slice covers:
 - **Independent review.** The approval exceptions page lists, by period,
   what an independent reviewer reads when a company cannot separate duties
   (same-person approvals) and every override of a control, and records each
-  review with the reviewer and time.
-- **No standard hard-coded.** Statements group by the five account types and
-  the company's own sections; no chart, heading, or statement format of any
-  accounting standard is built in. A company presents to its standard
-  (MFRS, IFRS, or another) by configuring sections.
+  review with the reviewer and time. The bookkeeping page lists the entries
+  recorded late the same way, with each review.
+- **No standard hard-coded.** Management reports group by the five account
+  types and the company's own sections; no chart, heading, or statement
+  format of any accounting standard is built in, and none is claimed.
 
-Not covered: a cash flow statement and notes.
+Known gaps, not built, so these outputs are management reports only:
+
+- an accountant-adjustment or statutory-pack bridge from these figures to
+  statutory statements;
+- a cash flow statement;
+- a statement of changes in equity or other comprehensive income;
+- notes to the statements;
+- versioned restatement that retains the originally issued report (a
+  current-period reversal is not one);
+- SST return source-linked tax-point, rate, and exemption adjustments, their
+  approvals, the filed version and acknowledgment, and payment evidence;
+- payroll posting tied to an approved pay run with its source evidence.
 
 ## Tests
 
@@ -197,7 +237,8 @@ Module tests run on the ledger's temporary tables
 (`Bilimbi.Finance.Ledger.TestFixtures`) and the Settings table;
 `test/support/test_fixtures.ex` builds a chart with a parent account and
 installs a contribution snapshot with the ledger's capabilities and this
-module's setting. `web_test/` drives the pages in the real host; a sandboxed
+module's setting. `web_test/` drives the pages in the real host, the
+bookkeeping page included; a sandboxed
 post never commits, so the live update is proved there by delivering the
 notice the ledger sends after a commit.
 
@@ -227,6 +268,7 @@ The archive includes line-level ledger entries/lines and chart, trial balance,
 AR/AP documents, lines, tax, payments and allocations, payment requests with
 their events, fiscal closing events, manual journals with their lines and
 decisions, approval exceptions with their reviews, duty-separation changes,
+controlled-bookkeeping changes, late-recording reviews,
 e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own

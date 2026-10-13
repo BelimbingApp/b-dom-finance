@@ -38,6 +38,16 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
                      __DIR__
                    )
 
+  @controlled_migration Path.expand(
+                          "../../priv/repo/migrations/20261017100000_add_finance_ledger_controlled_bookkeeping.exs",
+                          __DIR__
+                        )
+
+  @late_recording_migration Path.expand(
+                              "../../priv/repo/migrations/20261017100100_add_finance_ledger_late_recording_reviews.exs",
+                              __DIR__
+                            )
+
   @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
   @migration_files [
@@ -50,7 +60,11 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
     {20_261_015_150_000, Bilimbi.Finance.Ledger.Migrations.AddEntryOwner,
      "20261015150000_add_finance_ledger_entry_owner.exs"},
     {20_261_016_100_000, Bilimbi.Finance.Ledger.Migrations.AddDutySeparation,
-     "20261016100000_add_finance_ledger_duty_separation.exs"}
+     "20261016100000_add_finance_ledger_duty_separation.exs"},
+    {20_261_017_100_000, Bilimbi.Finance.Ledger.Migrations.AddControlledBookkeeping,
+     "20261017100000_add_finance_ledger_controlled_bookkeeping.exs"},
+    {20_261_017_100_100, Bilimbi.Finance.Ledger.Migrations.AddLateRecordingReviews,
+     "20261017100100_add_finance_ledger_late_recording_reviews.exs"}
   ]
 
   @doc """
@@ -119,6 +133,40 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
     Authentication.sign_in(scope, user_id, company_id)
   end
 
+  @doc """
+  Opens three fiscal years of a company whose book is open, as a period keeper
+  with the periods capability, so a test posts into them the way a controlled
+  company's first years are opened. The first year starts on `first_start`
+  (January 2026 unless a test posts into earlier months) and the two after it
+  follow. Tests that open their own years do not call it. Any scope of the
+  company's tenant will do.
+  """
+  def open_fiscal_years!(%Scope{} = scope, company_id, first_start \\ ~D[2026-01-01]) do
+    {:ok, tenant} = Tenancy.scope(Scope.tenant_id(scope))
+    keeper = sign_in!(tenant, company_id, 90, ["finance.ledger.periods.manage"])
+    {:ok, _year} = Ledger.open_fiscal_year(keeper, company_id, %{start_date: first_start})
+    Enum.each(1..2, fn _ -> {:ok, _year} = Ledger.open_fiscal_year(keeper, company_id) end)
+    :ok
+  end
+
+  @doc """
+  Closes the company's periods in date order, from the first through the one
+  starting on `through`, so a later period can close: a period closes only
+  after the one before it.
+  """
+  def close_periods_through!(%Scope{} = scope, company_id, through) do
+    {:ok, years} = Ledger.list_fiscal_years(scope, company_id)
+    # ISO dates sort in date order; a Date struct's own fields would not.
+    periods =
+      years |> Enum.flat_map(& &1.periods) |> Enum.sort_by(&Date.to_iso8601(&1.start_date))
+
+    for period <- Enum.take_while(periods, &(Date.compare(&1.start_date, through) != :gt)) do
+      {:ok, _period} = Ledger.close_period(scope, company_id, period.id)
+    end
+
+    :ok
+  end
+
   @doc "Denies one capability directly, which overrides any allow."
   def revoke!(%Scope{} = scope, company_id, user_id, capability) do
     {:ok, :stored} =
@@ -135,7 +183,11 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
   def create_ledger_tables! do
     Enum.each(
       ledger_statements() ++
-        closing_statements() ++ owner_statements() ++ duty_separation_statements(),
+        closing_statements() ++
+        owner_statements() ++
+        duty_separation_statements() ++
+        controlled_bookkeeping_statements() ++
+        late_recording_statements(),
       &SQL.query!(Repo, &1, [])
     )
   end
@@ -145,6 +197,25 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
     migration = Bilimbi.Finance.Ledger.Migrations.AddDutySeparation
 
     unless Code.ensure_loaded?(migration), do: Code.require_file(@duty_separation_migration)
+
+    apply(migration, :statements, [[temporary: true]])
+  end
+
+  # The controlled bookkeeping migration's own statements, which replace the
+  # entries' closed-period function over the copies above.
+  defp controlled_bookkeeping_statements do
+    migration = Bilimbi.Finance.Ledger.Migrations.AddControlledBookkeeping
+
+    unless Code.ensure_loaded?(migration), do: Code.require_file(@controlled_migration)
+
+    apply(migration, :statements, [[temporary: true]])
+  end
+
+  # The late-recording migration's own statements, over the entries copy above.
+  defp late_recording_statements do
+    migration = Bilimbi.Finance.Ledger.Migrations.AddLateRecordingReviews
+
+    unless Code.ensure_loaded?(migration), do: Code.require_file(@late_recording_migration)
 
     apply(migration, :statements, [[temporary: true]])
   end

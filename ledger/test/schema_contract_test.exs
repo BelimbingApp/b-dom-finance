@@ -20,6 +20,16 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../priv/repo/migrations/20261017100000_add_finance_ledger_controlled_bookkeeping.exs",
+  __DIR__
+)
+
+Code.require_file(
+  "../priv/repo/migrations/20261017100100_add_finance_ledger_late_recording_reviews.exs",
+  __DIR__
+)
+
 defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   use ExUnit.Case, async: false
 
@@ -27,8 +37,10 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   alias Bilimbi.Base.Repo
 
   alias Bilimbi.Finance.Ledger.Migrations.{
+    AddControlledBookkeeping,
     AddDutySeparation,
     AddEntryOwner,
+    AddLateRecordingReviews,
     CreateClosing,
     CreateLedger,
     NotifyPostings
@@ -60,7 +72,15 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
 
     [earlier, later] =
       SchemaContract.migration_versions()
-      |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner, AddDutySeparation])
+      |> Enum.zip([
+        CreateLedger,
+        NotifyPostings,
+        CreateClosing,
+        AddEntryOwner,
+        AddDutySeparation,
+        AddControlledBookkeeping,
+        AddLateRecordingReviews
+      ])
       |> Enum.split(3)
       |> Tuple.to_list()
 
@@ -89,7 +109,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
             NotifyPostings,
             CreateClosing,
             AddEntryOwner,
-            AddDutySeparation
+            AddDutySeparation,
+            AddControlledBookkeeping,
+            AddLateRecordingReviews
           ])
           |> Enum.reverse() do
       assert :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
@@ -392,6 +414,19 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
                "SELECT journal_number, submitted_at > '2026-01-01' FROM finance_ledger_journals"
              )
 
+    # The later Bilimbi-only migrations share the refuse function it creates,
+    # so they roll back first and reapply after it.
+    later = [
+      {20_261_017_100_100, AddLateRecordingReviews},
+      {20_261_017_100_000, AddControlledBookkeeping}
+    ]
+
+    for {version, migration} <- later,
+        do:
+          assert(
+            :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
+          )
+
     assert :ok =
              Ecto.Migrator.down(Repo, 20_261_016_100_000, AddDutySeparation,
                log: false,
@@ -408,6 +443,10 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
                log: false,
                dynamic_repo: repo
              )
+
+    for {version, migration} <- Enum.reverse(later),
+        do:
+          assert(:ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo))
 
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end

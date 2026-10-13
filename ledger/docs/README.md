@@ -14,7 +14,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | Function | Capability | Does |
 | --- | --- | --- |
 | `get_book/2` | `finance.ledger.view` | The company's currency code and minor units |
-| `open_book/3` | `finance.ledger.accounts.manage` | Opens the book once with `currency_code` and `minor_units` |
+| `open_book/3` | `finance.ledger.accounts.manage` | Opens the book once with `currency_code` and `minor_units`; a new company's book is controlled (see Controlled bookkeeping) |
 | `list_accounts/2` | `finance.ledger.view` | The chart of accounts by code |
 | `create_account/3` | `finance.ledger.accounts.manage` | Adds an account: `code`, `name`, `account_type`, optional `parent_id`, `active`, `retained_earnings` |
 | `update_account/4` | `finance.ledger.accounts.manage` | Changes `name`, `parent_id`, `active`, or `retained_earnings` |
@@ -26,7 +26,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `account_totals/3` | `finance.ledger.view` | Per-account debit and credit totals over entries dated `from` through `to`, optionally `through_entry_number` and `exclude_closing` |
 | `account_totals_by_owner/3` | `finance.ledger.view` | The same totals, one row per account and owner module, for a control-account tie-out |
 | `subscribe_postings/2` | `finance.ledger.view` | Sends the caller a notice for each of the company's entries once its transaction commits |
-| `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods |
+| `open_fiscal_year/3` | `finance.ledger.periods.manage` | Opens the next fiscal year, `start_date` and `end_date`, as monthly periods; a controlled company's first year is opened here |
 | `list_fiscal_years/2`, `get_fiscal_year/3` | `finance.ledger.view` | Fiscal years with their status, closing entry, and periods |
 | `list_closing_events/3` | `finance.ledger.view` | A fiscal year's closing log, oldest first |
 | `close_period/4` | `finance.ledger.periods.manage` | Closes an open period, optional `reason` |
@@ -34,6 +34,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `lock_period/4` | `finance.ledger.periods.lock` | Locks a closed period for good, optional `reason` |
 | `close_fiscal_year/4` | `finance.ledger.periods.manage` and `finance.ledger.entries.post` | Posts the closing entry into retained earnings and closes the year; idempotent |
 | `reopen_fiscal_year/4` | `finance.ledger.periods.reopen` and `finance.ledger.entries.post` | Reopens a closed year with a `reason`, reversing its closing entry |
+| `get_controlled_bookkeeping/2`, `list_controlled_bookkeeping_changes/2` | `finance.ledger.view` | Whether the company is controlled, how many fiscal years it has, and every change to the setting |
+| `set_controlled_bookkeeping/3` | `finance.ledger.controlled-bookkeeping.manage` | Turns controlled bookkeeping on, or off with a `reason` (turning it off is listed as an override) |
+| `list_late_recordings/3`, `late_recording_thresholds/0` | `finance.ledger.view` | Entries recorded 45 or more days after their transaction date, late past 60, with their reviews; `list_late_recordings/3` takes `status`, `reviewed`, `limit`, and `after` |
+| `record_late_recording_review/4` | `finance.ledger.late-recordings.review` | An independent reviewer's `reason` for an entry recorded late, once, by someone who did not post it |
 | `get_duty_separation/2`, `list_duty_separation_changes/2` | `finance.ledger.view` | Whether the company requires separation of duties, and every change to it |
 | `set_duty_separation/3` | `finance.ledger.duty-separation.manage` | Turns it on or off: `required`, and a `reason` to turn it off |
 | `check_approval/3` | `finance.ledger.view` | For a module approving a record: refuses the preparer while separation is required, and records a same-person approval or an override as an approval exception |
@@ -57,7 +61,7 @@ archived company is `{:error, :company_archived}` and one company's ledger
 writes run one at a time; that lock is also what keeps an account from being
 deactivated while an entry posts to it, and a period from closing while an
 entry posts into it. Ledger figures are financial facts, so reads need
-`finance.ledger.view`; the Tenant Owner role holds all ten capabilities.
+`finance.ledger.view`; the Tenant Owner role holds all twelve capabilities.
 Closing, reopening, and locking are separate capabilities, so a company can
 let one person close periods and keep reopening and locking with another.
 Closing and reopening a fiscal year also post an entry, so each needs the
@@ -117,8 +121,9 @@ debits equal credits (an inactive account is allowed only under the
 settlement exception below); otherwise it returns a changeset whose `lines`
 errors say why, per line where one line is at fault. Its `entry_date` must
 fall in an open period (see Period closing); otherwise the changeset's
-`entry_date` error says the period is closed or locked, or that the date is
-before the company's first fiscal year. A posted entry and its lines are
+`entry_date` error says the period is closed or locked, that the date is
+before the company's first fiscal year, or, for a controlled company (see
+Controlled bookkeeping), that no fiscal period covers the date. A posted entry and its lines are
 immutable. `reverse_entry/4` corrects one by posting the same lines with
 debits and credits swapped, on a date not before the original's; an entry is
 reversed at most once and a reversal is not itself reversed, so a correction
@@ -282,9 +287,10 @@ the company chooses; each later year starts the day after the previous one
 ends, and that is its default. `end_date`, the last day of a month, defaults
 to twelve months on; a year runs one to 24 months, so a short first year or a
 long transitional one fits. A year's periods are fixed once it is open.
-Fiscal years are optional, but once a company has one, no entry is dated
-before its first year; an entry after its last year posts, so a company opens
-the next year before closing into it.
+Fiscal years are optional for an uncontrolled company, but once it has one,
+no entry is dated before its first year. A controlled company (see Controlled
+bookkeeping) also needs a period covering an entry's date, so it opens its
+first year explicitly and the next one before posting past the last.
 
 A period is `open`, `closed`, or `locked`, and a year `open` or `closed`.
 Neither status is stored: each is the latest event in the company's closing
@@ -303,6 +309,63 @@ So periods close and lock in date order and reopen in reverse: a closed
 period's figures never change under a later one, and only the privileged
 reopen capability, with a recorded reason, opens one again. A locked period
 never reopens.
+
+## Controlled bookkeeping
+
+A company is controlled or not by the latest of its append-only controlled
+bookkeeping changes, each with the actor, any impersonator, a reason, and the
+database's time. `open_book/3` records that a new company is controlled. A
+company with no change, such as one that existed before the setting, is not
+controlled and posts as it always did until someone turns the setting on.
+
+Controlled, an entry posts only into a fiscal period, and that period must be
+open. The first year is opened explicitly with `open_fiscal_year/3`: until
+then nothing posts, and the changeset says so, which is the setup step the
+company completes. An entry dated after the last year is refused until the
+next year is opened. Turning the setting off is a call of
+`set_controlled_bookkeeping/3` with a `reason`, and it is recorded as an
+override in the approval exceptions for an independent reviewer; turning it
+on needs no reason. A call that changes nothing records nothing.
+
+What the setting does not refuse: an old transaction. An entry dated into an
+open period posts however late it is recorded, so catch-up accounting stays
+possible, and the late-recording report below is what makes the lateness
+visible. A closed or locked period refuses an entry as before, and nothing
+here reopens one.
+
+The rule is in two places that agree. The facade checks it before inserting,
+so the changeset names it. The database's entries trigger checks it again, so
+no other writer can post into a date no period covers.
+
+## Late recordings
+
+An entry's transaction date is its `entry_date`; the time it was recorded is
+its `posted_at`, which the database stamps. `list_late_recordings/3` lists the
+posted entries recorded 45 or more days after their transaction dates, as
+`"approaching"` (45 to 60 days) or `"late"` (more than 60), in whole UTC days,
+so the report needs no company time zone. `late_recording_thresholds/0` gives
+the two numbers.
+
+The report leaves out the entries the ledger writes itself when a fiscal year
+closes or reopens: the year-end closing entry and its reversal, dated the
+year's last day and recorded whenever the close or reopen happens. They are
+the same entries `exclude_closing: true` leaves out of the figures, and the
+exclusion is in the facade, so every reader of the report agrees. They cannot
+be reviewed (`{:error, :entry_not_found}`).
+
+An independent reviewer records a `reason` for each late entry once with
+`record_late_recording_review/4`, the same way approval exceptions are
+reviewed: by someone who did not post the entry or impersonate its poster,
+and only an entry the report lists can be reviewed. The reviews are
+append-only and stamped by the database, and the database refuses a review
+of an entry recorded less than 45 days late, a second review, and a reviewer
+who overlaps the poster. The Reports module's `/finance/reports/bookkeeping`
+page (menu Finance › Bookkeeping) shows the setting, its first-year step, and
+this report.
+
+The report covers entries the ledger has recorded. It cannot see a
+transaction no module has posted yet; a monitor for those needs the source
+documents' own dates, which is later work.
 
 ## Year-end close
 
@@ -350,7 +413,7 @@ columns one state of the ledger. `exclude_closing: true`, on it and on
 `list_entries/3`, leaves out every year-end closing entry and every
 reversal of one, so income and expense over a closed year show its
 activity; the set is fixed at any entry number, because a close event and
-its entry are written in one transaction. Financial statements are built on it
+its entry are written in one transaction. Management reports are built on it
 in the sibling `finance/reports` module.
 
 ## Posting notices
@@ -398,8 +461,15 @@ them:
   `posted_at`, replacing whatever the inserting writer sent, and a unique
   index refuses a reused number;
 - a trigger refuses an entry dated in a closed or locked period, or before
-  the company's first fiscal year, and holds a share lock on the period until
-  the posting commits, so a period cannot close under it;
+  the company's first fiscal year, or, for a controlled company, dated in no
+  period, and holds a share lock on the period until the posting commits, so
+  a period cannot close under it;
+- controlled bookkeeping changes are append-only, numbered and stamped by the
+  database, and a change must change the setting; a company with none is not
+  controlled;
+- late-recording reviews are append-only and stamped by the database; a
+  review is refused for an entry recorded less than 45 days late, a second
+  review of one entry, and a reviewer who overlaps the poster;
 - fiscal years, periods, and closing events are append-only; a year starts
   the day after the previous one ends, its periods are added in its own
   transaction one month at a time, and a deferred trigger refuses a commit in
@@ -505,10 +575,19 @@ accounts are held to. What this slice covers:
   row. Records therefore outlive any statutory retention period, such as the seven years Malaysia's Companies Act 2016
   requires; how long a company must keep them is law, not code.
 
-Financial statements (profit and loss, balance sheet, cash position) are
-the sibling `finance/reports` module, read through `account_totals/3` and
-`list_entries/3`. Statement layouts specific to MFRS or IFRS, and tax, are
-later work in sibling modules.
+Management reports (profit and loss, balance sheet, cash position) are the
+sibling `finance/reports` module, read through `account_totals/3` and
+`list_entries/3`. They are not statutory financial statements. Known gaps, not
+built here:
+
+- an accountant-adjustment or statutory-pack bridge;
+- a cash flow statement;
+- a statement of changes in equity or other comprehensive income, and notes;
+- consolidation and statutory layouts (MFRS or IFRS);
+- versioned restatement that retains the originally issued report;
+- SST return source-linked tax-point, rate, and exemption adjustments, their
+  approvals, the filed version and acknowledgment, and payment evidence;
+- payroll posting tied to an approved pay run with its source evidence.
 
 ## Tests
 
@@ -527,10 +606,17 @@ it could never deliver. `test/schema_contract_test.exs` proves the real
 trigger, and `test/postings_test.exs` proves who hears a notice by sending
 one committed outside the sandbox.
 
+`test/controlled_bookkeeping_test.exs` proves the controlled setting and the
+period rule an uncontrolled company escapes, and `test/late_recordings_test.exs`
+proves the late-recording report and its reviews. A module's fixtures open
+fiscal years with `TestFixtures.open_fiscal_years!/2` after opening the book,
+since a controlled company posts only into a period.
+
 `test/duty_separation_test.exs` proves the setting, `check_approval/3`
 (impersonation included), reviews, and manual journals; the rules only a
 commit shows (a journal's later lines, its balance) are proved in
 `test/schema_contract_test.exs`.
 
 The ledger has no pages, menu entries, or agent operations; callers use the
-facade. The approval exceptions page is the Reports module's.
+facade. The approval exceptions and bookkeeping pages are the Reports
+module's.

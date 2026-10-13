@@ -92,6 +92,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
     operator = sign_in!(first, 73, 91, @ledger ++ @attachments ++ receivables_capabilities())
 
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(operator, 73)
 
     accounts =
       Map.new(

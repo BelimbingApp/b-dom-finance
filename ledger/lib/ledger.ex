@@ -58,6 +58,16 @@ defmodule Bilimbi.Finance.Ledger do
   Every close, reopen, and lock is an append-only closing event recording who
   did it, when, and why; a status is the latest event's.
 
+  A company that is controlled (`set_controlled_bookkeeping/3`; a new
+  company's book opens controlled) posts only into a fiscal period it has
+  opened and left open, so the first year is opened explicitly with
+  `open_fiscal_year/3`, and an entry dated after the last year is refused
+  until the next one is opened. Entries are never refused for being old: an
+  entry dated into an open period posts, however late. The entries recorded
+  45 or more days after their dates are listed by `list_late_recordings/3`,
+  and an independent reviewer records the reason for each with
+  `record_late_recording_review/4`.
+
   A company requires separation of duties unless it turns it off: the
   person who approves a record, or whoever impersonated them, is not the
   person who prepared it. `check_approval/3` is how every Finance approval
@@ -81,6 +91,8 @@ defmodule Bilimbi.Finance.Ledger do
     Account,
     ApprovalException,
     Book,
+    Bookkeeping,
+    BookkeepingChange,
     ClosingEvent,
     Duties,
     DutySeparationChange,
@@ -89,6 +101,7 @@ defmodule Bilimbi.Finance.Ledger do
     Journal,
     JournalEvent,
     JournalLine,
+    LateRecordings,
     Line,
     Period,
     Postings
@@ -103,6 +116,8 @@ defmodule Bilimbi.Finance.Ledger do
   @reopen_periods "finance.ledger.periods.reopen"
   @lock_periods "finance.ledger.periods.lock"
   @manage_duty_separation "finance.ledger.duty-separation.manage"
+  @manage_controlled_bookkeeping "finance.ledger.controlled-bookkeeping.manage"
+  @review_late_recordings "finance.ledger.late-recordings.review"
   @submit_journals "finance.ledger.journals.submit"
   @approve_journals "finance.ledger.journals.approve"
   @review_exceptions "finance.ledger.approval-exceptions.review"
@@ -137,6 +152,12 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc "The capability that turns the company's separation of duties on or off."
   def manage_duty_separation_capability, do: @manage_duty_separation
+
+  @doc "The capability that turns the company's controlled bookkeeping on or off."
+  def manage_controlled_bookkeeping_capability, do: @manage_controlled_bookkeeping
+
+  @doc "The capability that records an independent review of an entry recorded late."
+  def review_late_recordings_capability, do: @review_late_recordings
 
   @doc "The capability that submits a manual journal for approval."
   def submit_journals_capability, do: @submit_journals
@@ -191,10 +212,15 @@ defmodule Bilimbi.Finance.Ledger do
       if book(scope, company_id) do
         {:error, :book_already_open}
       else
-        %Book{tenant_id: Scope.tenant_id(scope), company_id: company_id}
-        |> Book.changeset(attributes)
-        |> Repo.insert()
-        |> public_result(&book_view/1)
+        # A new company is controlled from the start; see the module doc.
+        with {:ok, book} <-
+               %Book{tenant_id: Scope.tenant_id(scope), company_id: company_id}
+               |> Book.changeset(attributes)
+               |> Repo.insert(),
+             {:ok, _change, _outcome} <-
+               Bookkeeping.change(scope, company_id, %{controlled: true}) do
+          {:ok, book_view(book)}
+        end
       end
     end)
   end
@@ -279,9 +305,11 @@ defmodule Bilimbi.Finance.Ledger do
   The entry is refused with a changeset error unless it has at least two
   lines, its debits equal its credits, every line names an active account
   of the company with one positive amount no finer than the book's minor
-  units, and `entry_date` falls in an open period, or after the company's
-  last fiscal year, but not before its first. `{:error, :book_not_open}`
-  before the book is opened.
+  units, and `entry_date` falls in an open period, not before the company's
+  first fiscal year. A controlled company (see `set_controlled_bookkeeping/3`)
+  also needs a fiscal period covering the date, so a date after its last year
+  is refused until the next year is opened; an uncontrolled company may post
+  after its last year. `{:error, :book_not_open}` before the book is opened.
 
   Options:
 
@@ -974,6 +1002,158 @@ defmodule Bilimbi.Finance.Ledger do
     )
   end
 
+  ## Controlled bookkeeping
+
+  @doc """
+  The company's controlled bookkeeping: `%{controlled, change, fiscal_years}`,
+  where `change` is the latest change (`list_controlled_bookkeeping_changes/2`
+  shows them all) or nil, and `fiscal_years` counts the company's fiscal
+  years. A company with no change is not controlled; a new company's book
+  opens controlled. A controlled company with no fiscal year has no period to
+  post into until one is opened with `open_fiscal_year/3`.
+  """
+  @spec get_controlled_bookkeeping(Scope.t(), term()) :: {:ok, map()} | {:error, refusal()}
+  def get_controlled_bookkeeping(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok, controlled_view(scope, company_id)}
+    end
+  end
+
+  @doc """
+  Turns the company's controlled bookkeeping on or off: `controlled` (a
+  boolean) and a `reason`, which turning it off needs. The change is appended
+  to the company's history with the actor, any impersonator, and the
+  database's time; a call that changes nothing records nothing.
+
+  Turning it off overrides a control, so it is listed in the approval
+  exceptions for an independent reviewer, with its reason. Turning it on
+  needs no reason.
+  """
+  @spec set_controlled_bookkeeping(Scope.t(), term(), map()) ::
+          {:ok, map()} | {:error, write_refusal() | Changeset.t()}
+  def set_controlled_bookkeeping(%Scope{} = scope, company_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @manage_controlled_bookkeeping, fn ->
+      with {:ok, change, outcome} <- Bookkeeping.change(scope, company_id, attributes),
+           {:ok, _exception} <- record_controlled_off(scope, company_id, change, outcome) do
+        {:ok, controlled_view(scope, company_id)}
+      end
+    end)
+  end
+
+  defp record_controlled_off(_scope, _company_id, _change, :unchanged), do: {:ok, nil}
+  defp record_controlled_off(_scope, _company_id, %{controlled: true}, _outcome), do: {:ok, nil}
+
+  defp record_controlled_off(scope, company_id, change, :recorded) do
+    Duties.check(scope, company_id, %{
+      source: "finance/ledger",
+      action: "controlled_bookkeeping_off",
+      subject_type: "bookkeeping",
+      subject_id: change.id,
+      subject: "Controlled bookkeeping of the company",
+      prepared_by: [],
+      override: true,
+      reason: change.reason
+    })
+  end
+
+  @doc "Every change of the company's controlled bookkeeping, oldest first."
+  @spec list_controlled_bookkeeping_changes(Scope.t(), term()) ::
+          {:ok, [map()]} | {:error, refusal()}
+  def list_controlled_bookkeeping_changes(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok,
+       scope
+       |> Bookkeeping.changes(company_id)
+       |> Enum.map(&bookkeeping_change_view/1)}
+    end
+  end
+
+  ## Late recordings
+
+  @doc """
+  The thresholds of the late-recording report, in days from an entry's date
+  to its recording: an entry is listed from `approaching_days`, and is late
+  past `late_days`.
+  """
+  @spec late_recording_thresholds() :: %{
+          approaching_days: pos_integer(),
+          late_days: pos_integer()
+        }
+  def late_recording_thresholds, do: LateRecordings.thresholds()
+
+  @doc """
+  Posted entries recorded late, oldest entry number first. Each has
+  `entry_number`, `entry_id`, `entry_date` (its transaction date), `posted_at`
+  (when it was recorded), `days` (whole days from one to the other), `status`
+  (`"approaching"` or `"late"`), `description`, `reference`, who posted it, and
+  `review` (the reviewer's `reason`, `reviewed_by_user_id`,
+  `reviewed_by_impersonator_id`, and `reviewed_at`) or nil.
+
+  Options: `status` (`"approaching"` or `"late"`; omitted lists both),
+  `reviewed` (`true` or `false`; omitted lists both), `limit` (default 100, at
+  most 500), and `after`, the last `entry_number` of the previous page. A
+  malformed option is `{:error, :invalid_option}`.
+  """
+  @spec list_late_recordings(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def list_late_recordings(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, filters} <- late_recording_options(options) do
+      {:ok,
+       scope
+       |> LateRecordings.list(company_id, filters)
+       |> Enum.map(&late_recording_view/1)}
+    end
+  end
+
+  defp late_recording_options(options) do
+    with true <- Keyword.keyword?(options),
+         {:ok, filters} <-
+           Keyword.validate(options,
+             status: nil,
+             reviewed: nil,
+             limit: @default_entry_limit,
+             after: nil
+           ),
+         filters = Map.new(filters),
+         true <- filters.status in [nil, "approaching", "late"],
+         true <- filters.reviewed in [nil, true, false],
+         true <- is_integer(filters.limit) and filters.limit in 1..@max_entry_limit,
+         true <- is_nil(filters.after) or (is_integer(filters.after) and filters.after >= 0) do
+      {:ok, filters}
+    else
+      _invalid -> {:error, :invalid_option}
+    end
+  end
+
+  @doc """
+  Records an independent review of a late entry, with its `reason`: who
+  reviewed it, any impersonator, and the database's time. An entry is reviewed
+  once (`{:error, :already_reviewed}`), it must be listed
+  (`{:error, :not_late_recorded}`), and never reviewed by whoever posted it or
+  impersonated its poster (`{:error, :reviewer_not_independent}`).
+  """
+  @spec record_late_recording_review(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :entry_not_found
+             | :not_late_recorded
+             | :already_reviewed
+             | :reviewer_not_independent
+             | Changeset.t()}
+  def record_late_recording_review(%Scope{} = scope, company_id, entry_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @review_late_recordings, fn ->
+      case LateRecordings.entry(scope, company_id, entry_id) do
+        nil -> {:error, :entry_not_found}
+        entry -> LateRecordings.review(scope, company_id, entry, attributes)
+      end
+    end)
+    |> public_result(&late_review_view/1)
+  end
+
   ## Fiscal years and periods
 
   @doc """
@@ -1493,8 +1673,9 @@ defmodule Bilimbi.Finance.Ledger do
     scope |> closing_state(company_id) |> find_year(fiscal_year_id)
   end
 
-  # An entry dates into an open period, or after the company's last fiscal
-  # year; once a company has fiscal years, never before its first.
+  # An entry dates into an open period. Once a company has fiscal years, never
+  # before its first; a controlled company also needs a period covering the
+  # date, which the database's rule checks too.
   defp validate_open_period(changeset, scope, company_id) do
     Changeset.validate_change(changeset, :entry_date, fn :entry_date, date ->
       period =
@@ -1515,6 +1696,9 @@ defmodule Bilimbi.Finance.Ledger do
         |> where([p], p.start_date > ^date)
         |> Repo.exists?() ->
           [entry_date: "is before the first fiscal year"]
+
+        Bookkeeping.controlled?(scope, company_id) ->
+          [entry_date: "falls in no fiscal period: open the fiscal year that covers it first"]
 
         true ->
           []
@@ -2046,12 +2230,13 @@ defmodule Bilimbi.Finance.Ledger do
     where(query, [e], e.id in subquery(entry_ids))
   end
 
-  defp closing_bound(query, _scope, _company_id, false), do: query
+  @doc false
+  def closing_bound(query, _scope, _company_id, false), do: query
 
   # A year's close event names its closing entry in the same transaction that
   # posts it, so the set is the same at any `through_entry_number`; a reopen
   # posts the entry's reversal, which names it in `reverses_entry_id`.
-  defp closing_bound(query, scope, company_id, true) do
+  def closing_bound(query, scope, company_id, true) do
     closing_ids =
       from(c in Tenancy.scope_query(ClosingEvent, scope),
         where: c.company_id == ^company_id and not is_nil(c.entry_id),
@@ -2143,6 +2328,60 @@ defmodule Bilimbi.Finance.Ledger do
     period
     |> Map.take([:id, :fiscal_year_id, :period_number, :start_date, :end_date])
     |> Map.put(:status, status)
+  end
+
+  defp controlled_view(scope, company_id) do
+    latest = Bookkeeping.latest_change(scope, company_id)
+
+    %{
+      controlled: BookkeepingChange.controlled?(latest),
+      change: latest && bookkeeping_change_view(latest),
+      fiscal_years: length(closing_state(scope, company_id).years)
+    }
+  end
+
+  defp bookkeeping_change_view(change) do
+    Map.take(change, [
+      :id,
+      :change_number,
+      :controlled,
+      :reason,
+      :changed_by_user_id,
+      :changed_by_impersonator_id,
+      :changed_at
+    ])
+  end
+
+  defp late_recording_view(%{entry: entry, review: review}) do
+    days = LateRecordings.days(entry)
+
+    entry
+    |> Map.take([
+      :entry_number,
+      :entry_date,
+      :description,
+      :reference,
+      :posted_by_user_id,
+      :posted_by_impersonator_id,
+      :posted_at
+    ])
+    |> Map.merge(%{
+      entry_id: entry.id,
+      days: days,
+      status: LateRecordings.status(days),
+      review: review && late_review_view(review)
+    })
+  end
+
+  defp late_review_view(review) do
+    Map.take(review, [
+      :id,
+      :entry_id,
+      :reason,
+      :reviewed_by_user_id,
+      :reviewed_by_impersonator_id,
+      :reviewed_at
+    ])
   end
 
   defp duty_separation_view(latest) do

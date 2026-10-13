@@ -17,6 +17,7 @@ defmodule Bilimbi.Finance.Ledger.TrialBalanceTest do
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, [@view, @manage, @post])
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    TestFixtures.open_fiscal_years!(context.first_scope, 73)
 
     accounts =
       for {code, type} <- [

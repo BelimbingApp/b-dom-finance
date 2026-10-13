@@ -174,11 +174,8 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
     end
 
     test "records the ledger's refusal of a closed period, and never reopens it", context do
-      {:ok, year} =
-        Ledger.open_fiscal_year(context.operator, 73, %{
-          start_date: ~D[2026-01-01],
-          end_date: ~D[2026-12-31]
-        })
+      {:ok, years} = Ledger.list_fiscal_years(context.operator, 73)
+      [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
 
       [first | _] = year.periods
       {:ok, _} = Ledger.close_period(context.operator, 73, first.id, %{})

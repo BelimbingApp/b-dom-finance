@@ -202,6 +202,7 @@ defmodule Bilimbi.Finance.Ledger.AccountsTest do
     test "deactivates only at a zero balance", context do
       poster = TestFixtures.sign_in!(context.first_scope, 73, 92, [@view, @manage, @post])
       {:ok, _book} = Ledger.open_book(poster, 73, %{currency_code: "XTS", minor_units: 2})
+      TestFixtures.open_fiscal_years!(context.first_scope, 73)
       {:ok, cash} = Ledger.create_account(poster, 73, cash())
       {:ok, income} = Ledger.create_account(poster, 73, income())
 

@@ -1,8 +1,9 @@
 defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
   @moduledoc """
-  The company's financial reports: headline figures, profit and loss, the
+  The company's management reports: headline figures, profit and loss, the
   balance sheet and the cash position, for one period against the period
-  before it.
+  before it. They are management reports, not statutory financial statements,
+  and every output here says so.
 
   The page reads through the `Bilimbi.Finance.Reports` facade and subscribes
   to the company's postings, so figures read again as soon as an entry's
@@ -25,7 +26,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(:page_title, "Financial reports")
+      |> assign(:page_title, "Management reports")
       |> assign(:active_nav, "finance.reports")
       |> assign(:browser_timezone, nil)
       |> assign(:auditor_pack, nil)
@@ -217,7 +218,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
     <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={@active_nav}>
       <.page variant={:detail}>
         <.header>
-          Financial reports
+          Management reports
           <:subtitle :if={@report}>
             <span id="report-currency">{@report.currency_code}</span>
             · <span id="report-through">through entry {@report.through_entry_number}</span>
@@ -289,6 +290,12 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
           </.form>
         </div>
 
+        <.alert id="management-report-notice" kind={:info} class="mb-3">
+          Management reports for the company's own use, read live from its ledger. They are not
+          statutory financial statements: there is no cash flow statement, statement of changes in
+          equity or other comprehensive income, notes, or consolidation.
+        </.alert>
+
         <.refusal :if={@refusal} reason={@refusal} />
 
         <.overview :if={@report && @view == "overview"} report={@report} state={@state} />
@@ -305,6 +312,9 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
         </.alert>
 
         <.card :if={@report && @view == "profit-and-loss"} id="profit-and-loss-card" inner_class="p-0">
+          <p id="profit-and-loss-label" class="px-5 pt-4 text-sm text-ink-muted">
+            Management report: profit and loss
+          </p>
           <.statement
             :if={statement_rows?(@report.groups)}
             id="profit-and-loss"
@@ -322,6 +332,9 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
         </.card>
 
         <.card :if={@report && @view == "balance-sheet"} id="balance-sheet-card" inner_class="p-0">
+          <p id="balance-sheet-label" class="px-5 pt-4 text-sm text-ink-muted">
+            Management report: balance sheet
+          </p>
           <.statement
             id="balance-sheet"
             columns={@report.columns}
@@ -336,6 +349,9 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
         </.card>
 
         <.card :if={@report && @view == "cash-position"} id="cash-position-card" inner_class="p-0">
+          <p id="cash-position-label" class="px-5 pt-4 text-sm text-ink-muted">
+            Management report: cash position
+          </p>
           <.statement
             :if={@report.sections != []}
             id="cash-position"
@@ -404,7 +420,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
     <div id="overview" class="grid gap-3 md:grid-cols-3">
       <.stat_strip
         id="overview-profit-and-loss"
-        title="Profit and loss"
+        title="Profit and loss (management)"
         navigate={report_path(@state, view: "profit-and-loss")}
       >
         <:item label="Income" value={@value["income"]} />
@@ -413,7 +429,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
       </.stat_strip>
       <.stat_strip
         id="overview-position"
-        title="Financial position"
+        title="Financial position (management)"
         navigate={report_path(@state, view: "balance-sheet")}
       >
         <:item label="Assets" value={@value["assets"]} />
@@ -422,7 +438,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
       </.stat_strip>
       <.stat_strip
         id="overview-cash"
-        title="Cash position"
+        title="Cash position (management)"
         navigate={report_path(@state, view: "cash-position")}
       >
         <:item label="Cash" value={@value["cash"]} />
