@@ -12,10 +12,14 @@
     "base/tenancy",
     "base/ui",
     "core/company",
+    "finance/attachments",
     "finance/ledger"
   ],
   migrations: "priv/repo/migrations",
-  migration_dispositions: %{20_261_014_090_000 => :bilimbi_only},
+  migration_dispositions: %{
+    20_261_014_090_000 => :bilimbi_only,
+    20_261_017_090_100 => :bilimbi_only
+  },
   web: "priv/web_routes.exs",
   # Compatibility verification runs before pending Bilimbi-only migrations.
   # Registering these fresh tables would make adoption expect them already;

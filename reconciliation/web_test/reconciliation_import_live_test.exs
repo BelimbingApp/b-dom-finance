@@ -47,7 +47,14 @@ defmodule BilimbiWeb.FinanceReconciliationImportLiveTest do
     bank_account: account,
     operator: operator
   } do
-    grant_capabilities!([@view, @import, @open, @ledger_view])
+    grant_capabilities!([
+      @view,
+      @import,
+      @open,
+      @ledger_view,
+      "finance.attachments.view",
+      "finance.attachments.create"
+    ])
 
     {:ok, view, _html} =
       conn |> log_in_as() |> live(~p"/finance/reconciliation/accounts/#{account.id}")
@@ -58,6 +65,7 @@ defmodule BilimbiWeb.FinanceReconciliationImportLiveTest do
     {:ok, [statement]} = Reconciliation.list_statements(operator, 73, account.id)
     assert statement.imported_by_user_id == 91
     assert has_element?(view, "#statement-#{statement.id}", "october.csv")
+    assert has_element?(view, "#statement-#{statement.id}-file[href$='/download']", "october.csv")
     assert has_element?(view, "#statement-#{statement.id}", "995.00")
 
     html = upload(view, "again.csv", @rows)

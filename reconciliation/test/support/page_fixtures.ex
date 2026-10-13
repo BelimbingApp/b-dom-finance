@@ -8,6 +8,7 @@ defmodule Bilimbi.Finance.Reconciliation.PageFixtures do
   """
 
   alias Bilimbi.Base.Tenancy
+  alias Bilimbi.Finance.Attachments.TestFixtures, as: AttachmentsFixtures
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Reconciliation
@@ -21,8 +22,11 @@ defmodule Bilimbi.Finance.Reconciliation.PageFixtures do
   def ledger_view_capability, do: @ledger_view
 
   def setup_scene! do
+    AttachmentsFixtures.create_artifacts_tables!()
     LedgerFixtures.create_ledger_tables!()
+    AttachmentsFixtures.create_attachments_tables!()
     TestFixtures.create_reconciliation_tables!()
+    AttachmentsFixtures.put_artifacts_root!()
     {:ok, scope} = Tenancy.scope(41)
     operator = TestFixtures.sign_in!(scope, 73, 92, ReconciliationCase.all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})

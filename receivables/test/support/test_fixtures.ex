@@ -11,14 +11,13 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
   """
 
   alias Bilimbi.Base.Authz
-  alias Bilimbi.Base.Authz.ContributionValidator
   alias Bilimbi.Base.Authz.TestFixtures, as: AuthzFixtures
-  alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
+  alias Bilimbi.Finance.Attachments.TestFixtures, as: AttachmentsFixtures
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Receivables
@@ -30,6 +29,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
              )
 
   @ledger ["finance.ledger.view", "finance.ledger.accounts.manage", "finance.ledger.entries.post"]
+  @attachments ~w(finance.attachments.view finance.attachments.create finance.attachments.delete)
 
   @doc "The migration module, loaded from its file once."
   def migration do
@@ -64,7 +64,9 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
   def setup_receivables! do
     CompanyFixtures.create_company_identity_tables!()
     AuthzFixtures.create_authz_tables!()
+    AttachmentsFixtures.create_artifacts_tables!()
     LedgerFixtures.create_ledger_tables!()
+    AttachmentsFixtures.create_attachments_tables!()
     create_receivables_tables!()
     install_authz!()
 
@@ -76,7 +78,7 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
 
     {:ok, first} = Tenancy.scope(41)
     {:ok, second} = Tenancy.scope(42)
-    operator = sign_in!(first, 73, 91, @ledger ++ receivables_capabilities())
+    operator = sign_in!(first, 73, 91, @ledger ++ @attachments ++ receivables_capabilities())
 
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
 
@@ -176,21 +178,15 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
     })
   end
 
-  @doc "An Authz snapshot over the platform's, the ledger's, and receivables' capabilities."
+  @doc """
+  An Authz snapshot over the platform's, Base Artifacts', the ledger's,
+  attachments', and receivables' capabilities (the attachments fixtures'
+  own, plus receivables').
+  """
   def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/receivables", :bilimbi_finance_receivables, Receivables.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
-
-    ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
-      "finance-receivables-test"
-    )
+    AttachmentsFixtures.install_authz!([
+      {"finance/receivables", :bilimbi_finance_receivables, Receivables.Contributions}
+    ])
   end
 
   @doc """

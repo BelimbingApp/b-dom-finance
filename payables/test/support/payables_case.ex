@@ -44,8 +44,10 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
     finance.payables.match.approve
   )
 
-  @doc "Every ledger and payables capability."
-  def all_capabilities, do: @ledger ++ @payables
+  @attachments ~w(finance.attachments.view finance.attachments.create finance.attachments.delete)
+
+  @doc "Every ledger, attachments, and payables capability."
+  def all_capabilities, do: @ledger ++ @attachments ++ @payables
 
   @doc "The case's company: see the moduledoc."
   def setup_company(_context) do

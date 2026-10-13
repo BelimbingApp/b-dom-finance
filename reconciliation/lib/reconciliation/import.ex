@@ -15,17 +15,26 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
   @doc "The most lines one statement may hold."
   def max_lines, do: @max_lines
 
+  @default_content_type "text/csv"
+
   @doc """
-  Imports `content`, the bytes of `file_name`, as a statement of the bank
-  account. Refuses, whole, a file already imported (`{:duplicate_file,
-  statement_number}`), a line already imported (`{:duplicate_lines, [...]}`),
-  a file whose rows do not read through the mapping (`{:invalid_lines,
-  [...]}`, `{:missing_headers, [...]}`, `:no_lines`), and a running balance
-  that does not follow from the amounts (`{:running_balance_mismatch, row}`).
+  Reads `content`, the bytes of `file_name`, as a statement of the bank
+  account, before the transaction that records it: everything that can be
+  refused is refused here, so the file is kept only for a statement that
+  will be recorded. Refuses, whole, a file already imported
+  (`{:duplicate_file, statement_number}`), a line already imported
+  (`{:duplicate_lines, [...]}`), a file whose rows do not read through the
+  mapping (`{:invalid_lines, [...]}`, `{:missing_headers, [...]}`,
+  `:no_lines`), and a running balance that does not follow from the amounts
+  (`{:running_balance_mismatch, row}`). Returns what `insert/3` records:
+  the file (`file_name`, `content`, `content_type`, `sha256`), the lines,
+  the skipped count, the statement's `end_date`, and the mapping it was read
+  through.
   """
-  def import_statement(scope, company_id, bank_account, book, attributes) do
+  def prepare(scope, company_id, bank_account, book, attributes) do
     file_name = Records.fetch(attributes, :file_name)
     content = Records.fetch(attributes, :content)
+    content_type = Records.fetch(attributes, :content_type) || @default_content_type
 
     with :ok <- file_attributes(file_name, content),
          sha256 = hash(content),
@@ -34,7 +43,40 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
          {:ok, lines} <- ordered(lines, bank_account.import_mapping),
          lines = fingerprinted(lines),
          :ok <- fresh_lines(scope, company_id, bank_account.id, lines) do
-      insert(scope, company_id, bank_account, file_name, sha256, lines, skipped)
+      {:ok,
+       %{
+         bank_account: bank_account,
+         file_name: String.trim(file_name),
+         content: content,
+         content_type: content_type,
+         sha256: sha256,
+         lines: lines,
+         skipped: skipped,
+         end_date: lines |> Enum.map(& &1.line_date) |> Enum.max(Date),
+         import_mapping: bank_account.import_mapping
+       }}
+    end
+  end
+
+  @doc """
+  Records a prepared statement and its lines, inside the facade's
+  transaction, with the mapping it was read through. The duplicate checks
+  run again under the company lock: another import may have landed since
+  `prepare/5`.
+  """
+  def insert(scope, company_id, prepared) do
+    with :ok <- fresh_file(scope, company_id, prepared.sha256),
+         :ok <- fresh_lines(scope, company_id, prepared.bank_account.id, prepared.lines) do
+      insert(
+        scope,
+        company_id,
+        prepared.bank_account,
+        prepared.file_name,
+        prepared.sha256,
+        prepared.import_mapping,
+        prepared.lines,
+        prepared.skipped
+      )
     end
   end
 
@@ -317,7 +359,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
 
   ## Writing
 
-  defp insert(scope, company_id, bank_account, file_name, sha256, lines, skipped) do
+  defp insert(scope, company_id, bank_account, file_name, sha256, mapping, lines, skipped) do
     {user_id, impersonator_id} = Records.actor_ids(scope)
     first = List.first(lines)
     last = List.last(lines)
@@ -335,6 +377,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
              bank_account_id: bank_account.id,
              file_name: String.trim(file_name),
              file_sha256: sha256,
+             import_mapping: mapping,
              line_count: length(lines),
              start_date: lines |> Enum.map(& &1.line_date) |> Enum.min(Date),
              end_date: lines |> Enum.map(& &1.line_date) |> Enum.max(Date),
@@ -392,6 +435,7 @@ defmodule Bilimbi.Finance.Reconciliation.Import do
       :statement_number,
       :file_name,
       :file_sha256,
+      :import_mapping,
       :line_count,
       :start_date,
       :end_date,

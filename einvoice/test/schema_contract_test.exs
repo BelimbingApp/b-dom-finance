@@ -1,7 +1,7 @@
 Code.require_file("../priv/repo/migrations/20261012200000_create_finance_einvoice.exs", __DIR__)
 
 Code.require_file(
-  "../priv/repo/migrations/20261013090000_add_finance_einvoice_ledger_entry.exs",
+  "../priv/repo/migrations/20261013090100_add_finance_einvoice_ledger_entry.exs",
   __DIR__
 )
 

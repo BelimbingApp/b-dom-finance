@@ -27,17 +27,32 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), TestFixtures.migration(),
-               log: false,
-               dynamic_repo: repo
-             )
+    for {version, module} <- TestFixtures.migrations() do
+      assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+    end
 
     %{repo: repo}
   end
 
-  test "the fresh migration implements the complete reconciliation contract", %{repo: repo} do
+  test "the fresh migrations implement the complete reconciliation contract", %{repo: repo} do
+    assert Enum.map(TestFixtures.migrations(), &elem(&1, 0)) ==
+             SchemaContract.migration_versions()
+
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  test "the later migration rolls back on its own", %{repo: repo} do
+    [{_first, _}, {version, module}] = TestFixtures.migrations()
+    assert :ok = Ecto.Migrator.down(Repo, version, module, log: false, dynamic_repo: repo)
+
+    %{rows: rows} =
+      SQL.query!(
+        repo,
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'finance_reconciliation_statements' AND column_name = 'import_mapping'",
+        []
+      )
+
+    assert rows == []
   end
 
   # The module's other suites prove these rules on temporary copies of the
