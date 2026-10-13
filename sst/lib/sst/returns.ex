@@ -121,6 +121,8 @@ defmodule Bilimbi.Finance.Sst.Returns do
       status: status(tax_return),
       version: finalised && finalised.version,
       tax_payable: finalised && finalised.tax_payable,
+      currency_code: finalised && finalised.currency_code,
+      minor_units: finalised && finalised.minor_units,
       superseded_by_return_id: Map.get(superseded, tax_return.id),
       events: Enum.map(tax_return.events, &event_view/1)
     })
