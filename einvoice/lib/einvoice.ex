@@ -547,8 +547,9 @@ defmodule Bilimbi.Finance.Einvoice do
   Queues the document's submission to the authority as the signed-in
   user: `{:ok, %{job_id: id}}`. Refused before queuing when the document's
   status is not `issued`, `refused`, or `invalid` (`:not_submittable`),
-  another document that stands already links a source of this one
-  (`:source_taken`), the company lacks credentials for the document's environment
+  another document that stands already links a source of this one and
+  no earlier attempt of this one is unresolved (`:source_taken`; an
+  unresolved attempt is looked up at the authority first), the company lacks credentials for the document's environment
   (`:missing_credentials`), or the chosen format version needs a signature
   and the certificate and key are missing or mismatched
   (`:signing_key_required`), or a submit job for the document is already
@@ -588,9 +589,10 @@ defmodule Bilimbi.Finance.Einvoice do
   end
 
   defp source_free_to_submit(scope, company_id, document) do
-    if Documents.source_taken?(scope, company_id, document),
-      do: {:error, :source_taken},
-      else: :ok
+    if Clearance.unresolved_attempts(scope, company_id, document) == [] and
+         Documents.source_taken?(scope, company_id, document),
+       do: {:error, :source_taken},
+       else: :ok
   end
 
   defp not_queued(company_id, document_id) do
