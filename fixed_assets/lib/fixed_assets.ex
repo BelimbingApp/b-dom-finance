@@ -1,10 +1,11 @@
 defmodule Bilimbi.Finance.FixedAssets do
   @moduledoc """
   Immutable company asset register, category revisions, monthly depreciation,
-  disposal, voided acquisitions and reversing entries. All data calls reauthorize the supplied scope;
-  all writes hold the writable-company lock. Ledger and Payables are consumed
-  only through their facades. Acquisition cost comes from one posted cost-account
-  debit, never caller arithmetic. Nothing can be deleted or edited.
+  disposal, voided acquisitions and reversing entries. All data calls
+  reauthorize the supplied scope; all writes hold the writable-company lock.
+  Ledger and Payables are consumed only through their facades. Acquisition cost
+  comes from one posted cost-account debit, never caller arithmetic. Nothing
+  can be deleted or edited.
 
   Reports carry category, asset, event and ledger watermarks: pass all four back to
   reproduce a prior read even after backdated acquisitions or reversals.
