@@ -22,7 +22,7 @@
     "finance/einvoice"
   ],
   migrations: "priv/repo/migrations",
-  migration_dispositions: %{20_261_015_090_000 => :bilimbi_only},
+  migration_dispositions: %{20_261_015_100_000 => :bilimbi_only},
   web: "priv/web_routes.exs",
   schema_contract: nil,
   contribution_provider: Bilimbi.Finance.Reports.Contributions,
