@@ -1,7 +1,5 @@
 defmodule Bilimbi.Finance.FixedAssets.TestFixtures do
   @moduledoc false
-  alias Bilimbi.Base.Authz.ContributionValidator
-  alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
   alias Bilimbi.Base.Repo
   alias Bilimbi.Finance.{FixedAssets, Ledger, Payables}
   alias Ecto.Adapters.SQL
@@ -43,20 +41,9 @@ defmodule Bilimbi.Finance.FixedAssets.TestFixtures do
         ~w(finance.ledger.periods.manage finance.ledger.periods.reopen)
 
   def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/payables", :bilimbi_finance_payables, Payables.Contributions},
-            {"finance/fixed_assets", :bilimbi_finance_fixed_assets, FixedAssets.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
-
-    ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
-      "fixed-assets-test"
-    )
+    Payables.TestFixtures.install_authz!([
+      {"finance/fixed_assets", :bilimbi_finance_fixed_assets, FixedAssets.Contributions}
+    ])
   end
 
   def setup! do
