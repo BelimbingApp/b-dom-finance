@@ -17,7 +17,11 @@ defmodule Bilimbi.Finance.Ledger.Migrations.AddEntryOwner do
   - entries posted before this migration are marked `legacy`, with no
     owner; an owning module claims such an entry once, through
     `finance_ledger_claim_legacy_entry`, which is the only change ever
-    allowed to a posted entry's row, and only from no owner to one.
+    allowed to a posted entry's row, and only from no owner to one. A claim
+    also takes, with the same owner, the legacy entry that reverses the
+    claimed entry and the legacy entry it reverses when they still have no
+    owner, so an original and its reversal never end up with different
+    owners; one owned by another module or record is refused.
 
   The migration is self-contained: a database that ran the earlier ones
   loads only this file, so the entries' UPDATE trigger it replaces is
@@ -186,6 +190,10 @@ defmodule Bilimbi.Finance.Ledger.Migrations.AddEntryOwner do
       # What an owning module's own migration calls for each entry it posted
       # before ownership was recorded. Claiming an entry already claimed by
       # the same owner is nothing; by another, or a non-legacy entry, fails.
+      # A reversal carries its original's owner, so a claim also takes, with
+      # the same owner, the legacy entry that reverses the claimed entry and
+      # the legacy entry it reverses, when either still has no owner; one
+      # owned by another fails through the owner-claim trigger.
       """
       CREATE FUNCTION #{prefix}finance_ledger_claim_legacy_entry(
         entry bigint, company bigint, module text, record text
@@ -202,14 +210,18 @@ defmodule Bilimbi.Finance.Ledger.Migrations.AddEntryOwner do
           RAISE EXCEPTION 'journal entry % of company % does not exist', entry, company
             USING ERRCODE = 'no_data_found';
         ELSIF current.owner_module = module AND current.owner_record = record THEN
-          RETURN;
+          NULL;
         ELSIF current.owner_module IS NOT NULL OR NOT current.legacy THEN
           RAISE EXCEPTION 'journal entry % is not an unclaimed legacy entry', entry
             USING ERRCODE = 'restrict_violation';
+        ELSE
+          UPDATE finance_ledger_entries SET owner_module = module, owner_record = record
+          WHERE id = entry AND company_id = company;
         END IF;
 
         UPDATE finance_ledger_entries SET owner_module = module, owner_record = record
-        WHERE id = entry AND company_id = company;
+        WHERE company_id = company AND legacy AND owner_module IS NULL
+          AND (reverses_entry_id = entry OR id = current.reverses_entry_id);
       END
       $$
       """

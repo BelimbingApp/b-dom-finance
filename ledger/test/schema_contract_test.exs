@@ -436,11 +436,17 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
     {:ok, _} = in_transaction.(entry.(1, nil))
     {:ok, _} = in_transaction.(entry.(2, 1))
     {:ok, _} = in_transaction.(entry.(3, nil))
+    {:ok, _} = in_transaction.(entry.(21, nil))
+    {:ok, _} = in_transaction.(entry.(22, 21))
+    {:ok, _} = in_transaction.(entry.(23, nil))
+    {:ok, _} = in_transaction.(entry.(24, 23))
 
     migrate_later!.()
 
     assert %{rows: [[1, true, nil], [2, true, nil], [3, true, nil]]} =
-             query!.("SELECT id, legacy, owner_module FROM finance_ledger_entries ORDER BY id")
+             query!.(
+               "SELECT id, legacy, owner_module FROM finance_ledger_entries WHERE id < 10 ORDER BY id"
+             )
 
     claim = fn id, module, record ->
       "SELECT finance_ledger_claim_legacy_entry(#{id}, 1, '#{module}', '#{record}')"
@@ -454,8 +460,12 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       in_transaction.([claim.(1, "finance/payables", "payment:5")])
     end
 
-    # The reversal takes its original's owner and no other.
-    assert_raise Postgrex.Error, ~r/have one owner/, fn ->
+    # Claiming the original took its legacy reversal with the same owner, so
+    # the reversal takes no other.
+    assert %{rows: [["finance/receivables", "payment:5"]]} =
+             query!.("SELECT owner_module, owner_record FROM finance_ledger_entries WHERE id = 2")
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
       in_transaction.([claim.(2, "finance/payables", "payment:9")])
     end
 
@@ -491,8 +501,29 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              ]
            } =
              query!.(
-               "SELECT id, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+               "SELECT id, owner_module, owner_record FROM finance_ledger_entries WHERE id < 10 ORDER BY id"
              )
+
+    # An original and its legacy reversal are claimed together, whichever
+    # the owner names; the other side of a claimed pair is refused to others.
+    assert {:ok, _} = in_transaction.([claim.(21, "finance/reconciliation", "statement_line:30")])
+    assert {:ok, _} = in_transaction.([claim.(24, "finance/reconciliation", "statement_line:31")])
+
+    assert %{
+             rows: [
+               [21, true, "finance/reconciliation", "statement_line:30"],
+               [22, true, "finance/reconciliation", "statement_line:30"],
+               [23, true, "finance/reconciliation", "statement_line:31"],
+               [24, true, "finance/reconciliation", "statement_line:31"]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries WHERE id > 20 ORDER BY id"
+             )
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
+      in_transaction.([claim.(22, "finance/payables", "payment:9")])
+    end
 
     # One original entry per owned record; a reversal carries its original's owner.
     owned = fn id, reverses, module, record ->

@@ -374,6 +374,7 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
           "INSERT INTO finance_reconciliation_statements (id, tenant_id, company_id, bank_account_id, statement_number, file_name, file_sha256, line_count, start_date, end_date, imported_by_user_id, imported_at) VALUES (1, 1, 1, 1, 99, 'f.csv', repeat('1', 64), 5, '2026-09-01', '2026-09-30', 1, '2000-01-01')"
         ] ++
           Enum.flat_map(1..6, &entry.(&1, nil)) ++
+          entry.(7, 1) ++
           Enum.map(1..5, statement_line) ++
           [match.(1, posted)] ++
           part.(1, 1, 1) ++
@@ -403,7 +404,8 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
                [3, true, nil, nil],
                [4, true, nil, nil],
                [5, true, "finance/reconciliation", "statement_line:5"],
-               [6, true, nil, nil]
+               [6, true, nil, nil],
+               [7, true, "finance/reconciliation", "statement_line:1"]
              ]
            } =
              query!.(

@@ -177,7 +177,10 @@ Entries posted before owners were recorded carry `legacy: true` and no
 owner. Each owning module's own migration claims its entries once through
 the ledger's `finance_ledger_claim_legacy_entry` function, the one change a
 posted entry's row ever takes: from no owner to one, everything else as it
-was. A legacy entry nobody claimed (a manual journal, or a posting no record
+was. Claiming an entry also claims, with the same owner, the legacy
+entry that reverses it and the legacy entry it reverses when they still have
+no owner, so an original and its reversal always share one owner; one owned
+by another is refused. A legacy entry nobody claimed (a manual journal, or a posting no record
 names) stays unowned and is reversed directly, or by the module whose record
 names it through `reverse_owned_entry/5`, without an owner on either side.
 
