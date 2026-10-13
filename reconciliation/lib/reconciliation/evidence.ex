@@ -171,6 +171,10 @@ defmodule Bilimbi.Finance.Reconciliation.Evidence do
 
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
 
+  def tables do
+    for {_dataset, {schema, _fields}} <- @datasets, do: schema.__schema__(:source)
+  end
+
   def page(scope, company_id, dataset, options) do
     limit = Keyword.get(options, :limit, 500)
     cursor = Keyword.get(options, :after, 0)

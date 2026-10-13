@@ -15,7 +15,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"einvoice", Einvoice}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "2"
+  @version "3"
 
   def generate(scope, company_id, as_of) do
     id = Ecto.UUID.generate()

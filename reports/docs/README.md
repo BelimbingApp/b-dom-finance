@@ -224,14 +224,21 @@ ledger entry cutoff. Each owning Finance facade exposes bounded, ID-ordered
 cursor and writes CSV incrementally. Source schemas remain private.
 
 The archive includes line-level ledger entries/lines and chart, trial balance,
-AR/AP documents, lines, tax, payments and allocations, fiscal closing events,
-e-invoice submissions and status events, bank statements and lines, matches,
+AR/AP documents, lines, tax, payments and allocations, payment requests with
+their events, fiscal closing events, manual journals with their lines and
+decisions, approval exceptions with their reviews, duty-separation changes,
+e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own
 capability. The source-file index names imported bank files with their original
 SHA-256; their original bytes are not retained. Exact authority submission
 payloads are included with their hashes. No source uploads exist for the current
 AR/AP document APIs.
+
+The pack covers the Ledger, Receivables, Payables, Reconciliation and E-invoice
+modules; Payroll and SST records are not in it. A test lists every table of
+those modules and fails unless the pack exports it or an exclusion names it
+with a reason, so a new table cannot be left out unnoticed.
 
 `manifest.json` records the company/tenant, database snapshot, ledger cutoff,
 filters, UTC timezone, generator version, actor/time, file hashes, CSV row counts

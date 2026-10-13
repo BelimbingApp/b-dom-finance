@@ -209,10 +209,50 @@ defmodule Bilimbi.Finance.Payables.Evidence do
          :quantity_tolerance,
          :price_tolerance_kind,
          :price_tolerance
+       ]},
+    "payment_request" =>
+      {Bilimbi.Finance.Payables.PaymentRequest,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :request_number,
+         :payment_date,
+         :party_key,
+         :party_name,
+         :paid_from_account_id,
+         :amount,
+         :currency_code,
+         :reference,
+         :description,
+         :submitted_by_user_id,
+         :submitted_by_impersonator_id,
+         :submitted_at
+       ]},
+    "payment_request_allocation" =>
+      {Bilimbi.Finance.Payables.PaymentRequestAllocation,
+       [:id, :tenant_id, :company_id, :request_id, :line_number, :document_id, :amount]},
+    "payment_request_event" =>
+      {Bilimbi.Finance.Payables.PaymentRequestEvent,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :request_id,
+         :event,
+         :reason,
+         :payment_id,
+         :actor_user_id,
+         :actor_impersonator_id,
+         :occurred_at
        ]}
   }
 
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
+
+  def tables do
+    for {_dataset, {schema, _fields}} <- @datasets, do: schema.__schema__(:source)
+  end
 
   def page(scope, company_id, dataset, options) do
     limit = Keyword.get(options, :limit, 500)

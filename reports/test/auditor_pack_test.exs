@@ -55,7 +55,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     assert manifest["tenant_id"] == 41
     assert manifest["through_entry_number"] == 501
     assert manifest["timezone"] == "Etc/UTC"
-    assert manifest["generator_version"] == "2"
+    assert manifest["generator_version"] == "3"
     assert manifest["files"]["ledger-entry.csv"]["row_count"] == 501
     assert manifest["files"]["ledger-line.csv"]["row_count"] == 1002
     assert manifest["files"]["general-ledger.csv"]["row_count"] == 1002
@@ -73,6 +73,15 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     # Empty evidence sections are explicit files with a zero count, not silently omitted.
     assert manifest["files"]["payables-document.csv"]["row_count"] == 0
     assert manifest["files"]["reconciliation-reconciliation_event.csv"]["row_count"] == 0
+
+    for filename <-
+          ~w(ledger-journal.csv ledger-journal_line.csv ledger-journal_event.csv
+             ledger-approval_exception.csv ledger-approval_exception_review.csv
+             ledger-duty_separation_change.csv payables-payment_request.csv
+             payables-payment_request_allocation.csv payables-payment_request_event.csv
+             einvoice-code_override.csv) do
+      assert manifest["files"][filename]["row_count"] == 0
+    end
   end
 
   test "only this company's evidence leaves the archive; read access is rechecked", context do
