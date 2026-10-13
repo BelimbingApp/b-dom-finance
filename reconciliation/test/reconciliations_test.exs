@@ -1,6 +1,8 @@
 defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
   use Bilimbi.Finance.Reconciliation.ReconciliationCase
 
+  alias Bilimbi.Base.Tenancy.Authentication
+
   alias Bilimbi.Base.Repo
   alias Ecto.Adapters.SQL
 
@@ -147,7 +149,12 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
 
       assert decimal?(difference, 0)
 
-      assert {:ok, finalised} = Reconciliation.finalise_reconciliation(operator, 73, opened.id)
+      assert {:error, :same_person} =
+               Reconciliation.finalise_reconciliation(operator, 73, opened.id)
+
+      assert {:ok, finalised} =
+               Reconciliation.finalise_reconciliation(context.reviewer, 73, opened.id)
+
       assert finalised.status == "finalised"
 
       assert [
@@ -226,7 +233,7 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
           statement_balance: "949.50"
         })
 
-      assert {:ok, _} = Reconciliation.finalise_reconciliation(operator, 73, opened.id)
+      assert {:ok, _} = Reconciliation.finalise_reconciliation(context.reviewer, 73, opened.id)
 
       assert {:error, :match_finalised} =
                Reconciliation.unmatch(operator, 73, posted.match.id, %{reason: "Try"})
@@ -268,7 +275,7 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
       # The statement shows 949.50 on the 31st; a balance of 1.00 is 948.50
       # off, and nothing unmatched explains it.
       assert {:error, {:difference, off}} =
-               Reconciliation.finalise_reconciliation(operator, 73, opened.id)
+               Reconciliation.finalise_reconciliation(context.reviewer, 73, opened.id)
 
       assert decimal?(off, "-948.50")
 
@@ -305,6 +312,48 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
           [bank_account.id]
         )
       end
+    end
+
+    test "is finalised by someone other than whoever opened it, impersonation included",
+         context do
+      %{first_scope: first, operator: operator, bank_account: bank_account} = context
+
+      {:ok, opened} =
+        Reconciliation.open_reconciliation(operator, 73, bank_account.id, %{
+          end_date: ~D[2026-10-31],
+          statement_balance: "949.50"
+        })
+
+      TestFixtures.sign_in!(first, 73, 94, all_capabilities())
+
+      impersonated =
+        Authentication.sign_in(first, 94, 73,
+          impersonator_id: 91,
+          impersonation_session_id: "borrowed-session"
+        )
+
+      assert {:error, :same_person} =
+               Reconciliation.finalise_reconciliation(impersonated, 73, opened.id)
+
+      assert {:ok, %{status: "open"}} = Reconciliation.get_reconciliation(operator, 73, opened.id)
+
+      owner = TestFixtures.sign_in!(first, 73, 99, ["finance.ledger.duty-separation.manage"])
+      {:ok, _} = Ledger.set_duty_separation(owner, 73, %{required: false, reason: "Sole clerk"})
+
+      assert {:ok, %{status: "finalised"}} =
+               Reconciliation.finalise_reconciliation(operator, 73, opened.id)
+
+      assert {:ok,
+              [
+                %{
+                  source: "finance/reconciliation",
+                  action: "reconciliation_finalisation",
+                  subject_type: "reconciliation",
+                  subject: "Reconciliation 1 of Operating account to 2026-10-31",
+                  same_person: true,
+                  reason: "Sole clerk"
+                }
+              ]} = Ledger.list_approval_exceptions(operator, 73)
     end
 
     test "needs the reconciliation capabilities", context do

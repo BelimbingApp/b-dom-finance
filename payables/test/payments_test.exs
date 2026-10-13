@@ -42,9 +42,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
       %{operator: operator, first: first, second: second, accounts: accounts} = context
 
       assert {:ok, payment} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [
                    %{document_id: first.id, amount: "60"},
                    %{document_id: second.id, amount: "40"}
@@ -59,7 +58,7 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
                reference: "TRANSFER-1",
                reverses_payment_id: nil,
                reversed_by_payment_id: nil,
-               posted_by_user_id: 91,
+               posted_by_user_id: 92,
                posted_at: %DateTime{}
              } = payment
 
@@ -90,9 +89,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
       assert later.payable_account_id == accounts.other_payable.id
 
       {:ok, payment} =
-        Payables.post_payment(
-          operator,
-          73,
+        pay(
+          context,
           payment(context, [
             %{document_id: first.id, amount: "1"},
             %{document_id: later.id, amount: "5"}
@@ -125,15 +123,14 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
             {%{document_id: first.id, amount: "0.001"}, :amount, "has more than 2 decimal places"}
           ] do
         assert {:error, changeset} =
-                 Payables.post_payment(operator, 73, payment(context, [allocation]))
+                 pay(context, payment(context, [allocation]))
 
         assert %{allocations: [%{^field => [^message]}]} = errors_on(changeset)
       end
 
       assert {:error, changeset} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [%{document_id: second.id, amount: "1"}], %{
                    payment_date: ~D[2026-10-02]
                  })
@@ -143,9 +140,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
                errors_on(changeset)
 
       assert {:error, changeset} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [
                    %{document_id: first.id, amount: "1"},
                    %{document_id: first.id, amount: "1"}
@@ -154,13 +150,12 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
 
       assert %{allocations: [%{}, %{document_id: ["is allocated twice"]}]} = errors_on(changeset)
 
-      assert {:error, changeset} = Payables.post_payment(operator, 73, payment(context, []))
+      assert {:error, changeset} = pay(context, payment(context, []))
       assert %{allocations: ["needs at least one allocation"]} = errors_on(changeset)
 
       assert {:error, changeset} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [%{document_id: first.id, amount: "1"}], %{
                    paid_from_account_id: context.accounts.expense.id
                  })
@@ -172,27 +167,163 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
       assert {:ok, []} = Payables.list_payments(operator, 73)
       assert {:ok, []} = Ledger.list_entries(operator, 73, from: ~D[2026-10-05])
     end
+  end
 
-    test "needs the payments grant", context do
-      viewer = TestFixtures.sign_in!(context.first_scope, 73, 93, ["finance.payables.view"])
+  describe "approval" do
+    test "posts a submitted payment only when someone else approves it", context do
+      %{operator: operator, approver: approver, first: first} = context
+
+      assert {:ok, request} =
+               Payables.submit_payment(
+                 operator,
+                 73,
+                 payment(context, [%{document_id: first.id, amount: "30"}])
+               )
+
+      assert %{
+               request_number: 1,
+               status: "submitted",
+               decision: nil,
+               party_name: "Party P-1",
+               submitted_by_user_id: 91,
+               submitted_at: %DateTime{},
+               allocations: [%{line_number: 1, document_id: first_id}]
+             } = request
+
+      assert first_id == first.id and decimal?(request.amount, 30)
+      assert {:ok, []} = Payables.list_payments(operator, 73)
+      assert decimal?(owed(context, first), 100)
+
+      assert {:error, :same_person} = Payables.approve_payment(operator, 73, request.id)
+      assert {:ok, payment} = Payables.approve_payment(approver, 73, request.id)
+      assert %{payment_number: 1, posted_by_user_id: 92, reference: "TRANSFER-1"} = payment
+      assert decimal?(owed(context, first), 70)
+
+      assert {:ok, %{status: "posted", decision: decision}} =
+               Payables.get_payment_request(operator, 73, request.id)
+
+      assert %{event: "posted", actor_user_id: 92, occurred_at: %DateTime{}} = decision
+      assert decision.payment_id == payment.id
+
+      assert {:error, :payment_request_decided} =
+               Payables.approve_payment(approver, 73, request.id)
+
+      assert {:ok, []} = Ledger.list_approval_exceptions(operator, 73)
+    end
+
+    test "lets the submitter approve while separation is off, as an approval exception",
+         context do
+      %{first_scope: system, operator: operator, first: first} = context
+      owner = TestFixtures.sign_in!(system, 73, 99, ["finance.ledger.duty-separation.manage"])
+      {:ok, _} = Ledger.set_duty_separation(owner, 73, %{required: false, reason: "One clerk"})
+
+      {:ok, request} =
+        Payables.submit_payment(
+          operator,
+          73,
+          payment(context, [%{document_id: first.id, amount: "30.50"}])
+        )
+
+      assert {:ok, %{posted_by_user_id: 91}} = Payables.approve_payment(operator, 73, request.id)
+
+      assert {:ok,
+              [
+                %{
+                  source: "finance/payables",
+                  action: "payment_approval",
+                  subject_type: "payment_request",
+                  subject: "Payment request 1 to Party P-1, 30.5 XTS",
+                  same_person: true,
+                  override: false,
+                  reason: "One clerk"
+                }
+              ]} = Ledger.list_approval_exceptions(operator, 73)
+    end
+
+    test "checks the payment again when it is approved", context do
+      %{operator: operator, approver: approver, first: first} = context
+      attributes = payment(context, [%{document_id: first.id, amount: "100"}])
+      {:ok, earlier} = Payables.submit_payment(operator, 73, attributes)
+      {:ok, later} = Payables.submit_payment(operator, 73, attributes)
+      {:ok, _payment} = Payables.approve_payment(approver, 73, earlier.id)
+
+      assert {:error, changeset} = Payables.approve_payment(approver, 73, later.id)
+
+      assert %{allocations: [%{amount: ["exceeds what is owed on the bill"]}]} =
+               errors_on(changeset)
+
+      assert {:ok, %{status: "submitted"}} = Payables.get_payment_request(operator, 73, later.id)
+    end
+
+    test "rejects a request with a reason, and it never posts", context do
+      %{operator: operator, approver: approver, first: first} = context
+
+      {:ok, request} =
+        Payables.submit_payment(
+          operator,
+          73,
+          payment(context, [%{document_id: first.id, amount: "5"}])
+        )
+
+      assert {:error, changeset} = Payables.reject_payment(approver, 73, request.id, %{})
+      assert %{reason: ["is required to reject a payment"]} = errors_on(changeset)
+
+      assert {:ok, %{status: "rejected", decision: %{reason: "Duplicate", payment_id: nil}}} =
+               Payables.reject_payment(approver, 73, request.id, %{reason: "Duplicate"})
+
+      assert {:error, :payment_request_decided} =
+               Payables.approve_payment(approver, 73, request.id)
+
+      assert {:error, :payment_request_not_found} = Payables.approve_payment(approver, 73, -1)
+
+      {:ok, second} =
+        Payables.submit_payment(
+          operator,
+          73,
+          payment(context, [%{document_id: first.id, amount: "5"}])
+        )
+
+      assert {:ok, [%{id: id}]} =
+               Payables.list_payment_requests(operator, 73, status: "submitted")
+
+      assert id == second.id
+
+      assert {:ok, [%{request_number: 1}]} =
+               Payables.list_payment_requests(operator, 73, status: "rejected")
+
+      assert {:ok, [_, _]} = Payables.list_payment_requests(operator, 73)
+      assert {:error, :invalid_option} = Payables.list_payment_requests(operator, 73, status: "x")
+      assert {:ok, []} = Payables.list_payments(operator, 73)
+    end
+
+    test "each step needs its own grant", context do
+      %{first_scope: system, operator: operator, first: first} = context
+      ledger = ~w(finance.ledger.view finance.ledger.entries.post)
+      viewer = TestFixtures.sign_in!(system, 73, 93, ["finance.payables.view"])
+
+      submitter =
+        TestFixtures.sign_in!(system, 73, 94, ["finance.payables.payments.submit" | ledger])
+
+      poster = TestFixtures.sign_in!(system, 73, 95, ["finance.payables.payments.post" | ledger])
+      attributes = payment(context, [%{document_id: first.id, amount: "1"}])
+
+      assert {:error, :unauthorized} = Payables.submit_payment(viewer, 73, attributes)
+      assert {:error, :unauthorized} = Payables.submit_payment(poster, 73, attributes)
+      assert {:ok, request} = Payables.submit_payment(submitter, 73, attributes)
+      assert {:error, :unauthorized} = Payables.approve_payment(submitter, 73, request.id)
 
       assert {:error, :unauthorized} =
-               Payables.post_payment(
-                 viewer,
-                 73,
-                 payment(context, [%{document_id: context.first.id, amount: "1"}])
-               )
+               Payables.reject_payment(viewer, 73, request.id, %{reason: "x"})
+
+      assert {:ok, %{posted_by_user_id: 95}} = Payables.approve_payment(poster, 73, request.id)
+      assert {:ok, [_]} = Payables.list_payments(operator, 73)
     end
   end
 
   describe "reversal" do
     setup context do
       {:ok, payment} =
-        Payables.post_payment(
-          context.operator,
-          73,
-          payment(context, [%{document_id: context.first.id, amount: "70"}])
-        )
+        pay(context, payment(context, [%{document_id: context.first.id, amount: "70"}]))
 
       %{payment: payment}
     end
@@ -238,9 +369,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
       assert decimal?(owed(context, first), 100)
 
       assert {:error, changeset} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [%{document_id: first.id, amount: "50"}], %{
                    payment_date: ~D[2026-10-10]
                  })
@@ -253,9 +383,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
              } = errors_on(changeset)
 
       assert {:ok, _} =
-               Payables.post_payment(
-                 operator,
-                 73,
+               pay(
+                 context,
                  payment(context, [%{document_id: first.id, amount: "100"}], %{
                    payment_date: ~D[2026-10-20]
                  })
@@ -283,9 +412,8 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
             {"P-1", first, ~D[2026-10-06]}
           ] do
         {:ok, _} =
-          Payables.post_payment(
-            operator,
-            73,
+          pay(
+            context,
             payment(context, [%{document_id: document.id, amount: "1"}], %{
               party_key: key,
               payment_date: date
@@ -313,11 +441,7 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
   describe "the database" do
     setup context do
       {:ok, payment} =
-        Payables.post_payment(
-          context.operator,
-          73,
-          payment(context, [%{document_id: context.first.id, amount: "10"}])
-        )
+        pay(context, payment(context, [%{document_id: context.first.id, amount: "10"}]))
 
       %{payment: payment}
     end
@@ -350,6 +474,65 @@ defmodule Bilimbi.Finance.Payables.PaymentsTest do
 
       assert_raise Postgrex.Error, ~r/allocations differ from its amount/, fn ->
         TestFixtures.check_deferred_constraints!()
+      end
+    end
+
+    test "refuses a payment request whose allocations differ from its amount", context do
+      {:ok, request} =
+        Payables.submit_payment(
+          context.operator,
+          73,
+          payment(context, [%{document_id: context.second.id, amount: "1"}])
+        )
+
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO finance_payables_payment_request_allocations
+          (tenant_id, company_id, request_id, line_number, document_id, amount)
+        VALUES (41, 73, $1, 2, $2, 1)
+        """,
+        [request.id, context.first.id]
+      )
+
+      assert_raise Postgrex.Error, ~r/request \d+ allocations differ from its amount/, fn ->
+        TestFixtures.check_deferred_constraints!()
+      end
+    end
+
+    test "posts a payment request only with a payment of what it requested", context do
+      {:ok, request} =
+        Payables.submit_payment(
+          context.operator,
+          73,
+          payment(context, [%{document_id: context.second.id, amount: "1"}])
+        )
+
+      insert_event = fn payment_id ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            """
+            INSERT INTO finance_payables_payment_request_events
+              (tenant_id, company_id, request_id, event, payment_id, actor_user_id, occurred_at)
+            VALUES (41, 73, $1, 'posted', $2, 92, now())
+            """,
+            [request.id, payment_id]
+          )
+        end)
+      end
+
+      assert_raise Postgrex.Error, ~r/posted only by a payment of what it requested/, fn ->
+        insert_event.(context.payment.id)
+      end
+
+      for sql <- [
+            "UPDATE finance_payables_payment_requests SET amount = 2",
+            "DELETE FROM finance_payables_payment_request_allocations"
+          ] do
+        assert_raise Postgrex.Error, ~r/finance payables keeps/, fn ->
+          Repo.transaction(fn -> SQL.query!(Repo, sql, []) end)
+        end
       end
     end
 
