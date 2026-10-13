@@ -163,6 +163,15 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
     end
   end
 
+  test "a blank content type is the octet stream", %{operator: operator} do
+    assert {:ok, %{content_type: "application/octet-stream"}} =
+             Attachments.attach(operator, 73, StubSource, 1, %{
+               file_name: "x.bin",
+               content: "x",
+               content_type: ""
+             })
+  end
+
   describe "capture_file/5 and attach_capture/5" do
     test "store before a transaction and link inside it", %{operator: operator} do
       assert {:ok, capture} =
@@ -333,6 +342,12 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert event.retain_until == ~U[2040-01-01 23:59:59.999999Z]
       assert event.reason == "a tax query"
 
+      assert {:ok, %{retain_until: ~U[2040-01-01 23:59:59.999999Z]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:ok, [%{retain_until: ~U[2040-01-01 23:59:59.999999Z]}]} =
+               Attachments.list_attachments(operator, 73, StubSource, 1)
+
       assert {:ok, %{metadata: %{retain_until: ~U[2040-01-01 23:59:59.999999Z]}}} =
                Artifacts.read(operator, 73, ArtifactOwner, attachment.artifact_id)
 
@@ -349,7 +364,9 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert {:error, :not_on_hold} =
                Attachments.release_hold(operator, 73, attachment.id, %{reason: "x"})
 
-      assert {:ok, %{events: [%{event: "hold_placed", reason: "case 12"}]}} =
+      assert {:ok, %{on_hold: false}} = Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:ok, %{on_hold: true, events: [%{event: "hold_placed", reason: "case 12"}]}} =
                Attachments.place_hold(operator, 73, attachment.id, %{reason: "case 12"})
 
       assert {:error, :already_on_hold} =
@@ -358,7 +375,11 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert {:error, :legal_hold} =
                Artifacts.delete(operator, 73, ArtifactOwner, attachment.artifact_id)
 
-      assert {:ok, %{events: [_placed, %{event: "hold_released", reason: "case closed"}]}} =
+      assert {:ok,
+              %{
+                on_hold: false,
+                events: [_placed, %{event: "hold_released", reason: "case closed"}]
+              }} =
                Attachments.release_hold(operator, 73, attachment.id, %{reason: "case closed"})
     end
   end
@@ -381,6 +402,17 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
                Attachments.list_company_attachments(operator, 73, after: 2)
 
       assert {:ok, [_, _]} = Attachments.list_company_attachments(operator, 73, limit: 2)
+
+      assert {:ok, [%{file_name: "b.txt"}]} =
+               Attachments.list_company_attachments(operator, 73, document_ids: [2])
+
+      assert {:ok, [%{file_name: "a.txt"}, %{file_name: "c.txt"}]} =
+               Attachments.list_company_attachments(operator, 73, document_ids: [1, 3])
+
+      assert {:ok, []} = Attachments.list_company_attachments(operator, 73, document_ids: [])
+
+      assert {:error, :invalid_option} =
+               Attachments.list_company_attachments(operator, 73, document_ids: ["x"])
 
       assert {:ok, [_, _, _]} =
                Attachments.list_company_attachments(operator, 73, source: "finance/test/record")

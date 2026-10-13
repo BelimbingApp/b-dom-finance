@@ -240,7 +240,10 @@ defmodule Bilimbi.Finance.Attachments.Web.IndexLive do
             <:col :let={attachment} label="SHA-256">
               <span class="font-mono" title={attachment.sha256}>{Format.short_hash(attachment.sha256)}</span>
             </:col>
-            <:col :let={attachment} label="Kept until">{Format.retain_until(attachment.retain_until)}</:col>
+            <:col :let={attachment} label="Kept until">
+              {Format.retain_until(attachment.retain_until)}
+              <.badge :if={attachment.on_hold} kind={:neutral}>legal hold</.badge>
+            </:col>
             <:col :let={attachment} label="Captured">
               <.datetime id={"attachment-#{attachment.id}-captured"} value={attachment.captured_at} />
             </:col>

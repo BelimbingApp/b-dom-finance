@@ -216,7 +216,7 @@ defmodule Bilimbi.Finance.Attachments.Web.Panel do
               <p class="text-ink-muted">
                 {Format.bytes(attachment.byte_size)} · SHA-256
                 <span title={attachment.sha256} class="font-mono">{Format.short_hash(attachment.sha256)}</span>
-                · kept until {Format.retain_until(attachment.retain_until)} · captured
+                · kept until {Format.retain_until(attachment.retain_until)}{if attachment.on_hold, do: " (on legal hold)"} · captured
                 <.datetime id={"#{@id}-#{attachment.id}-captured"} value={attachment.captured_at} />
               </p>
             </div>
