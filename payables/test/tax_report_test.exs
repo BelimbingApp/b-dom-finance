@@ -88,7 +88,6 @@ defmodule Bilimbi.Finance.Payables.TaxReportTest do
     assert {:error, :invalid_option} =
              Payables.tax_totals(context.operator, 73, from: ~D[2026-10-02], to: ~D[2026-10-01])
 
-
     viewer = TestFixtures.sign_in!(context.first_scope, 73, 93, [])
     assert {:error, :unauthorized} = Payables.tax_totals(viewer, 73)
   end
