@@ -150,6 +150,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         Reconciliation.ReconciliationCase.all_capabilities()
 
     operator = Ledger.TestFixtures.sign_in!(context.first_scope, 73, 91, grants)
+    approver = Ledger.TestFixtures.sign_in!(context.first_scope, 73, 92, grants)
 
     ar_context =
       Receivables.TestFixtures.configure_receivables!(%{
@@ -206,7 +207,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         ]
       })
 
-    {:ok, _} = Payables.approve_document(operator, 73, bill.id)
+    {:ok, _} = Payables.approve_document(approver, 73, bill.id)
     {:ok, _} = Payables.post_document(operator, 73, bill.id)
 
     {:ok, bank} =
@@ -242,7 +243,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         statement_balance: "17.10"
       })
 
-    {:ok, _finalised} = Reconciliation.finalise_reconciliation(operator, 73, reconciliation.id)
+    {:ok, _finalised} = Reconciliation.finalise_reconciliation(approver, 73, reconciliation.id)
     assert {:ok, artifact} = Reports.export_auditor_pack(operator, 73, ~D[2026-10-31])
     {:ok, %{bytes: bytes}} = Reports.read_auditor_pack(operator, 73, artifact.id)
     {:ok, extracted} = :zip.extract(bytes, [:memory])
