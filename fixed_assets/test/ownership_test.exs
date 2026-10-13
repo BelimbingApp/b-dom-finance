@@ -81,7 +81,10 @@ defmodule Bilimbi.Finance.FixedAssets.OwnershipTest do
       })
 
     void_owner = %{module: @module, record: "event:#{void.id}"}
-    assert {:ok, %{owner: ^void_owner, reverses_entry_id: nil}} = Ledger.get_entry(c.keeper, 73, void.entry_id)
+
+    assert {:ok, %{owner: ^void_owner, reverses_entry_id: nil}} =
+             Ledger.get_entry(c.keeper, 73, void.entry_id)
+
     assert {:error, {:owned_by, ^void_owner}} = reverse(c, void.entry_id)
 
     # With one asset voided, the run's reversal mirrors the live charge

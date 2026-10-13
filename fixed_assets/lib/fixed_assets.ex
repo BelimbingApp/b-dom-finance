@@ -355,7 +355,8 @@ defmodule Bilimbi.Finance.FixedAssets do
                %{
                  entry_date: event.effective_date,
                  description: event.reason,
-                 lines: disposal_lines(asset, revision, row.accumulated, event.proceeds, settlement)
+                 lines:
+                   disposal_lines(asset, revision, row.accumulated, event.proceeds, settlement)
                },
                owner: Ownership.owner(:event, event.id)
              ),

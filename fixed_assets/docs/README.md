@@ -160,6 +160,7 @@ Mount a real copy at `apps/domains/finance` in an isolated Bilimbi checkout.
 Run `mix test` in its `fixed_assets` folder and the module's `web_test` through
 the Web host. Run `mix precommit` from the Bilimbi root. Tests build temporary
 copies from the migration's `statements(temporary: true)`; the fresh-database
-contract suite runs the actual migration and proves commit-time totals,
-rollback-safe numbering, the standing disposal rules and permanent retention.
+contract suite runs the actual migrations and proves commit-time totals,
+rollback-safe numbering, the standing disposal rules, permanent retention and
+the claim of earlier runs, disposals and voids.
 The descriptor deliberately excludes this Bilimbi-only schema from adoption.
