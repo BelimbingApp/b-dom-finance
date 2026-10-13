@@ -40,10 +40,10 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 
 | Function | Capability | Does |
 | --- | --- | --- |
-| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document (or a note naming its `original_document_id`, or a self-billed document naming its `supplier`) from plain attributes, with an `issued` status event |
+| `issue_document/3` | `finance.einvoice.documents.issue` | Records a document (or a note naming its `original_document_id`, or a self-billed document naming its `supplier`) from plain attributes, with an `issued` status event; a `source` links it to the transaction another module recognised in the ledger |
 | `consolidation_candidates/3` | `finance.einvoice.view` | A month's documents a consolidated document would cover, those the authority's limits keep out, their totals, and the window for issuing it |
 | `issue_consolidated_document/3` | `finance.einvoice.documents.issue` | Records the month's consolidated document, the documents each line covers, and a `consolidated` event on each |
-| `get_document/3` | `finance.einvoice.view` | One document with its lines, status events, current `status`, the authority's identifiers, validation link, ledger entries, and `attention` flags |
+| `get_document/3` | `finance.einvoice.view` | One document with its lines, status events, current `status`, the authority's identifiers, validation link, ledger entries, `source_links`, and `attention` flags |
 | `list_documents/3` | `finance.einvoice.view` | Documents newest first; `limit` and `before` page them |
 | `page_documents/3` | `finance.einvoice.view` | One page for a list, filtered by `search`, `status`, `document_type`, and `environment` |
 | `submit_document/3` | `finance.einvoice.documents.submit` | Queues the submission as the signed-in user, after checking credentials and the signing key |
@@ -215,12 +215,15 @@ identifiers.
 ## Ledger bridge
 
 `Bilimbi.Finance.Einvoice.Posting` posts one balanced entry through
-`Bilimbi.Finance.Ledger.post_entry/3` when a document is validated, dated
+`Bilimbi.Finance.Ledger.post_entry/4` when a document is validated, dated
 the issue date (a consolidated document's, the last day of the month it
 reports, so that month's revenue stays in it), with the code number and
-authority UUID in the entry's `reference`, and records the entry's ID on a
+authority UUID in the entry's `reference` and the document as the entry's
+owner (`finance/einvoice`, `document:<id>`), and records the entry's ID on a
 `posted` status event; a cancellation reverses it with
-`Ledger.reverse_entry/4` and records `posting_reversed`. The accounts are the company's
+`Ledger.reverse_owned_entry/5` and records `posting_reversed`. The ledger
+refuses a second entry for the document and `Ledger.reverse_entry/4` on it,
+so a validated document's posting is corrected only here. The accounts are the company's
 `finance.einvoice.posting.*` settings, by account code in its own chart,
 and the authority's `posting_rule/1` names which each type uses.
 An invoice or debit note debits the receivable account and credits
@@ -251,6 +254,37 @@ or `retry_reversal/3`, which the reconciliation page offers to a user
 holding both the e-invoice and the ledger grants. A status read never
 posts again. A rejected document stays valid at the authority, so its entry stands and a
 note corrects it.
+
+## Source links
+
+A sale or purchase entered in another Finance module (a receivables invoice
+or credit note, a payables self-billed bill) has posted its entry there, and
+that module owns the entry. The fiscal document issued for it names that
+transaction as its `source` in `issue_document/3`: the module's descriptor
+ID, its record (`document:17`), and the entry's ID. Issuing reads the entry
+through the ledger (the issuer also needs `finance.ledger.view`) and refuses,
+with a `source` changeset error, an entry that does not exist, that the
+named module and record do not own, that is a reversal or was reversed, in
+another currency, or whose total differs from the document's; and a source
+another standing document already links (its latest status `submitted`,
+`valid`, `rejected`, or `consolidated`). The link is recorded with the
+document, append-only, in `finance_einvoice_source_links`, and the view
+carries it as `source_links` with `recognised_by_source?`.
+
+A linked document never posts when validated and never reverses when
+cancelled (`Posting.post/3` and `reverse/4` are `:noop`, the retries
+return it unchanged, and `attention` and `reconciliation/2` leave it out):
+the sale is recognised once, by its source, whatever the authority decides.
+Tax-clearance state and financial recognition stay apart: cancelling the
+fiscal document changes nothing in the books, and the owner's correction (a
+receivables credit note, a payment reversal) posts in that module, whose
+correcting record the credit or refund note issued for it links to in turn.
+A consolidated document whose sources are all linked carries their links
+and never posts either; sources with links and without do not consolidate
+together (`{:error, :mixed_source_links}`). A document issued without a
+source posts as before, which is the standalone case: a sale entered in
+both e-invoicing and receivables without a link shows up in receivables'
+control-account tie-out as a posting by `finance/einvoice`.
 
 ## Pages
 
@@ -402,8 +436,11 @@ later file drops still names what recorded documents carry.
 ## Database
 
 The migrations `20261012200000`, `20261013090000`, `20261013143000`
-(one `posted` and one `posting_reversed` event per document), and
-`20261013221500` (consolidation) are `:bilimbi_only`:
+(one `posted` and one `posting_reversed` event per document),
+`20261013221500` (consolidation), `20261015150300` (claims the entries
+this module posted before the ledger recorded owners, through the ledger's
+claim function; it builds nothing for the module tests' temporary tables),
+and `20261015150400` (source links) are `:bilimbi_only`:
 
 - `finance_einvoice_documents`: authority, environment, type, code number,
   issue instant (UTC), currency and rate, supplier and buyer snapshots as
@@ -419,6 +456,9 @@ The migrations `20261012200000`, `20261013090000`, `20261013143000`
   `posting_reversed` event names;
 - `finance_einvoice_consolidated_sources`: which documents each line of a
   consolidated document covers;
+- `finance_einvoice_source_links`: the transaction a document is the tax
+  document of, as the source module, its record, and the ledger entry that
+  record posted;
 - `finance_einvoice_code_overrides`: a company's renamed, retired, or added
   codes.
 
@@ -447,7 +487,15 @@ PostgreSQL enforces what the facade checks:
   deferred trigger refuses a commit in which a consolidated document's
   totals differ from its sources'. The consolidation migration's
   `statements(temporary: true)` builds the module tests' copy of its
-  table and triggers.
+  table and triggers;
+- a source link is written only in the transaction that records its
+  document and once per source; a second link to a source is refused while
+  another document that links it stands (its latest status `submitted`,
+  `valid`, `rejected`, or `consolidated`), unless the new document is a
+  consolidated document covering that one; a document is not submitted
+  while another standing document links one of its sources; links are
+  append-only. The source links migration's `statements(temporary: true)`
+  builds the module tests' copy too.
 
 `Bilimbi.Finance.Einvoice.SchemaContract` is not registered in the
 descriptor, for the ledger's reason; `test/schema_contract_test.exs` verifies
@@ -481,7 +529,13 @@ it against a fresh database and proves the triggers outside the sandbox.
 - **Ledger tie-in.** A validated document's entry carries the code number
   and UUID, the document records the entry ID, and both are immutable, so
   an auditor walks document to UUID to entry to trial balance; the
-  reconciliation page lists what does not tie (see Ledger bridge).
+  reconciliation page lists what does not tie (see Ledger bridge). The
+  entry is owned by this module and the document, so it is reversed only
+  here.
+- **Recognised once.** A document issued for a transaction another module
+  recognised links to that module's record and its entry, checked against
+  the ledger, and never posts or reverses an entry of its own; a source has
+  one standing fiscal document (see Source links).
 - **Retention.** Nothing is deleted and there is no purge path; unmounting
   Finance keeps every row. Malaysia requires seven years (Income Tax Act 1967
   section 82); how long a company keeps records is law, not code.

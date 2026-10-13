@@ -440,7 +440,8 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
     end
 
     # A link is written with its document, once per source.
-    assert {:ok, _} = in_transaction.(document.(1) ++ [link.(1, "document:5"), event.(1, "issued")])
+    assert {:ok, _} =
+             in_transaction.(document.(1) ++ [link.(1, "document:5"), event.(1, "issued")])
 
     assert_raise Postgrex.Error, ~r/already recorded/, fn ->
       in_transaction.([link.(1, "document:6")])
@@ -448,12 +449,16 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     # An issued, unsubmitted document does not stand: another may link the
     # source, and then the first is not submitted.
-    assert {:ok, _} = in_transaction.(document.(2) ++ [link.(2, "document:5"), event.(2, "issued")])
+    assert {:ok, _} =
+             in_transaction.(document.(2) ++ [link.(2, "document:5"), event.(2, "issued")])
+
     assert {:ok, _} = in_transaction.([submission.(2), event.(2, "submitted")])
 
-    assert_raise Postgrex.Error, ~r/document 1 is not submitted: .* source of document 2, which stands/, fn ->
-      in_transaction.([submission.(1)])
-    end
+    assert_raise Postgrex.Error,
+                 ~r/document 1 is not submitted: .* source of document 2, which stands/,
+                 fn ->
+                   in_transaction.([submission.(1)])
+                 end
 
     assert_raise Postgrex.Error, ~r/source of document 2, which stands/, fn ->
       in_transaction.(document.(3) ++ [link.(3, "document:5"), event.(3, "issued")])
@@ -461,11 +466,15 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     # Once the authority refuses it, the source is free again.
     assert {:ok, _} = in_transaction.([event.(2, "refused")])
-    assert {:ok, _} = in_transaction.(document.(3) ++ [link.(3, "document:5"), event.(3, "issued")])
+
+    assert {:ok, _} =
+             in_transaction.(document.(3) ++ [link.(3, "document:5"), event.(3, "issued")])
+
     assert {:ok, _} = in_transaction.([submission.(3), event.(3, "submitted")])
 
     # A consolidated document carries its source's link and may be submitted.
-    assert {:ok, _} = in_transaction.(document.(4) ++ [link.(4, "document:8"), event.(4, "issued")])
+    assert {:ok, _} =
+             in_transaction.(document.(4) ++ [link.(4, "document:8"), event.(4, "issued")])
 
     assert {:ok, _} =
              in_transaction.(

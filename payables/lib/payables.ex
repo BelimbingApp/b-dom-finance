@@ -1098,7 +1098,8 @@ defmodule Bilimbi.Finance.Payables do
   def tie_out_control_accounts(%Scope{} = scope, company_id, %Date{} = as_of, options \\ [])
       when is_list(options) do
     with :ok <- authorize(scope, company_id, @view),
-         true <- Keyword.keys(options) -- [:through_entry_number] == [] || {:error, :invalid_option},
+         true <-
+           Keyword.keys(options) -- [:through_entry_number] == [] || {:error, :invalid_option},
          {:ok, through} <- through_option(options) do
       TieOut.report(scope, company_id, as_of, through)
     end

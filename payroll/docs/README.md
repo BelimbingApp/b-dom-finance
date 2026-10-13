@@ -133,11 +133,23 @@ attempt succeeds. A closed period is never reopened to post. A database
 failure that may pass at once is tried a second time, then recorded.
 `Bilimbi.Finance.Payroll.Posting` holds the rules.
 
-`reverse_posting/4` posts the mirror entry through `Ledger.reverse_entry/4`
-on the date given (the company's local today by default) and records a
-`reversed` event with the reason; a posting reverses once, and a reversed source is not posted again:
-its correction is a new ledger entry. A refused reversal is a
-`reversal_failed` event.
+`reverse_posting/4` posts the mirror entry through
+`Ledger.reverse_owned_entry/5` on the date given (the company's local today
+by default) and records a `reversed` event with the reason; a posting
+reverses once, and a reversed source is not posted again: its correction
+is a new ledger entry. A refused reversal is a `reversal_failed` event.
+
+Every entry this module posts names it as the owner, with the source the
+entry recognises: `finance/payroll` and `payroll_run:<id>` or `claim:<id>`
+(`Bilimbi.Finance.Ledger.post_entry/4`'s `owner` option;
+`Bilimbi.Finance.Payroll.Posting.owner/2` names them). The ledger then
+refuses a second entry for the same source, and refuses
+`Ledger.reverse_entry/4` on any of them (`{:error, {:owned_by, owner}}`): a
+payroll posting is corrected only through `reverse_posting/4`, which records
+its `reversed` event and reverses the entry in the same transaction, so the
+ledger and this module's record of a source never disagree. Entries posted
+before the ledger recorded owners were claimed by the migration
+`20261015150500`, through the ledger's own claim function.
 
 ## Pages
 

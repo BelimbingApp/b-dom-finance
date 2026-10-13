@@ -37,15 +37,27 @@ here; they govern this code and are not copied here.
 - Issue a fiscal document through `Bilimbi.Finance.Einvoice.issue_document/3`
   (a month's consolidated document through `issue_consolidated_document/3`)
   with plain attributes, never by writing its tables: it derives every amount
-  and records the `issued` event the status reads from.
+  and records the `issued` event the status reads from. A document for a
+  sale or purchase another module already posted names it as `source`
+  (`module`, `record`, `ledger_entry_id`), so e-invoicing links to that entry
+  and never posts the transaction again; never issue such a document without
+  the source and let both post.
 - Write UBL JSON through `MyInvois.Json` (`einvoice/lib/einvoice/my_invois/json.ex`),
   not `Jason.encode!/1` of a map: the authority signs exact bytes, so key
   order and each number's written form must survive.
 - Post to the ledger through `Bilimbi.Finance.Ledger`'s facade, from Finance
-  modules and other Domains alike; never write or read its tables. A posted
-  entry is corrected with `reverse_entry/4`, never edited. Its `entry_date`
-  must fall in an open period: handle that changeset error, never reopen a
-  period to post.
+  modules and other Domains alike; never write or read its tables. A module
+  posting for a record of its own passes `owner: %{module: "<descriptor
+  id>", record: "<kind>:<id>"}` (each module's `owner/2` builds it) and
+  corrects that entry with `reverse_owned_entry/5` under the same owner, in
+  the transaction that records its own reversal; `reverse_entry/4` is for
+  manual entries and refuses an owned one. A posted entry is never edited.
+  Its `entry_date` must fall in an open period: handle that changeset
+  error, never reopen a period to post. A module's entries posted before
+  owners were recorded are claimed by that module's own migration through
+  the ledger's `finance_ledger_claim_legacy_entry`
+  (`receivables/priv/repo/migrations/20261015150100_*`), never by writing
+  the ledger's table.
 - Keep a record's changing state (open, closed, approved, ...) as append-only
   events with actor, reason, and a database-stamped time, the latest deciding
   the state, as the ledger's closing log does; an updatable status column

@@ -51,7 +51,9 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
                  description: "Undo"
                })
 
-      assert {:ok, %{reversed_by_payment_id: nil}} = Payables.get_payment(operator, 73, payment.id)
+      assert {:ok, %{reversed_by_payment_id: nil}} =
+               Payables.get_payment(operator, 73, payment.id)
+
       assert owed(context, bill) == "0.00"
       assert {:ok, [_bill_entry, _payment_entry]} = Ledger.list_entries(operator, 73)
 
@@ -82,7 +84,10 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
                Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-10-06]})
 
       assert %{entry_date: ["falls in a closed period"]} = errors_on(changeset)
-      assert {:ok, %{reversed_by_payment_id: nil}} = Payables.get_payment(operator, 73, payment.id)
+
+      assert {:ok, %{reversed_by_payment_id: nil}} =
+               Payables.get_payment(operator, 73, payment.id)
+
       assert {:ok, [_only]} = Payables.list_payments(operator, 73)
       assert owed(context, bill) == "0.00"
       assert {:ok, [_bill_entry, _payment_entry]} = Ledger.list_entries(operator, 73)
@@ -180,7 +185,9 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
       end
 
       clerk = TestFixtures.sign_in!(system, 73, 93, ["finance.payables.view"])
-      assert {:error, :unauthorized} = Payables.tie_out_control_accounts(clerk, 73, ~D[2026-10-31])
+
+      assert {:error, :unauthorized} =
+               Payables.tie_out_control_accounts(clerk, 73, ~D[2026-10-31])
 
       stranger = TestFixtures.sign_in!(system, 73, 94, ["finance.ledger.view"])
 

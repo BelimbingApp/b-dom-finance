@@ -32,7 +32,9 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
   # What a receivables invoice (or, mirrored, its credit note) posts for
   # the fixture's sale of 170.00 plus 10.20 tax, as that module's record.
   defp sale_entry!(op, accounts, record, options \\ []) do
-    {debit, credit} = if Keyword.get(options, :mirror, false), do: {:credit, :debit}, else: {:debit, :credit}
+    {debit, credit} =
+      if Keyword.get(options, :mirror, false), do: {:credit, :debit}, else: {:debit, :credit}
+
     gross = Keyword.get(options, :gross, "180.20")
     net = Keyword.get(options, :net, "170.00")
     tax = Keyword.get(options, :tax, "10.20")
@@ -98,7 +100,10 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
 
       # Clearance posts nothing; the sale stands once, as receivables posted it.
       assert :noop = Posting.post(op, 73, valid)
-      assert {:ok, %{id: retried_id, ledger_entry_id: nil}} = Einvoice.retry_posting(op, 73, document.id)
+
+      assert {:ok, %{id: retried_id, ledger_entry_id: nil}} =
+               Einvoice.retry_posting(op, 73, document.id)
+
       assert retried_id == document.id
       assert entry_count(op) == 1
       assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
@@ -208,8 +213,19 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
     test "refuses an entry the ledger does not hold for that owner and amount",
          %{operator: op, accounts: accounts} do
       entry = sale_entry!(op, accounts, "document:17")
-      {:ok, manual} = Ledger.post_entry(op, 73, %{entry_date: ~D[2026-10-01], description: "Manual", lines: [%{account_id: accounts.receivable_account.id, debit: "180.20"}, %{account_id: accounts.revenue_account.id, credit: "180.20"}]})
-      short = sale_entry!(op, accounts, "document:19", gross: "100.00", net: "100.00", tax: "0.00")
+
+      {:ok, manual} =
+        Ledger.post_entry(op, 73, %{
+          entry_date: ~D[2026-10-01],
+          description: "Manual",
+          lines: [
+            %{account_id: accounts.receivable_account.id, debit: "180.20"},
+            %{account_id: accounts.revenue_account.id, credit: "180.20"}
+          ]
+        })
+
+      short =
+        sale_entry!(op, accounts, "document:19", gross: "100.00", net: "100.00", tax: "0.00")
 
       refused = fn source ->
         assert {:error, changeset} =
@@ -224,10 +240,18 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
       end
 
       assert refused.(source(%{id: entry.id + 1000}, "document:17")) =~ "does not exist"
-      assert refused.(source(manual, "document:17")) =~ "is not owned by finance/receivables document:17"
-      assert refused.(source(entry, "document:18")) =~ "is not owned by finance/receivables document:18"
-      assert refused.(source(entry, "document:17", @payables)) =~ "is not owned by finance/payables"
-      assert refused.(source(short, "document:19")) =~ "recognises 100.00, not the document's 180.20"
+
+      assert refused.(source(manual, "document:17")) =~
+               "is not owned by finance/receivables document:17"
+
+      assert refused.(source(entry, "document:18")) =~
+               "is not owned by finance/receivables document:18"
+
+      assert refused.(source(entry, "document:17", @payables)) =~
+               "is not owned by finance/payables"
+
+      assert refused.(source(short, "document:19")) =~
+               "recognises 100.00, not the document's 180.20"
 
       for shape <- [
             "finance/receivables document:17",
@@ -252,7 +276,8 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
       assert {:ok, []} = Einvoice.list_documents(op, 73)
     end
 
-    test "needs the ledger's view grant to read the entry", %{operator: op, accounts: accounts} = c do
+    test "needs the ledger's view grant to read the entry",
+         %{operator: op, accounts: accounts} = c do
       entry = sale_entry!(op, accounts, "document:17")
       issuer = TestFixtures.sign_in!(c.first_scope, 73, 92, TestFixtures.capabilities())
 
@@ -351,7 +376,10 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
         Einvoice.issue_document(
           op,
           73,
-          TestFixtures.invoice_attributes(%{code_number: "S-2", issued_at: ~U[2026-09-03 04:00:00Z]})
+          TestFixtures.invoice_attributes(%{
+            code_number: "S-2",
+            issued_at: ~U[2026-09-03 04:00:00Z]
+          })
         )
 
       assert {:error, :mixed_source_links} =

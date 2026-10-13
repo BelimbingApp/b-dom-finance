@@ -151,8 +151,11 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   end
 
   defp source_link_view(%SourceLink{} = link),
-    do: %{module: link.source_module, record: link.source_record, ledger_entry_id: link.ledger_entry_id}
-
+    do: %{
+      module: link.source_module,
+      record: link.source_record,
+      ledger_entry_id: link.ledger_entry_id
+    }
 
   @doc "A document's events in recording order."
   def events(%Scope{} = scope, company_id, document_id) do

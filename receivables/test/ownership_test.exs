@@ -229,7 +229,9 @@ defmodule Bilimbi.Finance.Receivables.OwnershipTest do
       end
 
       clerk = TestFixtures.sign_in!(system, 73, 93, ["finance.receivables.view"])
-      assert {:error, :unauthorized} = Receivables.tie_out_control_accounts(clerk, 73, ~D[2026-10-31])
+
+      assert {:error, :unauthorized} =
+               Receivables.tie_out_control_accounts(clerk, 73, ~D[2026-10-31])
 
       stranger = TestFixtures.sign_in!(system, 73, 94, ["finance.ledger.view"])
 

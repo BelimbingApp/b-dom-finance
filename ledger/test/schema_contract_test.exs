@@ -376,7 +376,14 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       assert_raise Postgrex.Error, ~r/finance ledger keeps/, fn -> query!.(sql) end
     end
 
-    assert %{rows: [[1, "finance/receivables", "payment:5"], [2, "finance/receivables", "payment:5"], [3, nil, nil], [4, nil, nil]]} =
+    assert %{
+             rows: [
+               [1, "finance/receivables", "payment:5"],
+               [2, "finance/receivables", "payment:5"],
+               [3, nil, nil],
+               [4, nil, nil]
+             ]
+           } =
              query!.(
                "SELECT id, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
              )

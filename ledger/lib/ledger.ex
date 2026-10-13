@@ -852,7 +852,6 @@ defmodule Bilimbi.Finance.Ledger do
     end
   end
 
-
   # A positive amount is a debit, a negative one a credit.
   defp side(account_id, amount) do
     if Decimal.gt?(amount, 0),
@@ -1281,7 +1280,10 @@ defmodule Bilimbi.Finance.Ledger do
 
     totals =
       from(l in lines_query(scope),
-        join: e in subquery(select(entries, [e], %{id: e.id, owner_module: e.owner_module, legacy: e.legacy})),
+        join:
+          e in subquery(
+            select(entries, [e], %{id: e.id, owner_module: e.owner_module, legacy: e.legacy})
+          ),
         on: e.id == l.entry_id,
         where: l.company_id == ^company_id,
         group_by: [l.account_id, e.owner_module, e.legacy],
@@ -1627,7 +1629,9 @@ defmodule Bilimbi.Finance.Ledger do
   end
 
   defp owner_view(%{owner_module: nil}), do: nil
-  defp owner_view(%{owner_module: module, owner_record: record}), do: %{module: module, record: record}
+
+  defp owner_view(%{owner_module: module, owner_record: record}),
+    do: %{module: module, record: record}
 
   defp year_view(year, latest_event, periods) do
     closed = match?(%ClosingEvent{action: "close"}, latest_event)

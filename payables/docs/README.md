@@ -33,6 +33,7 @@ and an explicit company ID. Results are plain maps; the schemas are private.
 | `reverse_payment/4` | `finance.payables.payments.post` | Posts a payment's reversal |
 | `get_payment/3`, `list_payments/3` | `finance.payables.view` | Payments with their allocations; `list_payments/3` filters by `party_key` or `document_id` |
 | `aged_payables/4` | `finance.payables.view` | What is owed to each party as of a date, by days overdue |
+| `tie_out_control_accounts/4` | `finance.payables.view` | The payable accounts' subledger balance against the ledger's, with every posting this module did not make |
 
 ## Authorization and company scope
 

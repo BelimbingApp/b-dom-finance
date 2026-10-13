@@ -326,6 +326,22 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
   end
 
   describe "reverse_posting/4" do
+    test "the entry is the run's own: the ledger refuses a direct reversal", context do
+      run!()
+      {:ok, posting} = Payroll.post_payroll_run(context.operator, 73, 1)
+      owner = %{module: "finance/payroll", record: "payroll_run:1"}
+      assert {:ok, %{owner: ^owner}} = Ledger.get_entry(context.operator, 73, posting.entry_id)
+
+      assert {:error, {:owned_by, ^owner}} =
+               Ledger.reverse_entry(context.operator, 73, posting.entry_id, %{
+                 entry_date: ~D[2026-10-02],
+                 description: "Undo"
+               })
+
+      assert {:ok, [run]} = Payroll.list_payroll_runs(context.operator, 73)
+      assert run.posting.reversal == nil
+    end
+
     test "posts the mirror entry with a reason, once, and lists both entries", context do
       run!()
       {:ok, posting} = Payroll.post_payroll_run(context.operator, 73, 1)
@@ -349,6 +365,7 @@ defmodule Bilimbi.Finance.Payroll.PostingTest do
 
       assert {:ok, entry} = Ledger.get_entry(context.operator, 73, reversed.reversal.entry_id)
       assert entry.reverses_entry_id == posting.entry_id
+      assert entry.owner == %{module: "finance/payroll", record: "payroll_run:1"}
       assert entry.description == "Reversal of Payroll run 2026-09 XTS"
       assert [{:salaries, nil, "5000"} | _] = lines_by_account(entry, context.accounts)
 
