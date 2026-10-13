@@ -154,7 +154,11 @@ defmodule Bilimbi.Finance.Reports.Web.BookkeepingLive do
               end
 
             :error ->
-              put_flash(socket, :error, "Give the first day of the fiscal year as a date.")
+              put_flash(
+                socket,
+                :error,
+                "Give the first day of the fiscal year as a date. The last day is optional, but must be a date."
+              )
           end
 
         {:noreply, load(socket)}
@@ -261,20 +265,23 @@ defmodule Bilimbi.Finance.Reports.Web.BookkeepingLive do
         {:ok, %{}}
 
       start_date ->
-        with {:ok, start} <- Date.from_iso8601(start_date) do
-          attributes = %{start_date: start}
-
-          case Map.get(fields, "end_date", "") do
-            "" ->
-              {:ok, attributes}
-
-            end_date ->
-              with {:ok, finish} <- Date.from_iso8601(end_date),
-                   do: {:ok, Map.put(attributes, :end_date, finish)}
-          end
+        with {:ok, start} <- Date.from_iso8601(start_date),
+             {:ok, attributes} <- end_date_attributes(%{start_date: start}, fields) do
+          {:ok, attributes}
         else
           _invalid -> :error
         end
+    end
+  end
+
+  defp end_date_attributes(attributes, fields) do
+    case Map.get(fields, "end_date", "") do
+      "" ->
+        {:ok, attributes}
+
+      end_date ->
+        with {:ok, finish} <- Date.from_iso8601(end_date),
+             do: {:ok, Map.put(attributes, :end_date, finish)}
     end
   end
 
