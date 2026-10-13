@@ -266,8 +266,7 @@ through the ledger (the issuer also needs `finance.ledger.view`) and refuses,
 with a `source` changeset error, an entry that does not exist, that the
 named module and record do not own, that is a reversal or was reversed, in
 another currency, or whose total differs from the document's; and a source
-another standing document already links (its latest status `submitted`,
-`valid`, `rejected`, or `consolidated`). The link is recorded with the
+another standing document already links (defined below). The link is recorded with the
 document, append-only, in `finance_einvoice_source_links`, and the view
 carries it as `source_links` with `recognised_by_source?`.
 
@@ -508,8 +507,7 @@ PostgreSQL enforces what the facade checks:
   table and triggers;
 - a source link is written only in the transaction that records its
   document and once per source; a second link to a source is refused while
-  another document that links it stands (its latest status `submitted`,
-  `valid`, `rejected`, or `consolidated`), unless the new document is a
+  another document that links it stands (see Source links), unless the new document is a
   consolidated document covering that one; a document is not submitted
   while another standing document links one of its sources; links are
   append-only. The source links migration's `statements(temporary: true)`
