@@ -179,6 +179,10 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     do:
       "Only a recorded, released, refused, or invalid document can be submitted; a consolidated document reports the documents it covers, and one the authority refused or found invalid is never sent again: consolidate the month again."
 
+  defp submit_message(:source_taken),
+    do:
+      "Another document that stands (submitted, valid, rejected, or consolidated) is already the tax document of the same transaction."
+
   defp submit_message(:missing_credentials),
     do: "Set the client ID and secret for this environment in the e-invoice settings first."
 
@@ -248,6 +252,12 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     do: "Base Artifacts has no storage root configured; an operator sets it in Operator Settings."
 
   defp pdf_message(reason), do: "The PDF could not be generated (#{inspect(reason)})."
+
+  # A linked document's accounting lives with its source: name it and the
+  # entry that record posted.
+  defp source_links_text(links) do
+    Enum.map_join(links, "; ", &"#{&1.module} #{&1.record} (entry ##{&1.ledger_entry_id})")
+  end
 
   defp attention_text(:overdue),
     do:
@@ -477,6 +487,11 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
                   {if @document.reversal_entry_id,
                     do: " (reversed by ##{@document.reversal_entry_id})",
                     else: ""}
+                </:item>
+                <:item :if={@document.recognised_by_source?} title="Recognised by">
+                  <span id="einvoice-document-source-links">
+                    {source_links_text(@document.source_links)}
+                  </span>
                 </:item>
               </.list>
               <div

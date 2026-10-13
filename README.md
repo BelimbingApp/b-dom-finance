@@ -6,11 +6,12 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
-| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, manual journals posted on approval, the company's separation of duties with its approval exceptions, fiscal years and period closing, year-end close, trial balance, and posting notices |
-| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payment requests, the three-way match of a bill against the purchase order and goods receipts behind it when Supply Chain is mounted, payments approved before they post and allocated to bills, and aged payables |
-| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
+| [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries each owned by the module and record that posted it and corrected only through that owner, manual journals posted on approval, the company's separation of duties with its approval exceptions, fiscal years and period closing, year-end close, trial balance, per-owner account totals for control-account tie-outs, and posting notices |
+| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payment requests, the three-way match of a bill against the purchase order and goods receipts behind it when Supply Chain is mounted, payments approved before they post and allocated to bills, aged payables, and the payable control-account tie-out |
+| [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, the ledger bridge, and links from a document to the receivables or payables transaction already recognised in the ledger, which then posts once |
+| [`fixed_assets/`](fixed_assets/docs/README.md) | `finance/fixed_assets` | permanent asset register, immutable category defaults, monthly book depreciation that skips and reports assets whose acquisition was reversed, disposals, voided acquisitions and reversals, each run, disposal and void owning the entry it posts, and reproducible register/schedule reports reconciled with the ledger |
 | [`reports/`](reports/docs/README.md) | `finance/reports` | live financial statements, immutable issued statement/trial-balance/aging snapshots, the approval exceptions page, and company auditor archives with ledger and Finance evidence |
-| [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
+| [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, aged receivables, and the receivable control-account tie-out |
 | [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference by someone other than their preparer (or recorded as an exception) and kept with their figures |
 | [`payroll/`](payroll/docs/README.md) | `finance/payroll` | each company's mapping of payroll components and claim categories to ledger accounts with its change history, one balanced entry per finalised payroll run and per approved staff claim posted once through the ledger, reversals with reasons, and the append-only record of every attempt; the runs and claims come from the People Domain when it is mounted |
 | [`sst/`](sst/docs/README.md) | `finance/sst` | Malaysia's Sales and Service Tax return (SST-02): the registration and tax code mappings as numbered versions, and returns per tax and taxable period computed from posted documents, reconciled with the tax accounts, finalised into immutable snapshots, and amended by new versions |
@@ -29,12 +30,16 @@ charges and interest through the ledger's facade, and has pages for its
 bank accounts, statements, matching, and reconciliations. Payroll posting
 reads finalised payroll runs and approved claims from the People Domain
 through a seam that finds it at run time, posts them through the ledger's
-facade, and has pages for its postings and its account mappings. SST returns
+facade, and has pages for its postings and its account mappings. Fixed assets
+has pages for categories, the register, asset schedules and depreciation runs,
+and posts charges and disposals through the ledger facade. SST returns
 read receivables' and payables' document tax and the tax accounts' postings
 through their facades, and have pages to prepare, review, finalise, amend,
 and export each return and to set up the registration and tax code
-mappings. Each module's "Standards addressed" section says which bookkeeping
-and audit standards it meets.
+mappings. Fixed assets has pages for categories, the register, asset
+schedules and depreciation runs, and posts charges and disposals through the
+ledger facade. Each module's "Standards addressed" section says which
+bookkeeping and audit standards it meets.
 
 ## Mount
 

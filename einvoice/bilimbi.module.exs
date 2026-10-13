@@ -24,7 +24,9 @@
     20_261_012_200_000 => :bilimbi_only,
     20_261_013_090_000 => :bilimbi_only,
     20_261_013_143_000 => :bilimbi_only,
-    20_261_013_221_500 => :bilimbi_only
+    20_261_013_221_500 => :bilimbi_only,
+    20_261_015_150_300 => :bilimbi_only,
+    20_261_015_150_400 => :bilimbi_only
   },
   web: "priv/web_routes.exs",
   # Compatibility verification runs before pending Bilimbi-only migrations.

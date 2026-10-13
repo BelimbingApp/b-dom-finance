@@ -78,6 +78,7 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.MatchLine
   alias Bilimbi.Finance.Payables.Matching
   alias Bilimbi.Finance.Payables.OrderSource
+  alias Bilimbi.Finance.Payables.Ownership
   alias Bilimbi.Finance.Payables.Payment
   alias Bilimbi.Finance.Payables.PaymentRequest
   alias Bilimbi.Finance.Payables.PaymentRequestAllocation
@@ -88,6 +89,7 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.TaxCodeChange
   alias Bilimbi.Finance.Payables.TaxLine
   alias Bilimbi.Finance.Payables.TaxReport
+  alias Bilimbi.Finance.Payables.TieOut
   alias Ecto.Changeset
 
   @view "finance.payables.view"
@@ -609,10 +611,14 @@ defmodule Bilimbi.Finance.Payables do
     end
   end
 
+  # The entry names this document as its owner: the ledger refuses a second
+  # entry for it and a reversal from anywhere but this module.
   defp post_now(scope, company_id, document, lines) do
     with {:ok, payable_account_id} <- posting_account(scope, company_id, document),
          {:ok, entry} <-
-           Ledger.post_entry(scope, company_id, document_entry(document, payable_account_id)),
+           Ledger.post_entry(scope, company_id, document_entry(document, payable_account_id),
+             owner: Ownership.owner(:document, document.id)
+           ),
          {:ok, _event} <- record_posting_match(scope, document, lines) do
       %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
 
@@ -1005,8 +1011,12 @@ defmodule Bilimbi.Finance.Payables do
           payment_changeset(scope, company_id, book, requested_payment(request), accounts)
 
         with {:ok, changeset} <- valid(changeset),
+             # The payment takes its ID now: the entry names it as its owner, and
+             # the payment names the entry, in one transaction.
              {:ok, entry} <-
-               Ledger.post_entry(scope, company_id, payment_entry(changeset, bills)),
+               Ledger.post_entry(scope, company_id, payment_entry(changeset, bills),
+                 owner: Ownership.owner(:payment, changeset.data.id)
+               ),
              {:ok, payment} <-
                changeset
                |> Changeset.put_change(:entry_id, entry.id)
@@ -1091,10 +1101,12 @@ defmodule Bilimbi.Finance.Payables do
 
   @doc """
   Posts the reversal of a payment on `payment_date` (not before the
-  original's) with an optional `description`: the ledger reverses its entry,
-  and its bills are owed again from that date. A payment is reversed at most
-  once (`{:error, :already_reversed}`), and a reversal is not itself
-  reversed (`{:error, :reversal_not_reversible}`).
+  original's) with an optional `description`: the ledger reverses its entry
+  through the owner's path (`Ledger.reverse_owned_entry/5`, as this module
+  for that payment), and its bills are owed again from that date, both in
+  one transaction. A payment is reversed at most once
+  (`{:error, :already_reversed}`), and a reversal is not itself reversed
+  (`{:error, :reversal_not_reversible}`).
   """
   @spec reverse_payment(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -1140,10 +1152,16 @@ defmodule Bilimbi.Finance.Payables do
 
         with {:ok, changeset} <- valid(changeset),
              {:ok, entry} <-
-               Ledger.reverse_entry(scope, company_id, original.entry_id, %{
-                 entry_date: Changeset.get_field(changeset, :payment_date),
-                 description: Changeset.get_field(changeset, :description)
-               }) do
+               Ledger.reverse_owned_entry(
+                 scope,
+                 company_id,
+                 original.entry_id,
+                 Ownership.owner(:payment, original.id),
+                 %{
+                   entry_date: Changeset.get_field(changeset, :payment_date),
+                   description: Changeset.get_field(changeset, :description)
+                 }
+               ) do
           changeset
           |> Changeset.put_change(:entry_id, entry.id)
           |> Changeset.put_change(:entry_number, entry.entry_number)
@@ -1271,6 +1289,38 @@ defmodule Bilimbi.Finance.Payables do
       nil -> {:ok, nil}
       number when is_integer(number) and number in 0..@max_bigint -> {:ok, number}
       _other -> {:error, :invalid_option}
+    end
+  end
+
+  @doc """
+  The control-account tie-out as of a date: for each payable account (every
+  one a posted bill recorded, and the settings'), what this module's records
+  say is still owed on it (`subledger_balance`, the aged payables' total for
+  the account, exceptions included), what the ledger holds on it
+  (`ledger_balance`, credits less debits over every entry dated through
+  `as_of`), the part of that this module posted (`owned_balance`), and
+  every other posting on the account (`other_postings`, one per owner
+  module, `nil` for an entry with no owner, with `legacy` for one posted
+  before owners were recorded), each with its balance. `difference` is
+  `subledger_balance` less `ledger_balance`, and `tied_out?` whether every
+  account's is zero: an entry reversed outside this module, a manual
+  journal on the account, a purchase posted by another module as well, each
+  shows here as a difference with its posting, never netted away.
+
+  All figures are read at one ledger entry number, named
+  `through_entry_number`; passing it back reproduces the tie-out exactly.
+  Reads the ledger, so it also needs `finance.ledger.view`. A malformed
+  option is `{:error, :invalid_option}`.
+  """
+  @spec tie_out_control_accounts(Scope.t(), term(), Date.t(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :book_not_open | :invalid_option}
+  def tie_out_control_accounts(%Scope{} = scope, company_id, %Date{} = as_of, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         true <-
+           Keyword.keys(options) -- [:through_entry_number] == [] || {:error, :invalid_option},
+         {:ok, through} <- through_option(options) do
+      TieOut.report(scope, company_id, as_of, through)
     end
   end
 
@@ -1798,6 +1848,7 @@ defmodule Bilimbi.Finance.Payables do
 
   defp payment_changeset(scope, company_id, book, attributes, accounts) do
     %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+    payment_id = Ownership.next_id(Payment)
 
     party_key =
       attributes |> fetch(:party_key) |> then(&if(is_binary(&1), do: String.trim(&1), else: &1))
@@ -1852,6 +1903,7 @@ defmodule Bilimbi.Finance.Payables do
       end
 
     %Payment{
+      id: payment_id,
       tenant_id: Scope.tenant_id(scope),
       company_id: company_id,
       currency_code: book.currency_code,

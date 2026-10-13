@@ -11,7 +11,7 @@ defmodule Bilimbi.Finance.Payroll.SchemaContract do
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_versions, do: [20_261_015_120_000]
+  def migration_versions, do: [20_261_015_120_000, 20_261_015_150_500]
 
   def migration_version, do: List.last(migration_versions())
 

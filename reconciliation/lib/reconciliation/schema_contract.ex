@@ -11,7 +11,9 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContract do
   # Check text is PostgreSQL's canonical form, which the verifier compares
   # after removing whitespace and parentheses.
 
-  def migration_version, do: 20_261_014_090_000
+  def migration_versions, do: [20_261_014_090_000, 20_261_015_150_600]
+
+  def migration_version, do: List.last(migration_versions())
 
   @impl true
   def tables do

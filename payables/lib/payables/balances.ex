@@ -76,6 +76,21 @@ defmodule Bilimbi.Finance.Payables.Balances do
     |> Enum.uniq()
   end
 
+  @doc """
+  What is owed on every posted bill as of a date and through an entry
+  number, summed on the payable account each bill recorded, by account ID.
+  """
+  def owed_by_account(scope, company_id, as_of, through) do
+    from(o in subquery(owed_query(scope, company_id, as_of, through, nil)),
+      join: b in ^Tenancy.scope_query(Document, scope),
+      on: b.id == o.id,
+      group_by: b.payable_account_id,
+      select: {b.payable_account_id, sum(o.owed)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   @doc "The aged payables report; see `Bilimbi.Finance.Payables.aged_payables/4`."
   def aged_payables(scope, company_id, as_of, through, bucket_days) do
     through = through || last_entry_number(scope, company_id)

@@ -3,12 +3,13 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
+  alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Reconciliation.SchemaContract
   alias Bilimbi.Finance.Reconciliation.TestFixtures
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
-  setup do
+  setup context do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
     database = "bilimbi_finance_reconciliation_#{String.replace(Ecto.UUID.generate(), "-", "")}"
     quoted = SchemaVerifier.quote_identifier!(database)
@@ -27,16 +28,27 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), TestFixtures.migration(),
-               log: false,
-               dynamic_repo: repo
-             )
+    migrate! = fn migrations ->
+      for {version, module} <- migrations do
+        assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+      end
+    end
 
-    %{repo: repo}
+    # The ledger's migrations come first, as in a composed database: the
+    # claim migration calls the ledger's claim function.
+    {ledger, ledger_later} = Enum.split(LedgerFixtures.migrations(), 3)
+    [create, claim] = TestFixtures.migrations()
+    migrate!.(ledger ++ [create])
+    # One test posts before the ledger recorded owners and migrates itself.
+    unless context[:before_claim], do: migrate!.(ledger_later ++ [claim])
+
+    %{repo: repo, migrate_claim!: fn -> migrate!.(ledger_later ++ [claim]) end}
   end
 
   test "the fresh migration implements the complete reconciliation contract", %{repo: repo} do
+    assert Enum.map(TestFixtures.migrations(), &elem(&1, 0)) ==
+             SchemaContract.migration_versions()
+
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end
 
@@ -313,5 +325,91 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
         ] do
       assert_raise Postgrex.Error, ~r/finance reconciliation keeps/, fn -> query!.(sql) end
     end
+  end
+
+  # A statement line's charge or interest entry predates owners: only the
+  # match made with it, noted "Posted from statement line as ...", names it.
+  @tag :before_claim
+  @tag :capture_log
+  test "the claim migration marks the entries statement lines posted as the module's own",
+       %{repo: repo, migrate_claim!: migrate_claim!} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    entry = fn id, reverses ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, #{id}, '2026-09-30', 'Entry', 'XTS', #{reverses || "NULL"}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 1, 10, 0), (1, 1, #{id}, 2, 2, 0, 10)"
+      ]
+    end
+
+    statement_line = fn id ->
+      "INSERT INTO finance_reconciliation_statement_lines (id, tenant_id, company_id, statement_id, bank_account_id, line_number, line_date, description, amount, fingerprint) VALUES (#{id}, 1, 1, 1, 1, #{id}, '2026-09-30', 'Line', -10, repeat('#{id}', 64))"
+    end
+
+    match = fn id, note ->
+      "INSERT INTO finance_reconciliation_matches (id, tenant_id, company_id, bank_account_id, match_number, note, matched_by_user_id, matched_at) VALUES (#{id}, 1, 1, 1, 99, #{note}, 1, '2000-01-01')"
+    end
+
+    part = fn match_id, line_id, entry_id ->
+      [
+        "INSERT INTO finance_reconciliation_match_lines (tenant_id, company_id, match_id, statement_line_id) VALUES (1, 1, #{match_id}, #{line_id})",
+        "INSERT INTO finance_reconciliation_match_entries (tenant_id, company_id, match_id, bank_account_id, entry_id, entry_number, entry_date, description, amount) VALUES (1, 1, #{match_id}, 1, #{entry_id}, #{entry_id}, '2026-09-30', 'Entry', -10)",
+        "INSERT INTO finance_reconciliation_match_events (tenant_id, company_id, match_id, action, recorded_by_user_id) VALUES (1, 1, #{match_id}, 'matched', 1)"
+      ]
+    end
+
+    posted = "'Posted from statement line as charge'"
+
+    {:ok, _} =
+      in_transaction.(
+        [
+          "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+          "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Charges', 'expense', now(), now()), (2, 1, 1, '2', 'Bank', 'asset', now(), now())",
+          "INSERT INTO finance_reconciliation_bank_accounts (id, tenant_id, company_id, name, ledger_account_id, import_mapping, inserted_at, updated_at) VALUES (1, 1, 1, 'Operating', 2, '{}', now(), now())",
+          "INSERT INTO finance_reconciliation_statements (id, tenant_id, company_id, bank_account_id, statement_number, file_name, file_sha256, line_count, start_date, end_date, imported_by_user_id, imported_at) VALUES (1, 1, 1, 1, 99, 'f.csv', repeat('1', 64), 5, '2026-09-01', '2026-09-30', 1, '2000-01-01')"
+        ] ++
+          Enum.flat_map(1..6, &entry.(&1, nil)) ++
+          entry.(7, 1) ++
+          Enum.map(1..5, statement_line) ++
+          [match.(1, posted)] ++
+          part.(1, 1, 1) ++
+          [match.(2, "'Matched by hand'")] ++
+          part.(2, 2, 2) ++
+          [match.(3, posted)] ++
+          part.(3, 3, 3) ++
+          [match.(5, posted)] ++
+          part.(5, 5, 5)
+      )
+
+    # The line was unmatched and posted again before one entry per line was
+    # kept: two posting matches name it, so neither entry is claimed.
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_reconciliation_match_events (tenant_id, company_id, match_id, action, reason, recorded_by_user_id) VALUES (1, 1, 3, 'unmatched', 'Wrong kind', 1)"
+      ])
+
+    {:ok, _} = in_transaction.([match.(4, posted)] ++ part.(4, 3, 4))
+
+    migrate_claim!.()
+
+    assert %{
+             rows: [
+               [1, true, "finance/reconciliation", "statement_line:1"],
+               [2, true, nil, nil],
+               [3, true, nil, nil],
+               [4, true, nil, nil],
+               [5, true, "finance/reconciliation", "statement_line:5"],
+               [6, true, nil, nil],
+               [7, true, "finance/reconciliation", "statement_line:1"]
+             ]
+           } =
+             query!.(
+               "SELECT id, legacy, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+             )
   end
 end

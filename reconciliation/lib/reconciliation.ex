@@ -20,7 +20,7 @@ defmodule Bilimbi.Finance.Reconciliation do
 
   The ledger is read and posted to only through `Bilimbi.Finance.Ledger`'s
   facade with the same scope, so a call that reads the chart, the book, or
-  the account's entries also needs `finance.ledger.view`, and posting a
+  the account's entries also needs `finance.ledger.view`, and posting or reversing a
   statement line needs `finance.ledger.entries.post`.
 
   A statement and its lines are immutable once imported, and the same file
@@ -63,6 +63,7 @@ defmodule Bilimbi.Finance.Reconciliation do
   @manage_reconciliations "finance.reconciliation.reconciliations.manage"
   @finalise_reconciliations "finance.reconciliation.reconciliations.finalise"
   @post_statement_lines "finance.reconciliation.statement-lines.post"
+  @manage_statement_lines "finance.reconciliation.statement-lines.manage"
 
   @type refusal :: :unauthorized | :company_not_found
   @type write_refusal :: refusal() | :company_archived
@@ -87,6 +88,9 @@ defmodule Bilimbi.Finance.Reconciliation do
 
   @doc "The capability that posts a statement line as a charge or interest."
   def post_statement_lines_capability, do: @post_statement_lines
+
+  @doc "The capability that reverses the entry a statement line posted."
+  def manage_statement_lines_capability, do: @manage_statement_lines
 
   @doc "The choices an import mapping is built from (see `Bilimbi.Finance.Reconciliation.Mapping`)."
   def mapping_choices do
@@ -542,7 +546,9 @@ defmodule Bilimbi.Finance.Reconciliation do
   (a closed period, an inactive account) is returned as its changeset with
   nothing recorded. Other refusals: `:invalid_kind`, `:no_charges_account`,
   `:no_interest_account`, `:not_a_charge` (the line is money in),
-  `:not_interest` (money out), and `:statement_line_matched`.
+  `:not_interest` (money out), `:statement_line_matched`, and
+  `:statement_line_posted` for a line that already posted an entry (the
+  ledger holds that entry as this line's: match the line to it instead).
   """
   @spec post_statement_line(Scope.t(), term(), term(), map()) ::
           {:ok, %{entry: map(), match: map()}}
@@ -559,6 +565,46 @@ defmodule Bilimbi.Finance.Reconciliation do
       with {:ok, line} <- statement_line(scope, company_id, statement_line_id),
            {:ok, account} <- active_bank_account(scope, company_id, line.bank_account_id),
            do: Posting.post_statement_line(scope, company_id, account, line, attributes)
+    end)
+  end
+
+  @doc """
+  Reverses the charge or interest entry a statement line posted, with a
+  required `reason` (blank or over 500 characters is
+  `{:error, :invalid_reason}`), and optionally the reversal's `entry_date`
+  (default today). The line must stand matched, alone, to the entry it
+  posted (`:statement_line_not_matched`, or `:statement_line_not_posted`
+  for any other match). In one transaction the match is unmatched, an
+  `unmatched` event carrying the reason, and the entry is reversed through
+  `Ledger.reverse_owned_entry/5` as the line's owner; the ledger's refusal
+  (a closed period) rolls both back and is returned. A match a finalised
+  reconciliation counted is kept (`{:error, :match_finalised}`). An entry
+  posted before owners were recorded is reversed the same way when its match
+  is the one that posted it. The line
+  is not posted again: the ledger holds an entry for it
+  (`:statement_line_posted`), so the right figure is booked by a manual
+  journal and matched. Needs `finance.reconciliation.statement-lines.manage`
+  and the ledger's `finance.ledger.entries.post` and `finance.ledger.view`.
+  Returns `{:ok, %{reversal: entry, match: unmatched_match}}`.
+  """
+  @spec reverse_statement_line(Scope.t(), term(), term(), map()) ::
+          {:ok, %{reversal: map(), match: map()}}
+          | {:error,
+             write_refusal()
+             | :statement_line_not_found
+             | :bank_account_not_found
+             | :invalid_reason
+             | :statement_line_not_matched
+             | :statement_line_not_posted
+             | :match_finalised
+             | Changeset.t()
+             | atom()}
+  def reverse_statement_line(%Scope{} = scope, company_id, statement_line_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @manage_statement_lines, fn ->
+      with {:ok, line} <- statement_line(scope, company_id, statement_line_id),
+           {:ok, account} <- bank_account(scope, company_id, line.bank_account_id),
+           do: Posting.reverse_statement_line(scope, company_id, account, line, attributes)
     end)
   end
 

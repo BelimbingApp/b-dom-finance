@@ -10,6 +10,7 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
   alias Bilimbi.Finance.Reconciliation.{Matching, Records}
 
   @kinds ~w(charge interest)
+  @posting_note "Posted from statement line as "
 
   @doc "The kinds of statement line this module posts: a bank charge or interest."
   def kinds, do: @kinds
@@ -29,7 +30,7 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
          :ok <- sign(line, kind),
          :ok <- unmatched?(scope, company_id, bank_account.id, line),
          {:ok, entry} <-
-           Ledger.post_entry(scope, company_id, %{
+           post_once(scope, company_id, line, %{
              entry_date: line.line_date,
              description: description(attributes, line),
              reference: line.reference,
@@ -38,9 +39,99 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
          item = Matching.ledger_item(entry, bank_account.ledger_account_id),
          {:ok, match} <-
            Matching.insert_match(scope, company_id, bank_account, [line], [item], %{
-             note: "Posted from statement line as #{kind}"
+             note: @posting_note <> kind
            }) do
       {:ok, %{entry: entry, match: match}}
+    end
+  end
+
+  @doc """
+  Reverses the entry `line` posted: `line` must stand matched, alone, to
+  that entry. The match is unmatched with `reason` (an `unmatched` event, so
+  never once a finalised reconciliation counted it) and the entry reversed
+  as its owner, dated `entry_date` (default today). An entry posted before
+  owners were recorded and not claimed is reversed the same way when the
+  match is the one that posted it. Returns `{:ok, %{reversal, match}}`.
+  """
+  def reverse_statement_line(scope, company_id, bank_account, line, attributes) do
+    with {:ok, reason} <- reason(attributes),
+         {:ok, match} <- standing_match(scope, company_id, bank_account, line),
+         {:ok, entry} <- posted_entry(scope, company_id, line, match),
+         {:ok, unmatched} <- Matching.unmatch(scope, company_id, match, %{reason: reason}),
+         {:ok, reversal} <-
+           Ledger.reverse_owned_entry(scope, company_id, entry.id, owner(line), %{
+             entry_date: Records.fetch(attributes, :entry_date) || Date.utc_today(),
+             description: String.slice("Reversal of " <> entry.description, 0, 500),
+             reference: entry.reference
+           }) do
+      {:ok, %{reversal: reversal, match: unmatched}}
+    end
+  end
+
+  defp standing_match(scope, company_id, bank_account, line) do
+    case Matching.standing_for_line(scope, company_id, bank_account.id, line.id) do
+      nil -> {:error, :statement_line_not_matched}
+      match -> {:ok, match}
+    end
+  end
+
+  defp reason(attributes) do
+    case Records.fetch(attributes, :reason) do
+      text when is_binary(text) ->
+        trimmed = String.trim(text)
+        if trimmed != "" and String.length(trimmed) <= 500, do: {:ok, trimmed}, else: invalid()
+
+      _none ->
+        invalid()
+    end
+  end
+
+  defp invalid, do: {:error, :invalid_reason}
+
+  defp posted_entry(
+         scope,
+         company_id,
+         line,
+         %{lines: [_line], entries: [%{entry_id: entry_id}]} = match
+       ) do
+    owner = owner(line)
+
+    case Ledger.get_entry(scope, company_id, entry_id) do
+      {:ok, %{owner: ^owner} = entry} -> {:ok, entry}
+      {:ok, %{owner: nil, legacy: true} = entry} -> legacy_posting(entry, match)
+      {:ok, _other} -> {:error, :statement_line_not_posted}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp posted_entry(_scope, _company_id, _line, _match), do: {:error, :statement_line_not_posted}
+
+  defp legacy_posting(entry, %{note: note}) do
+    if is_binary(note) and String.starts_with?(note, @posting_note),
+      do: {:ok, entry},
+      else: {:error, :statement_line_not_posted}
+  end
+
+  @module_id "finance/reconciliation"
+
+  @doc "This module's descriptor ID, the `owner_module` of every entry it posts."
+  def module_id, do: @module_id
+
+  @doc "The owner identity of the entry a statement line posted."
+  def owner(%{id: line_id}), do: %{module: @module_id, record: "statement_line:#{line_id}"}
+
+  # The entry names the statement line as its owner, so the ledger holds one
+  # entry per line: a line unmatched since it posted is matched to that
+  # entry again, never posted again (`:statement_line_posted`).
+  defp post_once(scope, company_id, line, entry) do
+    case Ledger.post_entry(scope, company_id, entry, owner: owner(line)) do
+      {:error, %Ecto.Changeset{errors: errors} = changeset} ->
+        if Keyword.has_key?(errors, :owner_record),
+          do: {:error, :statement_line_posted},
+          else: {:error, changeset}
+
+      result ->
+        result
     end
   end
 

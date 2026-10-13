@@ -131,15 +131,31 @@ defmodule Bilimbi.Finance.Einvoice do
       `unit_price`, `tax_type`, and `tax_rate` (always stated, `0` where the
       authority takes no tax), and optionally `unit_code`, `discount_amount`,
       `charge_amount` (blank is none), `tax_exemption_reason`, `tariff_code`,
-      and `origin_country_code`.
+      and `origin_country_code`;
+    * optionally `source`, the transaction this document is the tax document
+      of, when another module already recognised it in the ledger: `module`
+      (that module's descriptor ID, `finance/receivables` or
+      `finance/payables`), `record` (its record, `document:17`), and
+      `ledger_entry_id`, the entry that record posted. The ledger must hold
+      that entry for that owner, unreversed and not itself a reversal, in
+      the document's currency and for the document's total; and no other
+      document that stands (submitted, valid, rejected, or consolidated)
+      may link the same source. The link is recorded with the document. A
+      linked document never posts to the ledger when validated, nor
+      reverses when cancelled: its accounting, and its correction (a credit
+      note, a payment reversal), belong to the source module, and the note
+      issued for that correction links to the correcting record, and is
+      refused without a `source` when its original is linked. Reading
+      the entry needs `finance.ledger.view`.
 
   The company's own party (the supplier, or the buyer of a self-billed
   document) comes from its e-invoicing settings and the environment from
   its current setting. Amounts are derived, never taken:
   a line's subtotal is quantity times unit price, less its discount plus
   its charge, and its tax is that times the rate, each rounded half up to
-  two places. Refusals are a changeset; `{:error, :code_number_taken}` when
-  the company already issued that number in the environment.
+  two places. Refusals are a changeset (a `source` error says what the
+  ledger holds instead); `{:error, :code_number_taken}` when the company
+  already issued that number in the environment.
   """
   @spec issue_document(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | :code_number_taken | Changeset.t()}
@@ -163,10 +179,12 @@ defmodule Bilimbi.Finance.Einvoice do
         })
 
       with {:ok, draft} <- Changeset.apply_action(changeset, :insert),
-           :ok <- unused_code_number(scope, company_id, environment(scope, company_id), draft) do
+           :ok <- unused_code_number(scope, company_id, environment(scope, company_id), draft),
+           {:ok, source} <- source_link(scope, company_id, changeset, draft, original, attributes) do
         document =
           record_document!(scope, company_id, profile, draft, details(draft, original), original)
 
+        if source, do: Documents.record_source_link!(scope, company_id, document.id, source)
         view = get_view(scope, company_id, document.id)
 
         record_action(scope, company_id, "finance.einvoice.document.issued", %{
@@ -174,7 +192,10 @@ defmodule Bilimbi.Finance.Einvoice do
           "document_type" => view.document_type,
           "code_number" => view.code_number,
           "environment" => view.environment,
-          "original_document_id" => view.original_document_id
+          "original_document_id" => view.original_document_id,
+          "source_module" => source && source.module,
+          "source_record" => source && source.record,
+          "source_ledger_entry_id" => source && source.ledger_entry_id
         })
 
         {:ok, view}
@@ -294,7 +315,11 @@ defmodule Bilimbi.Finance.Einvoice do
   it, finds it invalid, or it is cancelled, it releases them (`released`)
   and is never submitted again. It is
   submitted, polled, posted, and cancelled like any document, and is the
-  audit action `finance.einvoice.document.consolidated`.
+  audit action `finance.einvoice.document.consolidated`. Sources issued
+  with a `source` (a transaction another module recognised in the ledger)
+  pass their links on: the consolidated document then never posts either.
+  Sources with links and sources without do not consolidate together
+  (`{:error, :mixed_source_links}`).
 
   Other refusals: `{:error, :nothing_to_consolidate}`,
   `{:error, {:not_consolidatable, document_id}}` for a named document that
@@ -313,7 +338,9 @@ defmodule Bilimbi.Finance.Einvoice do
            :ok <- Consolidation.open(window, now),
            environment = environment(scope, company_id),
            {eligible, _refused} = Consolidation.candidates(scope, company_id, environment, window),
-           {:ok, sources} <- chosen_sources(eligible, request.document_ids) do
+           {:ok, sources} <- chosen_sources(eligible, request.document_ids),
+           links = Documents.source_links_of(scope, company_id, Enum.map(sources, & &1.id)),
+           :ok <- consistent_links(sources, links) do
         groups = Consolidation.group(sources)
         profile = Configuration.supplier(scope, company_id, company.display_name)
 
@@ -344,6 +371,11 @@ defmodule Bilimbi.Finance.Einvoice do
 
           document = record_document!(scope, company_id, profile, draft, details, nil)
           Consolidation.record_sources!(scope, company_id, document, groups)
+
+          for source <- sources,
+              link <- Map.get(links, source.id, []),
+              do: Documents.record_source_link!(scope, company_id, document.id, link)
+
           view = get_view(scope, company_id, document.id)
 
           record_action(scope, company_id, "finance.einvoice.document.consolidated", %{
@@ -395,6 +427,11 @@ defmodule Bilimbi.Finance.Einvoice do
     end
   end
 
+  # A consolidated document's accounting is either its own or its sources'.
+  defp consistent_links(sources, links) do
+    if map_size(links) in [0, length(sources)], do: :ok, else: {:error, :mixed_source_links}
+  end
+
   defp chosen_sources([], nil), do: {:error, :nothing_to_consolidate}
   defp chosen_sources(eligible, nil), do: {:ok, eligible}
 
@@ -437,7 +474,10 @@ defmodule Bilimbi.Finance.Einvoice do
   covered document names its holder as `consolidated_by`. It also
   carries what the events say: `submission_uid`, `document_uuid`,
   `long_id`, `validated_at`, `validation_url`, `cancellable_until`,
-  `ledger_entry_id`, `reversal_entry_id`, `pdf_artifact_id`, and
+  `ledger_entry_id`, `reversal_entry_id`, `source_links` (the transactions
+  it is the tax document of, each `module`, `record`, and
+  `ledger_entry_id`; `recognised_by_source?` when there are any, and then
+  it never posts or reverses an entry itself), `pdf_artifact_id`, and
   `attention`, the flags an operator should look at (`:overdue`,
   `:rejection_requested`, `:unposted`, `:posting_failed`, `:unreversed`,
   `:reversal_failed`), and `submission_queued`, whether a submit job for
@@ -451,7 +491,7 @@ defmodule Bilimbi.Finance.Einvoice do
         nil ->
           {:error, :document_not_found}
 
-        {record, _events} ->
+        {record, _events, _links} ->
           {:ok, get_view(scope, company_id, record.id)}
       end
     end
@@ -522,11 +562,13 @@ defmodule Bilimbi.Finance.Einvoice do
   Queues the document's submission to the authority as the signed-in
   user: `{:ok, %{job_id: id}}`. Refused before queuing when the document's
   status is not `issued`, `refused`, or `invalid` (`:not_submittable`),
-  the company lacks credentials for the document's environment
-  (`:missing_credentials`), or the chosen format version needs a signature
-  and the certificate and key are missing or mismatched
-  (`:signing_key_required`), or a submit job for the document is already
-  waiting or running (`:already_queued`).
+  another document that stands already links a source of this one and
+  no earlier attempt of this one is unresolved (`:source_taken`; an
+  unresolved attempt is looked up at the authority first), the company
+  lacks credentials for the document's environment (`:missing_credentials`),
+  or the chosen format version needs a signature and the certificate and key
+  are missing or mismatched (`:signing_key_required`), or a submit job for
+  the document is already waiting or running (`:already_queued`).
   """
   @spec submit_document(Scope.t(), term(), term()) ::
           {:ok, %{job_id: pos_integer()}}
@@ -534,6 +576,7 @@ defmodule Bilimbi.Finance.Einvoice do
              write_refusal()
              | :document_not_found
              | :not_submittable
+             | :source_taken
              | :missing_credentials
              | :signing_key_required
              | atom()}
@@ -541,6 +584,7 @@ defmodule Bilimbi.Finance.Einvoice do
     write(scope, company_id, @submit, fn _company ->
       with {:ok, document} <- found(Documents.fetch(scope, company_id, document_id)),
            {:ok, _prepared} <- Clearance.prepare(scope, company_id, document),
+           :ok <- source_free_to_submit(scope, company_id, document),
            :ok <- not_queued(company_id, document.id),
            {:ok, job} <-
              Queue.enqueue_for(scope, SubmitWorker, %{
@@ -557,6 +601,13 @@ defmodule Bilimbi.Finance.Einvoice do
         {:ok, %{job_id: job.id}}
       end
     end)
+  end
+
+  defp source_free_to_submit(scope, company_id, document) do
+    if Clearance.unresolved_attempts(scope, company_id, document) == [] and
+         Documents.source_taken?(scope, company_id, document),
+       do: {:error, :source_taken},
+       else: :ok
   end
 
   defp not_queued(company_id, document_id) do
@@ -945,6 +996,113 @@ defmodule Bilimbi.Finance.Einvoice do
       |> Repo.exists?()
 
     if taken?, do: {:error, :code_number_taken}, else: :ok
+  end
+
+  @owner_module ~r"\A[a-z][a-z0-9_]*/[a-z][a-z0-9_]*\z"
+  @owner_record ~r"\A[a-z][a-z0-9_]*:[1-9][0-9]*\z"
+
+  # The source a caller names is held to the ledger: the entry exists, that
+  # module and record own it, it stands unreversed, and it recognises what
+  # the document bills, in the document's currency; and no other standing
+  # document links the source. A problem is a `source` error on the draft.
+  defp source_link(scope, company_id, changeset, draft, original, attributes) do
+    case attribute(attributes, :source) do
+      nil ->
+        unlinked(changeset, original)
+
+      source when is_map(source) ->
+        module = attribute(source, :module)
+        record = attribute(source, :record)
+        entry_id = attribute(source, :ledger_entry_id)
+
+        with :ok <- source_shape(module, record, entry_id),
+             {:ok, entry} <- source_entry(scope, company_id, entry_id),
+             :ok <- source_fits(entry, module, record, draft),
+             :ok <- source_free(scope, company_id, module, record) do
+          {:ok, %{module: module, record: record, ledger_entry_id: entry_id}}
+        else
+          {:error, message} -> {:error, Changeset.add_error(changeset, :source, message)}
+        end
+
+      _other ->
+        {:error,
+         Changeset.add_error(changeset, :source, "names a module, a record, and a ledger entry")}
+    end
+  end
+
+  # A note whose original is linked corrects a transaction another module
+  # recognised: it names the record that module corrected it with, or its
+  # own correcting entry would be a second one.
+  defp unlinked(changeset, %{recognised_by_source?: true}) do
+    {:error,
+     Changeset.add_error(
+       changeset,
+       :source,
+       "is required: the original document is the tax document of a transaction another module recognised"
+     )}
+  end
+
+  defp unlinked(_changeset, _original), do: {:ok, nil}
+
+  defp attribute(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp source_shape(module, record, entry_id) do
+    if is_binary(module) and is_binary(record) and is_integer(entry_id) and entry_id > 0 and
+         entry_id <= @max_bigint and String.length(module) <= 100 and
+         String.length(record) <= 100 and Regex.match?(@owner_module, module) and
+         Regex.match?(@owner_record, record),
+       do: :ok,
+       else: {:error, "names a module, a record, and a ledger entry"}
+  end
+
+  defp source_entry(scope, company_id, entry_id) do
+    case Ledger.get_entry(scope, company_id, entry_id) do
+      {:ok, entry} ->
+        {:ok, entry}
+
+      {:error, :entry_not_found} ->
+        {:error, "names ledger entry #{entry_id}, which does not exist"}
+
+      {:error, reason} ->
+        {:error, "cannot read ledger entry #{entry_id}: #{inspect(reason)}"}
+    end
+  end
+
+  defp source_fits(entry, module, record, draft) do
+    recognised = Enum.reduce(entry.lines, Decimal.new(0), &Decimal.add(&1.debit, &2))
+    billed = Decimal.add(draft.line_extension_amount, draft.tax_amount)
+
+    cond do
+      entry.owner != %{module: module, record: record} ->
+        {:error, "ledger entry #{entry.id} is not owned by #{module} #{record}"}
+
+      entry.reverses_entry_id ->
+        {:error, "ledger entry #{entry.id} is a reversal"}
+
+      entry.reversed_by_entry_id ->
+        {:error, "ledger entry #{entry.id} was reversed by entry #{entry.reversed_by_entry_id}"}
+
+      entry.currency_code != draft.currency_code ->
+        {:error,
+         "ledger entry #{entry.id} is in #{entry.currency_code}, the document in #{draft.currency_code}"}
+
+      not Decimal.equal?(recognised, billed) ->
+        {:error,
+         "ledger entry #{entry.id} recognises #{money(recognised)}, " <>
+           "not the document's #{money(billed)}"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp money(amount), do: amount |> Decimal.round(2) |> Decimal.to_string(:normal)
+
+  defp source_free(scope, company_id, module, record) do
+    case Documents.standing_source_document(scope, company_id, module, record) do
+      nil -> :ok
+      document_id -> {:error, "is already the source of document #{document_id}, which stands"}
+    end
   end
 
   defp insert_lines(document, lines) do
