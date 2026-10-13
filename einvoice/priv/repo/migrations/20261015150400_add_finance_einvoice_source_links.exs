@@ -31,7 +31,11 @@ defmodule Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks do
   # before the table, and the triggers that call the functions go first.
   def down do
     execute("DROP TRIGGER finance_einvoice_submissions_linked ON finance_einvoice_submissions")
-    execute("DROP TRIGGER finance_einvoice_source_links_standing ON finance_einvoice_source_links")
+
+    execute(
+      "DROP TRIGGER finance_einvoice_source_links_standing ON finance_einvoice_source_links"
+    )
+
     execute("DROP FUNCTION finance_einvoice_refuse_linked_submission()")
     execute("DROP FUNCTION finance_einvoice_refuse_second_source_link()")
 
