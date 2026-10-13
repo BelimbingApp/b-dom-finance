@@ -104,13 +104,13 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
     end
   end
 
+  defp posted_entry(_scope, _company_id, _line, _match), do: {:error, :statement_line_not_posted}
+
   defp legacy_posting(entry, %{note: note}) do
     if is_binary(note) and String.starts_with?(note, @posting_note),
       do: {:ok, entry},
       else: {:error, :statement_line_not_posted}
   end
-
-  defp posted_entry(_scope, _company_id, _line, _match), do: {:error, :statement_line_not_posted}
 
   @module_id "finance/reconciliation"
 
