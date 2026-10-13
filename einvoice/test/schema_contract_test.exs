@@ -89,6 +89,29 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end
 
+  test "the migrations roll back in order", %{repo: repo} do
+    [first, second, third, fourth, fifth, sixth] = SchemaContract.migration_versions()
+
+    for {version, migration} <-
+          Enum.reverse([
+            {first, CreateEinvoice},
+            {second, AddLedgerEntry},
+            {third, AddPostingUniqueness},
+            {fourth, AddConsolidation},
+            {fifth, ClaimEntries},
+            {sixth, AddSourceLinks}
+          ]) do
+      assert :ok = Ecto.Migrator.down(Repo, version, migration, log: false, dynamic_repo: repo)
+    end
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               repo,
+               "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'finance_einvoice_%'",
+               []
+             )
+  end
+
   test "the database refuses a second posted or posting_reversed event for a document",
        %{repo: repo} do
     Repo.put_dynamic_repo(repo)
