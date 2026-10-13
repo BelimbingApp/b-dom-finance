@@ -109,10 +109,11 @@ here; they govern this code and are not copied here.
 - Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
   `post_payroll_run/3`, `post_claim/3`, or `post_claims/3` (a batch posted
   from one read of the source taken before the company lock; the `posted`
-  check still happens under it), and undo one with `reverse_posting/4`: a source's standing is its latest posting event,
-  and the database keeps one `posted` and one `reversed` event per source.
-  People has no void or reversal event, so a reversal is a user's decision
-  with a reason, never a reaction to the source.
+  check still happens under it), and undo one with `reverse_posting/4`: a
+  source's standing is its latest posting event, and the database keeps one
+  `posted` and one `reversed` event per source. People has no void or
+  reversal event, so a reversal is a user's decision with a reason, never a
+  reaction to the source.
 - A module's later migration is self-contained (a database that ran the
   earlier ones loads only its file), ships its own `statements/1`, and its
   fixtures run every migration's statements in version order

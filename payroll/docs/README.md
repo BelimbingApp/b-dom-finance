@@ -85,9 +85,10 @@ run whose pay date the source cannot read is listed with no pay date and
 refused at posting with a recorded reason, as is a claim whose date cannot be
 worked out; neither breaks the listing. A claim is read from one list of the
 company's claims, so `post_claims/3` reads the source once for a batch, not
-once per claim, and the page's "post every unposted claim" uses it. People offers no event or facade that voids or
-reverses a run or an approval, so a reversal here is a user's decision with
-a reason (`reverse_posting/4`), never a reaction to the source.
+once per claim, and the page's "post every unposted claim" uses it. People
+offers no event or facade that voids or reverses a run or an approval, so a
+reversal here is a user's decision with a reason (`reverse_posting/4`),
+never a reaction to the source.
 
 ## Mappings
 
@@ -118,8 +119,8 @@ exceed earnings). Each component's total is rounded to the book's minor
 units, half away from zero, and net pay is the difference of the rounded
 earnings and deductions, so the entry balances in the book's units; the
 source keeps its finer figures. `post_claim/3` posts the approved amount
-dated the company's local approval date: a debit to the category's expense account and a
-credit to the claims payable account.
+dated the company's local approval date: a debit to the category's expense
+account and a credit to the claims payable account.
 
 The entry and the `posted` event that names it are one transaction, so a
 source never has an entry without its event, and the database refuses a
@@ -133,8 +134,8 @@ failure that may pass at once is tried a second time, then recorded.
 `Bilimbi.Finance.Payroll.Posting` holds the rules.
 
 `reverse_posting/4` posts the mirror entry through `Ledger.reverse_entry/4`
-on the date given (the company's local today by default) and records a `reversed` event with the
-reason; a posting reverses once, and a reversed source is not posted again:
+on the date given (the company's local today by default) and records a
+`reversed` event with the reason; a posting reverses once, and a reversed source is not posted again:
 its correction is a new ledger entry. A refused reversal is a
 `reversal_failed` event.
 
