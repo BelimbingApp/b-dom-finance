@@ -3,14 +3,17 @@ defmodule Bilimbi.Finance.Reports.Migrations.CreateIssuedReports do
   use Ecto.Migration
 
   def up, do: Enum.each(statements(), &execute/1)
+
   def down do
     execute("DROP TABLE finance_reports_issued")
     execute("DROP FUNCTION finance_reports_keep_issued()")
   end
 
   def statements(options \\ []) do
-    {table, prefix} = if Keyword.get(options, :temporary, false),
-      do: {"TEMPORARY TABLE", "pg_temp."}, else: {"TABLE", ""}
+    {table, prefix} =
+      if Keyword.get(options, :temporary, false),
+        do: {"TEMPORARY TABLE", "pg_temp."},
+        else: {"TABLE", ""}
 
     [
       """
