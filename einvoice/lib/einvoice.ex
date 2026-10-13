@@ -549,11 +549,11 @@ defmodule Bilimbi.Finance.Einvoice do
   status is not `issued`, `refused`, or `invalid` (`:not_submittable`),
   another document that stands already links a source of this one and
   no earlier attempt of this one is unresolved (`:source_taken`; an
-  unresolved attempt is looked up at the authority first), the company lacks credentials for the document's environment
-  (`:missing_credentials`), or the chosen format version needs a signature
-  and the certificate and key are missing or mismatched
-  (`:signing_key_required`), or a submit job for the document is already
-  waiting or running (`:already_queued`).
+  unresolved attempt is looked up at the authority first), the company
+  lacks credentials for the document's environment (`:missing_credentials`),
+  or the chosen format version needs a signature and the certificate and key
+  are missing or mismatched (`:signing_key_required`), or a submit job for
+  the document is already waiting or running (`:already_queued`).
   """
   @spec submit_document(Scope.t(), term(), term()) ::
           {:ok, %{job_id: pos_integer()}}

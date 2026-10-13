@@ -282,9 +282,10 @@ correcting record the credit or refund note issued for it links to in turn:
 a note whose original is linked and that names no `source` is refused with
 a `source` changeset error, so the owner's correction is the only one.
 A document is not submitted while another standing document links one of
-its sources: `submit_document/3` refuses it (`{:error, :source_taken}`), and
-a job that is about to send, under the company lock, and finds the source
-taken since records an `unsendable` event with the reason and stops
+its sources: `submit_document/3` refuses it (`{:error, :source_taken}`)
+unless an earlier attempt of the document is unresolved, and a job that is
+about to send, under the company lock, and finds the source taken since
+records an `unsendable` event with the reason and stops
 (`{:cancel, :source_taken}`); it is submitted once the other document no
 longer stands. An earlier attempt that never got an answer is looked up at
 the authority first, and recorded if the authority holds it.
