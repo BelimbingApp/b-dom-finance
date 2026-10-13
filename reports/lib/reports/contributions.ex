@@ -11,6 +11,13 @@ defmodule Bilimbi.Finance.Reports.Contributions do
   @impl true
   def contributions do
     %{
+      authz: %{
+        verbs: ["export"],
+        capabilities: ["finance.reports.issue", "finance.reports.export"],
+        roles: %{
+          "tenant_owner" => %{capabilities: ["finance.reports.issue", "finance.reports.export"]}
+        }
+      },
       menu: [
         %{
           id: "finance.reports",

@@ -51,6 +51,13 @@ defmodule BilimbiWeb.FinanceReportsLiveTest do
       %{operator: operator, accounts: accounts}
     end
 
+    test "refuses an auditor export without its separate grant", %{conn: conn} do
+      {:ok, view, _html} = conn |> log_in_as() |> live(@october)
+      view |> element("#export-auditor-pack") |> render_click()
+      assert has_element?(view, "[role=alert]", "permission")
+      refute has_element?(view, "#download-auditor-pack")
+    end
+
     test "shows the headline figures and reads again when an entry posts", context do
       %{conn: conn, operator: operator, accounts: accounts} = context
       {:ok, view, _html} = conn |> log_in_as() |> live(@october)

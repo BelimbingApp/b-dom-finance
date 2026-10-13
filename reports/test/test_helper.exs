@@ -6,5 +6,12 @@ Code.ensure_loaded!(Bilimbi.Core.Geonames.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Core.Company.TestFixtures)
 Code.ensure_loaded!(Bilimbi.Finance.Ledger.TestFixtures)
 
+Code.ensure_loaded!(Bilimbi.Finance.Receivables.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Finance.Payables.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Finance.Reconciliation.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Finance.Einvoice.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Base.Audit.TestFixtures)
+Code.ensure_loaded!(Bilimbi.Base.Artifacts.TestFixtures)
+
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Bilimbi.Base.Repo, :manual)

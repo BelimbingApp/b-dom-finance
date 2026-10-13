@@ -6,7 +6,7 @@ defmodule Bilimbi.Finance.Reports do
   the entries behind any account's figure.
 
   Every figure comes from `Bilimbi.Finance.Ledger`'s facade; this module
-  owns no table and reads none of the ledger's. Each function takes the
+  stores issued snapshots and reads none of the ledger's tables. Each function takes the
   validated `Bilimbi.Base.Tenancy.Scope` it was handed and an explicit
   company ID, and authorizes the ledger's view capability for the scope's
   signed-in actor and that company when it runs, through
@@ -15,10 +15,10 @@ defmodule Bilimbi.Finance.Reports do
   see is `{:error, :company_not_found}`.
 
   A report names `through_entry_number`, the last ledger entry it counts.
-  Passing it back as the `through_entry_number` option reproduces the same
-  figures exactly, whatever was posted since, because posted entries never
-  change and are numbered in posting order. Every column of one report is
-  read at the same entry number.
+  The cutoff freezes postings, but live reports still read current chart,
+  labels and layout: cash membership and section totals can change. Use
+  `issue_report/5` and `get_issued_report/3` for a durable issued copy.
+  Every column of one live report is read at the same entry number.
 
   Accounts are grouped by their type and, within a type, by the sections the
   company configures in the `finance.reports.sections` setting (see the
@@ -33,6 +33,8 @@ defmodule Bilimbi.Finance.Reports do
   alias Bilimbi.Finance.Reports.{Layout, Statement}
 
   @sections_key "finance.reports.sections"
+  # Bump whenever issued content interpretation or report calculations change.
+  @implementation_version "1"
   @max_columns 4
   @default_entry_limit 100
 
@@ -254,6 +256,165 @@ defmodule Bilimbi.Finance.Reports do
   @spec subscribe(Scope.t(), term()) :: :ok | {:error, :unauthorized | :company_not_found}
   def subscribe(%Scope{} = scope, company_id), do: Ledger.subscribe_postings(scope, company_id)
 
+  @doc "Capability for issuing an immutable report."
+  def issue_capability, do: "finance.reports.issue"
+
+  @doc "Capability for generating and downloading a company auditor pack."
+  def export_capability, do: "finance.reports.export"
+
+  @doc """
+  Issues an immutable report. `kind` is `:profit_and_loss`, `:balance_sheet`,
+  `:cash_position`, `:trial_balance`, `:aged_receivables` or `:aged_payables`.
+  `dates` follows the corresponding live API (period/date lists for statements,
+  a Date for trial balance/aging). Content uses string JSON keys, exact decimal
+  strings and ISO dates. Call outside a transaction to freeze metadata too.
+  """
+  def issue_report(%Scope{} = scope, company_id, kind, dates, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, issue_capability()) do
+      Bilimbi.Finance.Reports.Snapshot.run(fn ->
+        with {:ok, _lock} <- Company.lock_writable_company(scope, company_id),
+             {:ok, book} <- Ledger.get_book(scope, company_id),
+             {:ok, report} <- issued_figures(scope, company_id, kind, dates, options),
+             {:ok, chart} <- Ledger.list_accounts(scope, company_id) do
+          actor = Scope.actor(scope)
+
+          layout =
+            Settings.get(
+              @sections_key,
+              Settings.Scope.company(company_id, Scope.tenant_id(scope))
+            )
+
+          attrs = %{
+            tenant_id: Scope.tenant_id(scope),
+            company_id: company_id,
+            kind: Atom.to_string(kind),
+            implementation_version: @implementation_version,
+            through_entry_number: report.through_entry_number,
+            content:
+              Bilimbi.Finance.Reports.Serialization.value(
+                Map.merge(report, Map.take(book, [:currency_code, :minor_units]))
+              ),
+            chart: Bilimbi.Finance.Reports.Serialization.value(chart),
+            layout: %{
+              "configured_sections" => Bilimbi.Finance.Reports.Serialization.value(layout)
+            },
+            membership: issued_membership(kind, chart, layout),
+            issued_by_user_id: actor.user_id,
+            issued_by_impersonator_id: actor.impersonator_id
+          }
+
+          with {:ok, stored} <-
+                 Bilimbi.Base.Repo.insert(struct(Bilimbi.Finance.Reports.Issued, attrs)),
+               do: {:ok, issued_view(stored)}
+        end
+      end)
+    end
+  end
+
+  @doc "Reads the stored issued copy; never recomputes figures or labels."
+  def get_issued_report(%Scope{} = scope, company_id, id) when is_integer(id) do
+    import Ecto.Query
+
+    with :ok <- authorize(scope, company_id) do
+      row =
+        from(r in Bilimbi.Base.Tenancy.scope_query(Bilimbi.Finance.Reports.Issued, scope),
+          where: r.company_id == ^company_id and r.id == ^id
+        )
+        |> Bilimbi.Base.Repo.one()
+
+      if row do
+        with :ok <- authorize_issued_kind(scope, company_id, row.kind),
+             do: {:ok, issued_view(row)}
+      else
+        {:error, :report_not_found}
+      end
+    end
+  end
+
+  def get_issued_report(%Scope{} = scope, company_id, _id) do
+    with :ok <- authorize(scope, company_id), do: {:error, :report_not_found}
+  end
+
+  @doc "Generates a complete company auditor archive at one database snapshot."
+  def export_auditor_pack(%Scope{} = scope, company_id, %Date{} = as_of) do
+    with :ok <- authorize(scope, company_id, export_capability()),
+         {:ok, pack} <- Bilimbi.Finance.Reports.AuditorPack.generate(scope, company_id, as_of) do
+      Bilimbi.Base.Artifacts.put(
+        scope,
+        company_id,
+        Bilimbi.Finance.Reports.ArtifactOwner,
+        %{subject: pack.id, kind: "auditor-pack"},
+        pack.bytes,
+        "application/zip"
+      )
+    end
+  end
+
+  @doc "Reauthorizes an archive download through Base Artifacts."
+  def read_auditor_pack(%Scope{} = scope, company_id, artifact_id) do
+    with :ok <- authorize(scope, company_id, export_capability()),
+         {:ok, artifact} <-
+           Bilimbi.Base.Artifacts.read(
+             scope,
+             company_id,
+             Bilimbi.Finance.Reports.ArtifactOwner,
+             artifact_id
+           ),
+         do: {:ok, Map.put(artifact, :filename, "auditor-pack-#{artifact.metadata.subject}.zip")}
+  end
+
+  defp issued_figures(scope, company, :profit_and_loss, dates, options),
+    do: profit_and_loss(scope, company, dates, options)
+
+  defp issued_figures(scope, company, :balance_sheet, dates, options),
+    do: balance_sheet(scope, company, dates, options)
+
+  defp issued_figures(scope, company, :cash_position, dates, options),
+    do: cash_position(scope, company, dates, options)
+
+  defp issued_figures(scope, company, :trial_balance, %Date{} = date, options),
+    do: Ledger.trial_balance(scope, company, date, options)
+
+  defp issued_figures(scope, company, :aged_receivables, %Date{} = date, options),
+    do: Bilimbi.Finance.Receivables.aged_receivables(scope, company, date, options)
+
+  defp issued_figures(scope, company, :aged_payables, %Date{} = date, options),
+    do: Bilimbi.Finance.Payables.aged_payables(scope, company, date, options)
+
+  defp issued_figures(_scope, _company, _kind, _dates, _options), do: {:error, :invalid_option}
+
+  defp issued_membership(kind, chart, layout)
+       when kind in [:profit_and_loss, :balance_sheet, :cash_position] do
+    sections = Layout.sections(layout, Atom.to_string(kind))
+    {membership, unmatched} = Layout.assign(chart, sections)
+
+    Bilimbi.Finance.Reports.Serialization.value(%{
+      account_sections: membership,
+      sections: sections,
+      unmatched_codes: unmatched
+    })
+  end
+
+  defp issued_membership(_kind, _chart, _layout), do: %{}
+
+  defp issued_view(stored),
+    do:
+      Map.take(stored, [
+        :id,
+        :company_id,
+        :kind,
+        :implementation_version,
+        :through_entry_number,
+        :content,
+        :chart,
+        :layout,
+        :membership,
+        :issued_by_user_id,
+        :issued_by_impersonator_id,
+        :issued_at
+      ])
+
   ## Reading
 
   # Every window is read at the first one's entry number, so the columns
@@ -347,8 +508,16 @@ defmodule Bilimbi.Finance.Reports do
 
   ## Authorization
 
-  defp authorize(scope, company_id) do
-    case Company.authorize_company_target(scope, company_id, Ledger.view_capability()) do
+  defp authorize_issued_kind(scope, company, "aged_receivables"),
+    do: authorize(scope, company, Bilimbi.Finance.Receivables.view_capability())
+
+  defp authorize_issued_kind(scope, company, "aged_payables"),
+    do: authorize(scope, company, Bilimbi.Finance.Payables.view_capability())
+
+  defp authorize_issued_kind(_scope, _company, _kind), do: :ok
+
+  defp authorize(scope, company_id, capability \\ Ledger.view_capability()) do
+    case Company.authorize_company_target(scope, company_id, capability) do
       {:ok, _company} -> :ok
       {:error, :not_found} -> {:error, :company_not_found}
       {:error, :unauthorized} -> {:error, :unauthorized}
