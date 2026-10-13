@@ -272,9 +272,16 @@ controlled-bookkeeping changes, late-recording reviews,
 e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
 match events, stored reconciliation figures/items, and issued report snapshots.
 Base Audit trails are not included: they stay behind Base Audit's own
-capability. The source-file index (the Attachments datasets below) names each
-kept source document, such as an imported bank file, with its file name, SHA-256
-and retain-until; the bytes stay in Base Artifacts and are not in the pack. Exact
+capability. The attachment index (`attachments-attachment.csv`, from the Attachments
+datasets below) has one row per kept source document: its owning record's module,
+type, id and label, file name, content type, size, SHA-256, the retain-until in
+force (the latest extension), whether a legal hold is on it, its standing (`standing`,
+`replaced` or `removed`), and who captured it and when. A bank statement's row
+carries `import_mapping_ref`, `reconciliation-statement.csv#<id>`: the statement row
+whose `import_mapping` column is the mapping its file was read through (that cell is
+empty for statements imported before the mapping was kept). The document bytes stay in Base
+Artifacts and are not in the pack: the index names them, and reading one remains an
+audited download. The source-file index also lists each statement's hash. Exact
 authority submission payloads are included with their hashes.
 
 The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,

@@ -109,9 +109,12 @@ captured it when, and never changed afterwards.
 - **Not kept here.** The e-invoice PDF stays einvoice's regenerable visual,
   not a source document. The auditor's evidence pack exports the attachment
   index through `evidence_page/4` (`attachment`: document, file name, hash,
-  and retain-until; `attachment_event`; `retention_change`), authorized with
+  the retain-until in force, legal hold and standing, derived from the events;
+  `attachment_event`; `retention_change`), authorized with
   `finance.attachments.view`; the bytes stay in Base Artifacts and are read
-  through `/finance/attachments`.
+  through `/finance/attachments`. The index reads recorded events, so an
+  extension Base holds that no read has recorded yet shows after the next
+  `get_attachment/3` or `read_attachment/3` of that attachment.
 
 ## Database
 
