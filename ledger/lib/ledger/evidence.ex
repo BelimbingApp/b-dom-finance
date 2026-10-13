@@ -36,6 +36,9 @@ defmodule Bilimbi.Finance.Ledger.Evidence do
          :reference,
          :currency_code,
          :reverses_entry_id,
+         :owner_module,
+         :owner_record,
+         :legacy,
          :posted_by_user_id,
          :posted_by_impersonator_id,
          :posted_at

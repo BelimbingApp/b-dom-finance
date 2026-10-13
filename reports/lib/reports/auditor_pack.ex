@@ -3,7 +3,18 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
   import Ecto.Query
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
-  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst}
+
+  alias Bilimbi.Finance.{
+    Ledger,
+    Receivables,
+    Payables,
+    Reconciliation,
+    Einvoice,
+    Payroll,
+    Sst,
+    FixedAssets
+  }
+
   alias Bilimbi.Finance.Reports.{Serialization, Snapshot}
   alias Ecto.Adapters.SQL
 
@@ -14,10 +25,11 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"reconciliation", Reconciliation},
     {"einvoice", Einvoice},
     {"payroll", Payroll},
-    {"sst", Sst}
+    {"sst", Sst},
+    {"fixed_assets", FixedAssets}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "4"
+  @version "5"
 
   def sources, do: Enum.map(@owners, &elem(&1, 1))
 
@@ -276,6 +288,9 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
       :entry_date,
       :currency_code,
       :entry_description,
+      :owner_module,
+      :owner_record,
+      :legacy,
       :reference,
       :posted_by_user_id,
       :posted_by_impersonator_id,
@@ -311,10 +326,13 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
               :posted_by_user_id,
               :posted_by_impersonator_id,
               :posted_at,
-              :reverses_entry_id
+              :reverses_entry_id,
+              :legacy
             ])
             |> Map.merge(line)
             |> Map.merge(%{
+              owner_module: entry.owner && entry.owner.module,
+              owner_record: entry.owner && entry.owner.record,
               entry_id: entry.id,
               entry_description: entry.description,
               account_code: account.code,

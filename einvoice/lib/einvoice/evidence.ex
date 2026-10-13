@@ -6,6 +6,17 @@ defmodule Bilimbi.Finance.Einvoice.Evidence do
   # This is an owned export contract, not permission to consume sibling schemas.
   # Freeze field lists with the generator version; never export credentials.
   @datasets %{
+    "source_link" =>
+      {Bilimbi.Finance.Einvoice.SourceLink,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :document_id,
+         :source_module,
+         :source_record,
+         :ledger_entry_id
+       ]},
     "document" =>
       {Bilimbi.Finance.Einvoice.Document,
        [

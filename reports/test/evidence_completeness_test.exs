@@ -1,7 +1,16 @@
 defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
   use ExUnit.Case, async: true
 
-  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst}
+  alias Bilimbi.Finance.{
+    Ledger,
+    Receivables,
+    Payables,
+    Reconciliation,
+    Einvoice,
+    Payroll,
+    Sst,
+    FixedAssets
+  }
 
   @owners [
     {:bilimbi_finance_ledger, Ledger.Evidence},
@@ -10,7 +19,8 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
     {:bilimbi_finance_reconciliation, Reconciliation.Evidence},
     {:bilimbi_finance_einvoice, Einvoice.Evidence},
     {:bilimbi_finance_payroll, Payroll.Evidence},
-    {:bilimbi_finance_sst, Sst.Evidence}
+    {:bilimbi_finance_sst, Sst.Evidence},
+    {:bilimbi_finance_fixed_assets, FixedAssets.Evidence}
   ]
 
   @excluded %{
@@ -29,6 +39,20 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
              :ok,
              {:error, {:already_loaded, :bilimbi_finance_reports}}
            ]
+
+    # The composition metadata includes modules outside Reports' dependency closure.
+    # A newly installed Finance module must be covered, even before adding its edge.
+    descriptor = Application.fetch_env!(:bilimbi_finance_reports, :bilimbi_module)
+    finance_ids = Enum.filter(descriptor.graph_module_ids, &String.starts_with?(&1, "finance/"))
+
+    covered_ids = [
+      descriptor.id
+      | Enum.map(@owners, fn {app, _} ->
+          Application.fetch_env!(app, :bilimbi_module).id
+        end)
+    ]
+
+    assert Enum.sort(finance_ids) == Enum.sort(covered_ids)
 
     exported = Enum.flat_map(@owners, fn {_app, evidence} -> evidence.tables() end)
     assert exported == Enum.uniq(exported)
@@ -51,7 +75,16 @@ defmodule Bilimbi.Finance.Reports.EvidenceCompletenessTest do
 
   test "the pack reads every module that owns Finance tables" do
     assert Enum.sort(Bilimbi.Finance.Reports.AuditorPack.sources()) ==
-             Enum.sort([Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst])
+             Enum.sort([
+               Ledger,
+               Receivables,
+               Payables,
+               Reconciliation,
+               Einvoice,
+               Payroll,
+               Sst,
+               FixedAssets
+             ])
   end
 
   defp schema_tables(app) do

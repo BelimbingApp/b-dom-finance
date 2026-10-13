@@ -236,10 +236,10 @@ payloads are included with their hashes. No source uploads exist for the current
 AR/AP document APIs.
 
 The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
-Payroll and SST modules: each facade's `evidence_page/4` exports every table of
+Payroll, SST and Fixed Assets modules: each facade's `evidence_page/4` exports every table of
 the module, including payroll posting events, mapping and settings changes,
 and SST registrations, mappings, returns, return events, boxes, accounts,
-sources and adjustments. The manifest's `filters.evidence` names these modules.
+sources and adjustments; and fixed-asset categories, revisions, assets, runs, items, exceptions and events. Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
 A test lists every table of those modules and fails unless the pack exports it
 or an exclusion names it with a reason (the only exclusion is the issued
 report table, which the pack writes as `issued-reports.csv`), so a new table

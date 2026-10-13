@@ -9,12 +9,13 @@ defmodule Bilimbi.Finance.Reports.SchemaContractTest do
     Sandbox.unboxed_run(Repo, fn -> SQL.query!(Repo, "CREATE DATABASE \"#{database}\"", []) end)
     repo = Module.concat(__MODULE__, FreshRepo)
 
-    start_supervised!(
-      Supervisor.child_spec(
-        {Repo, name: repo, database: database, pool: DBConnection.ConnectionPool, pool_size: 2},
-        id: repo
+    repo_pid =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Repo, name: repo, database: database, pool: DBConnection.ConnectionPool, pool_size: 2},
+          id: repo
+        )
       )
-    )
 
     migration = Bilimbi.Finance.Reports.Migrations.CreateIssuedReports
 
@@ -28,10 +29,11 @@ defmodule Bilimbi.Finance.Reports.SchemaContractTest do
              Ecto.Migrator.up(Repo, 20_261_015_100_000, migration, log: false, dynamic_repo: repo)
 
     on_exit(fn ->
+      if Process.alive?(repo_pid), do: Supervisor.stop(repo_pid)
       Repo.put_dynamic_repo(Repo)
 
       Sandbox.unboxed_run(Repo, fn ->
-        SQL.query!(Repo, "DROP DATABASE \"#{database}\" WITH (FORCE)", [])
+        SQL.query!(Repo, "DROP DATABASE \"#{database}\"", [])
       end)
     end)
 
