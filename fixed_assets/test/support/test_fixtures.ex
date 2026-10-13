@@ -6,23 +6,33 @@ defmodule Bilimbi.Finance.FixedAssets.TestFixtures do
   alias Bilimbi.Finance.{FixedAssets, Ledger, Payables}
   alias Ecto.Adapters.SQL
 
-  def migration do
-    module = Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
-    unless Code.ensure_loaded?(module),
-      do:
-        Code.require_file(
-          Path.expand(
-            "../../priv/repo/migrations/20261015110000_create_finance_fixed_assets.exs",
-            __DIR__
-          )
-        )
+  @migration_files [
+    {20_261_015_110_000, Bilimbi.Finance.FixedAssets.Migrations.CreateFixedAssets,
+     "20261015110000_create_finance_fixed_assets.exs"},
+    {20_261_015_150_700, Bilimbi.Finance.FixedAssets.Migrations.ClaimEntries,
+     "20261015150700_claim_finance_fixed_assets_entries.exs"}
+  ]
 
-    module
+  @doc "The first migration's module, loaded from its file once."
+  def migration, do: migrations() |> hd() |> elem(1)
+
+  @doc "The module's migrations as `{version, module}` in version order, each loaded once."
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
   end
 
+  # Each migration's own statements, in version order (the claim migration
+  # builds nothing for temporary tables).
   def create_tables! do
-    for statement <- apply(migration(), :statements, [[temporary: true]]),
+    for {_version, module} <- migrations(),
+        statement <- apply(module, :statements, [[temporary: true]]),
         do: SQL.query!(Repo, statement, [])
   end
 
