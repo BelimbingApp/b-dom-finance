@@ -10,6 +10,7 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
   alias Bilimbi.Finance.Reconciliation.{Matching, Records}
 
   @kinds ~w(charge interest)
+  @posting_note "Posted from statement line as "
 
   @doc "The kinds of statement line this module posts: a bank charge or interest."
   def kinds, do: @kinds
@@ -38,7 +39,7 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
          item = Matching.ledger_item(entry, bank_account.ledger_account_id),
          {:ok, match} <-
            Matching.insert_match(scope, company_id, bank_account, [line], [item], %{
-             note: "Posted from statement line as #{kind}"
+             note: @posting_note <> kind
            }) do
       {:ok, %{entry: entry, match: match}}
     end
@@ -48,8 +49,9 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
   Reverses the entry `line` posted: `line` must stand matched, alone, to
   that entry. The match is unmatched with `reason` (an `unmatched` event, so
   never once a finalised reconciliation counted it) and the entry reversed
-  as its owner, dated `entry_date` (default today). Returns
-  `{:ok, %{reversal, match}}`.
+  as its owner, dated `entry_date` (default today). An entry posted before
+  owners were recorded and not claimed is reversed the same way when the
+  match is the one that posted it. Returns `{:ok, %{reversal, match}}`.
   """
   def reverse_statement_line(scope, company_id, bank_account, line, attributes) do
     with {:ok, reason} <- reason(attributes),
@@ -86,14 +88,26 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
 
   defp invalid, do: {:error, :invalid_reason}
 
-  defp posted_entry(scope, company_id, line, %{lines: [_line], entries: [%{entry_id: entry_id}]}) do
+  defp posted_entry(
+         scope,
+         company_id,
+         line,
+         %{lines: [_line], entries: [%{entry_id: entry_id}]} = match
+       ) do
     owner = owner(line)
 
     case Ledger.get_entry(scope, company_id, entry_id) do
       {:ok, %{owner: ^owner} = entry} -> {:ok, entry}
+      {:ok, %{owner: nil, legacy: true} = entry} -> legacy_posting(entry, match)
       {:ok, _other} -> {:error, :statement_line_not_posted}
       {:error, _reason} = error -> error
     end
+  end
+
+  defp legacy_posting(entry, %{note: note}) do
+    if is_binary(note) and String.starts_with?(note, @posting_note),
+      do: {:ok, entry},
+      else: {:error, :statement_line_not_posted}
   end
 
   defp posted_entry(_scope, _company_id, _line, _match), do: {:error, :statement_line_not_posted}

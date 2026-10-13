@@ -147,7 +147,7 @@ receivable account even when it has been deactivated since (for example
 after a reversal reopened an invoice, or a manual ledger entry moved the
 balance): a payment and a credit note pass the account to
 `Bilimbi.Finance.Ledger.post_entry/4` as a `settlement_account_ids` entry for
-that entry only, and a reversal posts through `reverse_entry/4`, which
+that entry only, and a reversal posts through `reverse_owned_entry/5`, which
 already takes inactive accounts.
 
 A payment and its allocations never change. `reverse_payment/4` reverses a

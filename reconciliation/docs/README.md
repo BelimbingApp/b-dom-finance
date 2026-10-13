@@ -208,9 +208,23 @@ The entry names this module and the statement line as its owner
 line: a line unmatched after it posted is matched to that entry again, and
 posting it again is `{:error, :statement_line_posted}`. The ledger refuses
 `Ledger.reverse_entry/4` on the entry (`{:error, {:owned_by, owner}}`); the
-owner's path is `reverse_statement_line/4`. Entries this module posted
-before the ledger recorded owners stay unowned (`legacy`): a match names an
-entry, not which module posted it, so no claim is derivable.
+owner's path is `reverse_statement_line/4`.
+
+Entries this module posted before the ledger recorded owners are claimed by
+its migration `20261015150600` through the ledger's
+`finance_ledger_claim_legacy_entry`. The only trace of such a posting is the
+match made with it, so the rule is: a match whose note starts `Posted from
+statement line as ` and that names exactly one statement line and exactly one
+entry has that entry claimed as `finance/reconciliation`,
+`statement_line:<line id>`. A statement line named by more than one such match
+(unmatched and posted again before one entry per line was kept) is not
+claimed, since the ledger keeps one original entry per owned record; its
+entries stay legacy. An unclaimed legacy entry whose standing match carries
+that note is reversed by `reverse_statement_line/4` through
+`Ledger.reverse_owned_entry/5` like an owned one, its reversal unowned as it
+is; one matched by hand is refused (`:statement_line_not_posted`). A match
+that carries the note by hand (a manual match written to look like a posting)
+is claimed the same, so the note is not for free text.
 
 `reverse_statement_line/4` corrects a wrong charge or interest entry. It
 needs a `reason` (blank or over 500 characters is `{:error,

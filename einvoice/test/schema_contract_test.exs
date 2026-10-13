@@ -66,7 +66,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
 
     # The ledger's migrations come first, as in a composed database: the
     # claim migration calls the ledger's claim function.
-    {ledger, [owner]} = Enum.split(LedgerFixtures.migrations(), 3)
+    {ledger, ledger_later} = Enum.split(LedgerFixtures.migrations(), 3)
 
     migrate!.(
       ledger ++
@@ -78,7 +78,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContractTest do
         ]
     )
 
-    later = [owner, {fifth, ClaimEntries}, {sixth, AddSourceLinks}]
+    later = ledger_later ++ [{fifth, ClaimEntries}, {sixth, AddSourceLinks}]
     # One test posts before the ledger recorded owners and migrates itself.
     unless context[:before_claim], do: migrate!.(later)
 

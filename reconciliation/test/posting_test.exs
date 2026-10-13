@@ -1,6 +1,9 @@
 defmodule Bilimbi.Finance.Reconciliation.PostingTest do
   use Bilimbi.Finance.Reconciliation.ReconciliationCase
 
+  alias Bilimbi.Base.Repo
+  alias Ecto.Adapters.SQL
+
   setup context do
     statement =
       import!(context, [
@@ -227,6 +230,59 @@ defmodule Bilimbi.Finance.Reconciliation.PostingTest do
 
       assert {:ok, %{status: "matched"}} = Reconciliation.get_match(operator, 73, match.id)
       assert {:ok, %{reversed_by_entry_id: nil}} = Ledger.get_entry(operator, 73, manual.id)
+    end
+
+    test "reverses an unclaimed entry posted before owners were recorded, only when the match posted it",
+         context do
+      %{operator: operator, accounts: accounts, bank_account: bank_account} = context
+      %{fee: fee, interest: interest} = context
+
+      legacy = fn id, description, debit_account, credit_account, amount ->
+        SQL.query!(
+          Repo,
+          "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, posted_by_user_id, posted_at, legacy) VALUES ($1, 41, 73, $1, '2026-10-20', $2, 'XTS', 91, now(), true)",
+          [id, description]
+        )
+
+        SQL.query!(
+          Repo,
+          "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (41, 73, $1, 1, $2, $4, 0), (41, 73, $1, 2, $3, 0, $4)",
+          [id, debit_account.id, credit_account.id, Decimal.new(amount)]
+        )
+
+        id
+      end
+
+      posted = legacy.(9001, "Monthly fee", accounts.charges, accounts.bank, "5.00")
+      by_hand = legacy.(9002, "Interest", accounts.bank, accounts.interest, "1.25")
+
+      {:ok, _} =
+        Reconciliation.match(operator, 73, bank_account.id, %{
+          statement_line_ids: [fee.id],
+          entry_ids: [posted],
+          note: "Posted from statement line as charge"
+        })
+
+      {:ok, _} =
+        Reconciliation.match(operator, 73, bank_account.id, %{
+          statement_line_ids: [interest.id],
+          entry_ids: [by_hand]
+        })
+
+      assert {:error, :statement_line_not_posted} =
+               Reconciliation.reverse_statement_line(operator, 73, interest.id, %{reason: "No"})
+
+      assert {:ok, %{reversal: reversal, match: %{status: "unmatched"}}} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{
+                 reason: "Charged in error",
+                 entry_date: ~D[2026-10-22]
+               })
+
+      assert reversal.reverses_entry_id == posted and reversal.owner == nil
+
+      assert {:ok, %{reversed_by_entry_id: reversal_id}} = Ledger.get_entry(operator, 73, posted)
+      assert reversal_id == reversal.id
+      assert {:ok, %{reversed_by_entry_id: nil}} = Ledger.get_entry(operator, 73, by_hand)
     end
 
     test "rolls the unmatch back when the ledger refuses the reversal", context do

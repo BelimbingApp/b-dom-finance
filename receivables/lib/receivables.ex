@@ -431,7 +431,7 @@ defmodule Bilimbi.Finance.Receivables do
 
   @doc """
   Reverses a payment on `reversal_date` (not before the payment's) for a
-  `reason`, through `Bilimbi.Finance.Ledger.reverse_entry/4`. Its
+  `reason`, through `Bilimbi.Finance.Ledger.reverse_owned_entry/5`. Its
   allocations stop settling the invoices from that date. A payment is
   reversed once (`{:error, :already_reversed}`); a corrected payment is
   recorded anew.

@@ -164,6 +164,14 @@ PostgreSQL keeps both (see Database):
   and the owner's records change together or not at all. The reversal carries
   the same owner. A manual entry is `{:error, :not_owned}` there and is reversed
   with `reverse_entry/4`; another module's entry is `{:error, :not_the_owner}`.
+  The owner is a seam between modules, not an authorization boundary: the
+  ledger cannot authenticate its caller and `reverse_owned_entry/5` asks only
+  for `finance.ledger.entries.post`. It is for the owning module's own
+  correction path. A caller holding that capability who passes an entry's owner
+  from anywhere else reverses the entry without the owner's record, and the
+  owner's control-account tie-out then shows the difference (`tied_out?` false,
+  the difference equal to the unrecorded reversal) while the owner's own record
+  stays unreversed.
 
 Entries posted before owners were recorded carry `legacy: true` and no
 owner. Each owning module's own migration claims its entries once through

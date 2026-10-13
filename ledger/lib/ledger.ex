@@ -43,6 +43,13 @@ defmodule Bilimbi.Finance.Ledger do
   manual journal entry has no owner and is reversed directly. The database
   keeps a reversal's owner equal to its original's.
 
+  The owner is a seam between modules, not an authorization boundary: the
+  ledger cannot tell which module is calling, and `reverse_owned_entry/5`
+  asks only for `finance.ledger.entries.post`. It is for the owning
+  module's own correction path; a caller that passes an entry's owner from
+  anywhere else reverses the entry without the owner's record, and the
+  owner's control-account tie-out then shows the difference.
+
   A company divides its time into fiscal years of monthly periods. Periods
   close in date order and reopen in reverse; a reopen needs a reason and the
   reopen capability, and a locked period never reopens. `close_fiscal_year/4`
@@ -389,6 +396,13 @@ defmodule Bilimbi.Finance.Ledger do
   `{:error, :not_owned}`, and is reversed with `reverse_entry/4`. A legacy
   entry, posted before owners were recorded and never claimed, is reversed
   by the module whose record names it, without an owner on either side.
+
+  Only the owning module calls this, from its own correction path. The
+  ledger cannot authenticate the caller: anyone holding
+  `finance.ledger.entries.post` who passes an entry's owner reverses it
+  without the owner's record, which the owner's control-account tie-out
+  then shows as a difference. Use `reverse_entry/4` for a manual entry, and
+  the owning module's own function for an owned one.
   """
   @spec reverse_owned_entry(Scope.t(), term(), term(), map(), map()) ::
           {:ok, map()}

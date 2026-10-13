@@ -563,7 +563,9 @@ defmodule Bilimbi.Finance.Reconciliation do
   `unmatched` event carrying the reason, and the entry is reversed through
   `Ledger.reverse_owned_entry/5` as the line's owner; the ledger's refusal
   (a closed period) rolls both back and is returned. A match a finalised
-  reconciliation counted is kept (`{:error, :match_finalised}`). The line
+  reconciliation counted is kept (`{:error, :match_finalised}`). An entry
+  posted before owners were recorded is reversed the same way when its match
+  is the one that posted it. The line
   is not posted again: the ledger holds an entry for it
   (`:statement_line_posted`), so the right figure is booked by a manual
   journal and matched. Needs `finance.reconciliation.statement-lines.manage`
