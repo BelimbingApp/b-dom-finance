@@ -474,8 +474,8 @@ defmodule Bilimbi.Finance.Attachments do
   One attachment: the record it supports (`source`, `source_label`,
   `document_id`, `document_label`, `document_date`), the file (`file_name`,
   `content_type`, `byte_size`, `sha256`), its retention (`retention_years`,
-  `retain_until`, which follows the latest extension, and `on_hold`), who captured it when, its `status`, and its `events`
-  oldest first. The caller must also be able to read the record's source
+  `retain_until`, which follows the latest extension, and `on_hold`), who
+  captured it when, its `status`, and its `events` oldest first. The caller must also be able to read the record's source
   (`{:error, :unauthorized}` otherwise).
   """
   @spec get_attachment(Scope.t(), term(), term()) ::

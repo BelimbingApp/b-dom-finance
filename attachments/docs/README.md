@@ -20,8 +20,8 @@ captured it when, and never changed afterwards.
   and `read_attachment/3`.
 - `Bilimbi.Finance.Attachments.Source`, the behaviour a Finance module
   implements once per kind of record it keeps source documents for. The
-  module names the record (`source_id/0`, `source_label/0`), names the capability it asks to read
-  its records (`view_capability/0`), and reads it
+  module names the record (`source_id/0`, `source_label/0`), names the
+  capability it asks to read its records (`view_capability/0`), and reads it
   through its own facade (`document/3`: label, date, final?). Payables
   implements it for bills and payment requests, receivables for documents
   and payments, reconciliation for statements; the ledger has no pages, so
@@ -45,10 +45,12 @@ captured it when, and never changed afterwards.
   same, and so does the database) after the end of the financial year its
   record's date falls in: the ledger's fiscal year covering the date when
   the company has opened one, else the calendar year; the day ends in UTC.
-  The years and the retain-until are kept on the attachment. Base refuses to
-  delete the bytes before retain-until, and `purge_expired` never selects
-  them; a legal hold refuses deletion after it. `extend_retention/4` only
-  moves a retain-until later; nothing shortens one.
+  The years and the original retain-until are kept on the attachment. Base
+  refuses to delete the bytes before retain-until, and `purge_expired` never
+  selects them; a legal hold refuses deletion after it. `extend_retention/4`
+  only moves a retain-until later, as a `retention_extended` event; the
+  retain-until and `on_hold` a read shows follow the latest `retention_extended`
+  and hold events, and nothing shortens one.
 - **Standing.** An attachment row is append-only; its standing is its
   latest event. A record that is not final (a draft bill, a submitted
   journal, a draft invoice, an undecided payment request) can have an
@@ -69,8 +71,9 @@ captured it when, and never changed afterwards.
   `get_attachment/3`, `extend_retention/4`, `place_hold/4`, and
   `release_hold/4` refuse one with `:unauthorized`, so the attachments grant
   alone discloses nothing about a bill, invoice, or statement. The retention
-  reads the ledger's fiscal years (`finance.ledger.view`). The verbs are Base Authz's; this module
-  declares none of its own (see the repository guide).
+  reads the ledger's fiscal years (`finance.ledger.view`). The verbs are
+  Base Authz's; this module declares none of its own (see the repository
+  guide).
 - **Storage order.** Base Artifacts stores outside any transaction, so a
   file is stored first, retained from creation, and the link recorded in
   its own transaction (or the caller's, for `attach_capture/5`). What can be
