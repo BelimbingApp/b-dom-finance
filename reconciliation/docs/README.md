@@ -103,10 +103,13 @@ marker.
 file whole as the statement's source document through
 `Bilimbi.Finance.Attachments` (`StatementSource`; a records-grade document
 retained for the company's retention years after the end of the financial
-year the statement ends in, so the import also needs
-`finance.attachments.create`), and records one numbered statement with its
+year the statement ends in), and records one numbered statement with its
 lines and the mapping it was read through (`import_mapping`) in one
-transaction. Every check below runs before the file is stored (the active
+transaction. The import needs `finance.reconciliation.statements.import`,
+`finance.reconciliation.view` (the statement is read back when the file is
+linked to it), `finance.attachments.create` for the file, and
+`finance.ledger.view` for the book's currency precision. Every check below
+runs before the file is stored (the active
 bank account again inside the transaction, under the company lock), and the
 store runs before the transaction, as Base Artifacts asks; a refused import
 stores nothing, and a storage refusal imports nothing. A statement

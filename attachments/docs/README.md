@@ -69,7 +69,8 @@ captured it when, and never changed afterwards.
   `enqueue_as_system/4` under the declared principal
   `finance.attachments.retention_refresh`, so the issuer needs no attachments
   grant. The job extends each standing attachment kept for less (never
-  shortens one) and records `retention_extended` as the principal. Finance
+  shortens one) and records `retention_extended` as the principal; a job whose source module is
+  no longer mounted is cancelled, not retried. Finance
   code that must change retention without a user's grant queues that worker
   through `refresh_retention/4`; the owner adapter accepts the principal for
   `:retain`, and the facade gates every discretionary extension and hold with
