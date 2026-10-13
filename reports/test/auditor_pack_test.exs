@@ -77,7 +77,8 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     for filename <-
           ~w(ledger-journal.csv ledger-journal_line.csv ledger-journal_event.csv
              ledger-approval_exception.csv ledger-approval_exception_review.csv
-             ledger-duty_separation_change.csv payables-payment_request.csv
+             ledger-duty_separation_change.csv ledger-late_recording_review.csv
+             payables-payment_request.csv
              payables-payment_request_allocation.csv payables-payment_request_event.csv
              einvoice-code_override.csv payroll-settings.csv payroll-settings_change.csv
              payroll-mapping.csv payroll-mapping_change.csv payroll-posting_event.csv
@@ -102,6 +103,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
       ])
 
     {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+    Ledger.TestFixtures.open_fiscal_years!(sibling, 74)
     chart = TestFixtures.chart!(sibling, 74)
 
     TestFixtures.post!(

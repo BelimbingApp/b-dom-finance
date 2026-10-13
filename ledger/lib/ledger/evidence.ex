@@ -164,6 +164,31 @@ defmodule Bilimbi.Finance.Ledger.Evidence do
          :reviewed_by_impersonator_id,
          :reviewed_at
        ]},
+    "bookkeeping_change" =>
+      {Bilimbi.Finance.Ledger.BookkeepingChange,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :change_number,
+         :controlled,
+         :reason,
+         :changed_by_user_id,
+         :changed_by_impersonator_id,
+         :changed_at
+       ]},
+    "late_recording_review" =>
+      {Bilimbi.Finance.Ledger.LateRecordingReview,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :entry_id,
+         :reason,
+         :reviewed_by_user_id,
+         :reviewed_by_impersonator_id,
+         :reviewed_at
+       ]},
     "duty_separation_change" =>
       {Bilimbi.Finance.Ledger.DutySeparationChange,
        [
