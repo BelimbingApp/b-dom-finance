@@ -57,6 +57,25 @@ defmodule BilimbiWeb.FinanceBookkeepingLiveTest do
     assert has_element?(view, "#fiscal-year-open", "Open the next fiscal year")
   end
 
+  test "a blank first day opens no first fiscal year", %{conn: conn} do
+    grant_capabilities!([@view, @controlled, @periods])
+    {:ok, view, _html} = conn |> log_in_as() |> live(@page)
+
+    view |> element("#fiscal-year-open") |> render_click()
+
+    view
+    |> form("#fiscal-year-form", dialog: %{start_date: "", end_date: ""})
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "#flash-error",
+             "Give the first day of the fiscal year as a date."
+           )
+
+    assert has_element?(view, "#no-fiscal-year")
+  end
+
   test "turning controlled bookkeeping off needs a reason, and on again needs none", %{
     conn: conn
   } do

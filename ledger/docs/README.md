@@ -568,9 +568,17 @@ accounts are held to. What this slice covers:
 
 Management reports (profit and loss, balance sheet, cash position) are the
 sibling `finance/reports` module, read through `account_totals/3` and
-`list_entries/3`. They are not statutory financial statements. A cash flow
-statement, changes in equity or other comprehensive income, notes,
-consolidation, statutory layouts (MFRS or IFRS), and tax are not built here.
+`list_entries/3`. They are not statutory financial statements. Known gaps, not
+built here:
+
+- an accountant-adjustment or statutory-pack bridge;
+- a cash flow statement;
+- a statement of changes in equity or other comprehensive income, and notes;
+- consolidation and statutory layouts (MFRS or IFRS);
+- versioned restatement that retains the originally issued report;
+- SST return source-linked tax-point, rate, and exemption adjustments, their
+  approvals, the filed version and acknowledgment, and payment evidence;
+- payroll posting tied to an approved pay run with its source evidence.
 
 ## Tests
 

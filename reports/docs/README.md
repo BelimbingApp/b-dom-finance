@@ -210,11 +210,18 @@ What it covers:
   format of any accounting standard is built in, and none is claimed.
 
 Gapless document numbering does not apply: reports issue no numbered
-documents. Not covered, and not claimed: a cash flow statement, changes in
-equity or other comprehensive income, notes, consolidation, currency
-translation, statutory statement layouts, and the restatement of an earlier
-period's report (a current-period reversal is not one). Those are follow-up
-work, and until they exist these outputs are management reports only.
+documents. Known gaps, not built, so these outputs are management reports only:
+
+- an accountant-adjustment or statutory-pack bridge from these figures to
+  statutory statements;
+- a cash flow statement;
+- a statement of changes in equity or other comprehensive income;
+- notes to the statements;
+- versioned restatement that retains the originally issued report (a
+  current-period reversal is not one);
+- SST return source-linked tax-point, rate, and exemption adjustments, their
+  approvals, the filed version and acknowledgment, and payment evidence;
+- payroll posting tied to an approved pay run with its source evidence.
 
 ## Tests
 

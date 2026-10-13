@@ -131,7 +131,7 @@ defmodule Bilimbi.Finance.Reports.Web.BookkeepingLive do
 
       {:ok, socket} ->
         socket =
-          case fiscal_year_attributes(fields) do
+          case fiscal_year_attributes(fields, socket.assigns.controlled.fiscal_years == 0) do
             {:ok, attributes} ->
               case Ledger.open_fiscal_year(scope(socket), company_id(socket), attributes) do
                 {:ok, year} ->
@@ -252,8 +252,11 @@ defmodule Bilimbi.Finance.Reports.Web.BookkeepingLive do
   defp reviewed_filter("reviewed"), do: true
   defp reviewed_filter("all"), do: nil
 
-  defp fiscal_year_attributes(fields) do
+  defp fiscal_year_attributes(fields, first_year?) do
     case Map.get(fields, "start_date", "") do
+      "" when first_year? ->
+        :error
+
       "" ->
         {:ok, %{}}
 
