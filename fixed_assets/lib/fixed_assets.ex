@@ -356,8 +356,9 @@ defmodule Bilimbi.Finance.FixedAssets do
   @doc """
   Retires an asset whose acquisition entry was reversed. Its unreversed depreciation is
   mirrored in one entry that leaves every other asset's postings alone, and the asset
-  then drops out of runs and reconciliation. The event is permanent; a standing
-  disposal must be reversed first.
+  then drops out of runs and reconciliation. The event is permanent, so its date must fall
+  in an open fiscal period even when no entry is posted; a standing disposal must be
+  reversed first.
   """
   def void_acquisition(%Scope{} = scope, company_id, asset_id, attrs) when is_map(attrs) do
     write(scope, company_id, @void, fn ->
@@ -370,6 +371,7 @@ defmodule Bilimbi.Finance.FixedAssets do
            {:ok, event} <-
              event_changeset(scope, company_id, attrs, "acquisition_voided", %{asset_id: asset.id})
              |> apply_action(:insert),
+           :ok <- open_period(scope, company_id, Date.beginning_of_month(event.effective_date)),
            :ok <- chronological(scope, company_id, event.effective_date),
            reversed = reversed_run_ids(events),
            charges =
