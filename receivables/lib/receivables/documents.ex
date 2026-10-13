@@ -367,13 +367,18 @@ defmodule Bilimbi.Finance.Receivables.Documents do
 
   # A credit note settles its invoice, so it may post to the receivable
   # account the invoice recorded even after that account was deactivated.
+  # The entry names this document as its owner: the ledger refuses a second
+  # entry for it and a reversal from anywhere but this module.
   defp post_entry(scope, company_id, changeset) do
     settled =
       if Changeset.get_field(changeset, :kind) == "credit_note",
         do: [Changeset.get_field(changeset, :receivable_account_id)],
         else: []
 
-    Ledger.post_entry(scope, company_id, entry(changeset), settlement_account_ids: settled)
+    Ledger.post_entry(scope, company_id, entry(changeset),
+      settlement_account_ids: settled,
+      owner: Records.owner(:document, changeset.data.id)
+    )
   end
 
   # An invoice debits the receivable and credits income and tax; a credit

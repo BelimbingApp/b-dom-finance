@@ -13,7 +13,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
 
   @doc "The migrations that build the schema, oldest first; the contract is their result."
   def migration_versions,
-    do: [20_261_012_170_100, 20_261_012_214_100, 20_261_013_101_700, 20_261_016_100_000]
+    do: [
+      20_261_012_170_100,
+      20_261_012_214_100,
+      20_261_013_101_700,
+      20_261_015_150_000,
+      20_261_016_100_000
+    ]
 
   @impl true
   def tables do
@@ -95,6 +101,9 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
             "reference" => column({:varchar, 100}, true),
             "currency_code" => column({:varchar, 3}, false),
             "reverses_entry_id" => column(:bigint, true),
+            "owner_module" => column({:varchar, 100}, true),
+            "owner_record" => column({:varchar, 100}, true),
+            "legacy" => column(:boolean, false, {:boolean, false}),
             "posted_by_user_id" => column(:bigint, false),
             "posted_by_impersonator_id" => column(:bigint, true),
             "posted_at" => column({:timestamp, 6}, false)
@@ -106,6 +115,11 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
             columns: ["reverses_entry_id"],
             unique: true,
             where: "(reverses_entry_id IS NOT NULL)"
+          },
+          "finance_ledger_entries_owner_record_unique" => %{
+            columns: ["company_id", "owner_module", "owner_record"],
+            unique: true,
+            where: "((owner_module IS NOT NULL) AND (reverses_entry_id IS NULL))"
           },
           "finance_ledger_entries_tenant_id_company_id_entry_date_index" =>
             index(["tenant_id", "company_id", "entry_date"]),
@@ -124,7 +138,13 @@ defmodule Bilimbi.Finance.Ledger.SchemaContract do
         checks: %{
           "finance_ledger_entries_not_own_reversal" =>
             check("reverses_entry_id IS NULL OR reverses_entry_id <> id"),
-          "finance_ledger_entries_entry_number" => check("entry_number > 0")
+          "finance_ledger_entries_entry_number" => check("entry_number > 0"),
+          "finance_ledger_entries_owner_pair" =>
+            check("(owner_module IS NULL) = (owner_record IS NULL)"),
+          "finance_ledger_entries_owner_module" =>
+            check("owner_module IS NULL OR (owner_module)::text ~ '^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$'::text"),
+          "finance_ledger_entries_owner_record" =>
+            check("owner_record IS NULL OR (owner_record)::text ~ '^[a-z][a-z0-9_]*:[1-9][0-9]*$'::text")
         }
       },
       %{

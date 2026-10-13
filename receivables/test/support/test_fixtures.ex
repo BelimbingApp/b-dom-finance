@@ -3,8 +3,9 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
   Receivables and ledger tables, authorization, two tenants' companies, and
   an open book with a small chart for module tests.
 
-  The receivables tables are temporary copies built from the migration's own
-  statements (`CreateReceivables.statements(temporary: true)`), constraints
+  The receivables tables are temporary copies built from the migrations' own
+  statements (each migration's `statements(temporary: true)`, in version
+  order), constraints
   and triggers included, so a test that makes PostgreSQL refuse proves the
   migration's rule. `test/schema_contract_test.exs` checks the real
   migration itself. The ledger's tables come from its own fixtures.
@@ -24,18 +25,28 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
   alias Bilimbi.Finance.Receivables
   alias Ecto.Adapters.SQL
 
-  @migration Path.expand(
-               "../../priv/repo/migrations/20261012214517_create_finance_receivables.exs",
-               __DIR__
-             )
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
+
+  @migration_files [
+    {20_261_012_214_517, Bilimbi.Finance.Receivables.Migrations.CreateReceivables,
+     "20261012214517_create_finance_receivables.exs"},
+    {20_261_015_150_100, Bilimbi.Finance.Receivables.Migrations.ClaimEntries,
+     "20261015150100_claim_finance_receivables_entries.exs"}
+  ]
 
   @ledger ["finance.ledger.view", "finance.ledger.accounts.manage", "finance.ledger.entries.post"]
 
-  @doc "The migration module, loaded from its file once."
-  def migration do
-    module = Bilimbi.Finance.Receivables.Migrations.CreateReceivables
-    unless Code.ensure_loaded?(module), do: Code.require_file(@migration)
-    module
+  @doc "The first migration's module, loaded from its file once."
+  def migration, do: migrations() |> hd() |> elem(1)
+
+  @doc "The module's migrations as `{version, module}` in version order, each loaded once."
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
   end
 
   @doc "Every ledger capability, which receivables' own calls into the ledger need."
@@ -212,9 +223,10 @@ defmodule Bilimbi.Finance.Receivables.TestFixtures do
   end
 
   def create_receivables_tables! do
-    # The migration is loaded at run time, so the call is dynamic.
-    migration()
-    |> apply(:statements, [[temporary: true]])
-    |> Enum.each(&SQL.query!(Repo, &1, []))
+    # The migrations are loaded at run time, so the calls are dynamic.
+    for {_version, module} <- migrations(),
+        statement <- apply(module, :statements, [[temporary: true]]) do
+      SQL.query!(Repo, statement, [])
+    end
   end
 end

@@ -793,6 +793,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       "posting",
       fn document ->
         cond do
+          document.recognised_by_source? -> :noop
           not is_nil(document.ledger_entry_id) -> :noop
           document.status in Documents.valid_statuses() -> :run
           true -> {:error, :not_postable}
@@ -816,6 +817,7 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       "reversal",
       fn document ->
         cond do
+          document.recognised_by_source? -> :noop
           is_nil(document.ledger_entry_id) -> :noop
           not is_nil(document.reversal_entry_id) -> :noop
           document.status == "cancelled" -> :run

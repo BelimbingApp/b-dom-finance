@@ -29,7 +29,7 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
          :ok <- sign(line, kind),
          :ok <- unmatched?(scope, company_id, bank_account.id, line),
          {:ok, entry} <-
-           Ledger.post_entry(scope, company_id, %{
+           post_once(scope, company_id, line, %{
              entry_date: line.line_date,
              description: description(attributes, line),
              reference: line.reference,
@@ -41,6 +41,29 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
              note: "Posted from statement line as #{kind}"
            }) do
       {:ok, %{entry: entry, match: match}}
+    end
+  end
+
+  @module_id "finance/reconciliation"
+
+  @doc "This module's descriptor ID, the `owner_module` of every entry it posts."
+  def module_id, do: @module_id
+
+  @doc "The owner identity of the entry a statement line posted."
+  def owner(%{id: line_id}), do: %{module: @module_id, record: "statement_line:#{line_id}"}
+
+  # The entry names the statement line as its owner, so the ledger holds one
+  # entry per line: a line unmatched since it posted is matched to that
+  # entry again, never posted again (`:statement_line_posted`).
+  defp post_once(scope, company_id, line, entry) do
+    case Ledger.post_entry(scope, company_id, entry, owner: owner(line)) do
+      {:error, %Ecto.Changeset{errors: errors} = changeset} ->
+        if Keyword.has_key?(errors, :owner_record),
+          do: {:error, :statement_line_posted},
+          else: {:error, changeset}
+
+      result ->
+        result
     end
   end
 

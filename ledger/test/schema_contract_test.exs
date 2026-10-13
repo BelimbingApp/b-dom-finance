@@ -11,6 +11,11 @@ Code.require_file(
 )
 
 Code.require_file(
+  "../priv/repo/migrations/20261015150000_add_finance_ledger_entry_owner.exs",
+  __DIR__
+)
+
+Code.require_file(
   "../priv/repo/migrations/20261016100000_add_finance_ledger_duty_separation.exs",
   __DIR__
 )
@@ -23,6 +28,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
 
   alias Bilimbi.Finance.Ledger.Migrations.{
     AddDutySeparation,
+    AddEntryOwner,
     CreateClosing,
     CreateLedger,
     NotifyPostings
@@ -33,7 +39,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
 
-  setup do
+  setup context do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
     database = "bilimbi_finance_ledger_#{String.replace(Ecto.UUID.generate(), "-", "")}"
     quoted = SchemaVerifier.quote_identifier!(database)
@@ -52,17 +58,23 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
       )
     )
 
-    for {version, migration} <-
-          Enum.zip(SchemaContract.migration_versions(), [
-            CreateLedger,
-            NotifyPostings,
-            CreateClosing,
-            AddDutySeparation
-          ]) do
-      assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
+    [earlier, later] =
+      SchemaContract.migration_versions()
+      |> Enum.zip([CreateLedger, NotifyPostings, CreateClosing, AddEntryOwner, AddDutySeparation])
+      |> Enum.split(3)
+      |> Tuple.to_list()
+
+    migrate! = fn migrations ->
+      for {version, migration} <- migrations do
+        assert :ok = Ecto.Migrator.up(Repo, version, migration, log: false, dynamic_repo: repo)
+      end
     end
 
-    %{repo: repo, database: database}
+    migrate!.(earlier)
+    # One test posts entries before owners were recorded and migrates itself.
+    unless context[:before_owner], do: migrate!.(later)
+
+    %{repo: repo, database: database, migrate_later!: fn -> migrate!.(later) end}
   end
 
   test "the fresh migration implements the complete ledger contract", %{repo: repo} do
@@ -317,6 +329,7 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
         "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
       ])
 
+
     journal = fn id ->
       "INSERT INTO finance_ledger_journals (id, tenant_id, company_id, journal_number, entry_date, description, currency_code, submitted_by_user_id, submitted_at) VALUES (#{id}, 1, 1, 99, '2026-10-01', 'Accrual', 'XTS', 1, '2000-01-01')"
     end
@@ -376,5 +389,126 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
              )
 
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  # Entries posted before the owner migration are legacy: an owning module's
+  # migration claims each of its own once, and the row changes in no other
+  # way. The migration's own triggers prove it here, outside the sandbox.
+  @tag :before_owner
+  @tag :capture_log
+  test "the owner migration marks earlier entries legacy and lets an owner claim each once",
+       %{repo: repo, migrate_later!: migrate_later!} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    entry = fn id, reverses ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 1, '2026-10-01', 'Entry', 'XTS', #{reverses || "NULL"}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 1, 10, 0), (1, 1, #{id}, 2, 2, 0, 10)"
+      ]
+    end
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
+        "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
+      ])
+
+
+    {:ok, _} = in_transaction.(entry.(1, nil))
+    {:ok, _} = in_transaction.(entry.(2, 1))
+    {:ok, _} = in_transaction.(entry.(3, nil))
+
+    migrate_later!.()
+
+    assert %{rows: [[1, true, nil], [2, true, nil], [3, true, nil]]} =
+             query!.("SELECT id, legacy, owner_module FROM finance_ledger_entries ORDER BY id")
+
+    claim = fn id, module, record ->
+      "SELECT finance_ledger_claim_legacy_entry(#{id}, 1, '#{module}', '#{record}')"
+    end
+
+    assert {:ok, _} = in_transaction.([claim.(1, "finance/receivables", "payment:5")])
+    # Claiming again by the same owner is nothing; by another is refused.
+    assert {:ok, _} = in_transaction.([claim.(1, "finance/receivables", "payment:5")])
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
+      in_transaction.([claim.(1, "finance/payables", "payment:5")])
+    end
+
+    # The reversal takes its original's owner and no other.
+    assert_raise Postgrex.Error, ~r/have one owner/, fn ->
+      in_transaction.([claim.(2, "finance/payables", "payment:9")])
+    end
+
+    assert {:ok, _} = in_transaction.([claim.(2, "finance/receivables", "payment:5")])
+
+    assert_raise Postgrex.Error, ~r/does not exist/, fn ->
+      in_transaction.([claim.(99, "finance/receivables", "payment:5")])
+    end
+
+    # A new entry is not legacy; its row never changes, owner included.
+    {:ok, _} = in_transaction.(entry.(4, nil))
+
+    assert_raise Postgrex.Error, ~r/not an unclaimed legacy entry/, fn ->
+      in_transaction.([claim.(4, "finance/receivables", "payment:6")])
+    end
+
+    for sql <- [
+          "UPDATE finance_ledger_entries SET owner_module = 'finance/receivables', owner_record = 'payment:7' WHERE id = 4",
+          "UPDATE finance_ledger_entries SET owner_module = 'finance/payables', owner_record = 'payment:8' WHERE id = 1",
+          "UPDATE finance_ledger_entries SET owner_module = 'finance/receivables', owner_record = 'payment:9', description = 'x' WHERE id = 3",
+          "UPDATE finance_ledger_entries SET owner_module = NULL, owner_record = NULL WHERE id = 1",
+          "UPDATE finance_ledger_entries SET legacy = false WHERE id = 3"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance ledger keeps/, fn -> query!.(sql) end
+    end
+
+    assert %{rows: [[1, "finance/receivables", "payment:5"], [2, "finance/receivables", "payment:5"], [3, nil, nil], [4, nil, nil]]} =
+             query!.(
+               "SELECT id, owner_module, owner_record FROM finance_ledger_entries ORDER BY id"
+             )
+
+    # One original entry per owned record; a reversal carries its original's owner.
+    owned = fn id, reverses, module, record ->
+      [
+        "INSERT INTO finance_ledger_entries (id, tenant_id, company_id, entry_number, entry_date, description, currency_code, reverses_entry_id, owner_module, owner_record, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 1, '2026-10-02', 'Entry', 'XTS', #{reverses || "NULL"}, #{module}, #{record}, 1, now())",
+        "INSERT INTO finance_ledger_entry_lines (tenant_id, company_id, entry_id, line_number, account_id, debit, credit) VALUES (1, 1, #{id}, 1, 1, 10, 0), (1, 1, #{id}, 2, 2, 0, 10)"
+      ]
+    end
+
+    assert_raise Postgrex.Error, ~r/finance_ledger_entries_owner_record_unique/, fn ->
+      in_transaction.(owned.(5, nil, "'finance/receivables'", "'payment:5'"))
+    end
+
+    assert {:ok, _} = in_transaction.(owned.(5, nil, "'finance/einvoice'", "'document:3'"))
+
+    assert_raise Postgrex.Error, ~r/is reversed through that module/, fn ->
+      in_transaction.(owned.(6, 5, "NULL", "NULL"))
+    end
+
+    assert_raise Postgrex.Error, ~r/is reversed through that module/, fn ->
+      in_transaction.(owned.(6, 5, "'finance/einvoice'", "'document:4'"))
+    end
+
+    assert_raise Postgrex.Error, ~r/has no owner: its reversal has none either/, fn ->
+      in_transaction.(owned.(6, 3, "'finance/einvoice'", "'document:3'"))
+    end
+
+    assert {:ok, _} = in_transaction.(owned.(6, 5, "'finance/einvoice'", "'document:3'"))
+
+    for sql <- [
+          "INSERT INTO finance_ledger_entries (tenant_id, company_id, entry_number, entry_date, description, currency_code, owner_module, posted_by_user_id, posted_at) VALUES (1, 1, 1, '2026-10-02', 'Entry', 'XTS', 'finance/einvoice', 1, now())",
+          "INSERT INTO finance_ledger_entries (tenant_id, company_id, entry_number, entry_date, description, currency_code, owner_module, owner_record, posted_by_user_id, posted_at) VALUES (1, 1, 1, '2026-10-02', 'Entry', 'XTS', 'Finance/Einvoice', 'document:3', 1, now())",
+          "INSERT INTO finance_ledger_entries (tenant_id, company_id, entry_number, entry_date, description, currency_code, owner_module, owner_record, posted_by_user_id, posted_at) VALUES (1, 1, 1, '2026-10-02', 'Entry', 'XTS', 'finance/einvoice', 'document 3', 1, now())"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance_ledger_entries_owner_/, fn ->
+        in_transaction.([sql])
+      end
+    end
   end
 end

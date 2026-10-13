@@ -6,9 +6,9 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
   The tables are temporary copies of the migration's, constraints and
   triggers included, so a test that makes PostgreSQL refuse proves the
   migration's rule. The first migration's are a copy: keep them in step
-  with `priv/repo/migrations/`; the consolidation migration's are its own
-  SQL (`statements(temporary: true)`). `test/schema_contract_test.exs`
-  checks the real migrations themselves.
+  with `priv/repo/migrations/`; the consolidation and source links
+  migrations' are their own SQL (`statements(temporary: true)`).
+  `test/schema_contract_test.exs` checks the real migrations themselves.
 
   Party data is the authority's SDK sample data ("Supplier's Name", the
   SDK's dummy TIN, the general-public buyer TIN), never a real taxpayer.
@@ -534,21 +534,30 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
   def create_einvoice_tables! do
     Enum.each(statements(), &SQL.query!(Repo, &1, []))
 
-    # The migration is loaded at run time, so the call is dynamic.
-    consolidation_migration()
-    |> apply(:statements, [[temporary: true]])
-    |> Enum.each(&SQL.query!(Repo, &1, []))
+    # The migrations are loaded at run time, so the calls are dynamic.
+    for module <- [consolidation_migration(), source_links_migration()],
+        statement <- apply(module, :statements, [[temporary: true]]) do
+      SQL.query!(Repo, statement, [])
+    end
   end
 
-  @consolidation_migration Path.expand(
-                             "../../priv/repo/migrations/20261013221500_add_finance_einvoice_consolidation.exs",
-                             __DIR__
-                           )
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
+
+  @consolidation_migration "20261013221500_add_finance_einvoice_consolidation.exs"
+  @source_links_migration "20261015150400_add_finance_einvoice_source_links.exs"
 
   @doc "The consolidation migration's module, loaded from its file once."
-  def consolidation_migration do
-    module = Bilimbi.Finance.Einvoice.Migrations.AddConsolidation
-    unless Code.ensure_loaded?(module), do: Code.require_file(@consolidation_migration)
+  def consolidation_migration,
+    do: load_migration(Bilimbi.Finance.Einvoice.Migrations.AddConsolidation, @consolidation_migration)
+
+  @doc "The source links migration's module, loaded from its file once."
+  def source_links_migration,
+    do: load_migration(Bilimbi.Finance.Einvoice.Migrations.AddSourceLinks, @source_links_migration)
+
+  defp load_migration(module, file) do
+    unless Code.ensure_loaded?(module),
+      do: Code.require_file(Path.join(@migrations_path, file))
+
     module
   end
 

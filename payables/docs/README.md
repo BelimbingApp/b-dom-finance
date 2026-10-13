@@ -256,10 +256,33 @@ A posted payment is corrected by `reverse_payment/4`: the ledger reverses its
 entry, and its bills are owed again from the reversal's date. A payment is
 reversed at most once, and a reversal is not itself reversed.
 
-Correct a payables posting through this module, never by reversing its
-ledger entry with `Ledger.reverse_entry/4` directly: the ledger does not yet
-know which module owns an entry, so it cannot refuse that, and the two
-records would then disagree. A ledger-level owner guard is later work.
+## Ledger ownership
+
+Every entry this module posts names it as the owner, with the record the
+entry recognises: `finance/payables` and `document:<id>` for a posted bill
+or debit note, `payment:<id>` for a payment and for the reversal of that
+payment (`Bilimbi.Finance.Ledger.post_entry/4`'s `owner` option;
+`Bilimbi.Finance.Payables.Ownership` names them). The ledger then refuses a
+second entry for the same record, and refuses `Ledger.reverse_entry/4` on
+any of them (`{:error, {:owned_by, owner}}`): a payables posting is corrected
+only through this module, which records its own reversal and reverses the
+entry through `Ledger.reverse_owned_entry/5` in the same transaction, so the
+ledger and the aged payables never disagree about a payment. Entries posted
+before the ledger recorded owners were claimed by the migration
+`20261015150200`, through the ledger's own claim function.
+
+`tie_out_control_accounts/4` is the control-account tie-out: for each
+payable account a posted bill recorded (and the settings'), what this
+module's records say is owed on it as of a date (`subledger_balance`, the
+aged payables' total including its exceptions), what the ledger holds there
+(`ledger_balance`, credits less debits), the part this module posted
+(`owned_balance`), and every other posting on the account by owner module
+(`other_postings`; `nil` is a manual journal, `legacy` one posted before
+owners were recorded). `difference` is the subledger less the ledger, and
+`tied_out?` is true only when every account's difference is zero. A manual
+journal on the payable account or a purchase another module also posted
+there is shown with its owner, never netted away. Every figure is read at
+one ledger entry number, `through_entry_number`, which reproduces it.
 
 ## Aged payables
 

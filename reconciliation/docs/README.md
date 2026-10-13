@@ -201,6 +201,17 @@ The ledger refuses a closed period or an inactive account by rolling back
 the transaction it joined, so its changeset comes back and nothing is
 recorded; nothing here reopens a period.
 
+The entry names this module and the statement line as its owner
+(`finance/reconciliation`, `statement_line:<id>`, through
+`Ledger.post_entry/4`'s `owner` option), so the ledger holds one entry per
+line: a line unmatched after it posted is matched to that entry again, and
+posting it again is `{:error, :statement_line_posted}`. Nothing here
+reverses an entry, so the ledger refuses `Ledger.reverse_entry/4` on it
+(`{:error, {:owned_by, owner}}`): a wrong charge is corrected by a manual
+journal. Entries this module posted before the ledger recorded owners stay
+unowned (`legacy`): a match names an entry, not which module posted it, so
+no claim is derivable.
+
 ## Pages
 
 | Route | Capability | Page |
