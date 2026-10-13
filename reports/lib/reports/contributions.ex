@@ -12,10 +12,10 @@ defmodule Bilimbi.Finance.Reports.Contributions do
   def contributions do
     %{
       authz: %{
-        verbs: ["export"],
-        capabilities: ["finance.reports.issue", "finance.reports.export"],
+        verbs: ["reports-export"],
+        capabilities: ["finance.reports.issue", "finance.reports.reports-export"],
         roles: %{
-          "tenant_owner" => %{capabilities: ["finance.reports.issue", "finance.reports.export"]}
+          "tenant_owner" => %{capabilities: ["finance.reports.issue", "finance.reports.reports-export"]}
         }
       },
       menu: [

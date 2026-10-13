@@ -21,7 +21,7 @@ defmodule BilimbiWeb.FinanceAuditorPackDownloadTest do
         system,
         73,
         91,
-        ~w(finance.reports.export finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view)
+        ~w(finance.reports.reports-export finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view)
       )
 
     %{operator: operator, system: system}

@@ -37,7 +37,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         context.first_scope,
         73,
         95,
-        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.reports.export)
+        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.reports.reports-export)
       )
 
     assert {:ok, reader_artifact} = Reports.export_auditor_pack(reader, 73, ~D[2026-10-31])
@@ -51,10 +51,11 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     files = Map.new(extracted, fn {name, contents} -> {List.to_string(name), contents} end)
     manifest = Jason.decode!(files["manifest.json"])
     assert manifest["company_id"] == 73
+    refute Enum.any?(Map.keys(files), &String.starts_with?(&1, "audit-"))
     assert manifest["tenant_id"] == 41
     assert manifest["through_entry_number"] == 501
     assert manifest["timezone"] == "Etc/UTC"
-    assert manifest["generator_version"] == "1"
+    assert manifest["generator_version"] == "2"
     assert manifest["files"]["ledger-entry.csv"]["row_count"] == 501
     assert manifest["files"]["ledger-line.csv"]["row_count"] == 1002
     assert manifest["files"]["general-ledger.csv"]["row_count"] == 1002
@@ -82,7 +83,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         "finance.ledger.view",
         "finance.ledger.accounts.manage",
         "finance.ledger.entries.post",
-        "finance.reports.export"
+        "finance.reports.reports-export"
       ])
 
     {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
@@ -119,7 +120,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
            end)
 
     assert {:error, :unauthorized} = Reports.read_auditor_pack(sibling, 73, artifact.id)
-    other = Ledger.TestFixtures.sign_in!(second, 75, 94, ["finance.reports.export"])
+    other = Ledger.TestFixtures.sign_in!(second, 75, 94, ["finance.reports.reports-export"])
     assert {:error, :company_not_found} = Reports.read_auditor_pack(other, 73, artifact.id)
     Ledger.TestFixtures.revoke!(first, 73, 91, "finance.payables.view")
     assert {:error, :forbidden} = Reports.read_auditor_pack(operator, 73, artifact.id)

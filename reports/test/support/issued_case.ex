@@ -68,7 +68,7 @@ defmodule Bilimbi.Finance.Reports.IssuedCase do
       "finance.ledger.accounts.manage",
       "finance.ledger.entries.post",
       "finance.reports.issue",
-      "finance.reports.export",
+      "finance.reports.reports-export",
       "finance.receivables.view",
       "finance.payables.view",
       "finance.reconciliation.view",

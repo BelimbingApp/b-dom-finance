@@ -38,7 +38,7 @@ actor and the target company when it runs, through
 makes authorize again: a system scope or a missing grant is
 `{:error, :unauthorized}`, and a company the scope cannot see is
 `{:error, :company_not_found}`. Issuing requires `finance.reports.issue` plus the source report's view grants.
-Generating and downloading evidence requires `finance.reports.export` plus
+Generating and downloading evidence requires `finance.reports.reports-export` plus
 view grants for each Finance source. Auditor roles can hold these read and
 export grants without posting, setup, approval, or database-console access.
 
@@ -207,9 +207,9 @@ cursor and writes CSV incrementally. Source schemas remain private.
 The archive includes line-level ledger entries/lines and chart, trial balance,
 AR/AP documents, lines, tax, payments and allocations, fiscal closing events,
 e-invoice submissions and status events, bank statements and lines, matches,
-match events, stored reconciliation figures/items, and issued report snapshots. Company-filtered Base
-Audit actions and mutations accompany them. Audit field restrictions still
-apply. The source-file index names imported bank files with their original
+match events, stored reconciliation figures/items, and issued report snapshots.
+Base Audit trails are not included: they stay behind Base Audit's own
+capability. The source-file index names imported bank files with their original
 SHA-256; their original bytes are not retained. Exact authority submission
 payloads are included with their hashes. No source uploads exist for the current
 AR/AP document APIs.
