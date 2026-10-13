@@ -21,11 +21,11 @@ defmodule Bilimbi.Finance.Reports.SchemaContractTest do
     unless Code.ensure_loaded?(migration),
       do:
         Code.require_file(
-          Path.expand("../priv/repo/migrations/20261015090000_create_issued_reports.exs", __DIR__)
+          Path.expand("../priv/repo/migrations/20261015100000_create_issued_reports.exs", __DIR__)
         )
 
     assert :ok =
-             Ecto.Migrator.up(Repo, 20_261_015_090_000, migration, log: false, dynamic_repo: repo)
+             Ecto.Migrator.up(Repo, 20_261_015_100_000, migration, log: false, dynamic_repo: repo)
 
     on_exit(fn ->
       Repo.put_dynamic_repo(Repo)

@@ -48,7 +48,7 @@ defmodule Bilimbi.Finance.Reports.IssuedCase do
           do:
             Code.require_file(
               Path.expand(
-                "../../priv/repo/migrations/20261015090000_create_issued_reports.exs",
+                "../../priv/repo/migrations/20261015100000_create_issued_reports.exs",
                 __DIR__
               )
             )
