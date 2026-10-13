@@ -35,6 +35,7 @@ maps; the schemas are private.
 | `abandon_reconciliation/4` | `finance.reconciliation.reconciliations.manage` | Abandons an open one with a `reason` |
 | `get_reconciliation/3`, `list_reconciliations/3` | `finance.reconciliation.view` | A reconciliation's figures and items; an account's reconciliations |
 | `post_statement_line/4` | `finance.reconciliation.statement-lines.post` | Posts an unmatched line as a `charge` or `interest` through the ledger and matches it |
+| `reverse_statement_line/4` | `finance.reconciliation.statement-lines.manage` | Unmatches a posted line with a reason and reverses its entry as the owner, in one transaction |
 
 ## Authorization and company scope
 
@@ -49,10 +50,10 @@ reconciliation writes run one at a time; that lock is what keeps two people
 from matching the same line.
 
 The module declares the verbs `import` and `finalise`; `post` is the
-ledger's. A call that reads the ledger (the chart when a bank account is
+ledger's and `manage` Base's. A call that reads the ledger (the chart when a bank account is
 added or changed, the book when a statement imports or a reconciliation
 opens, the account's entries when matching or reconciling) also needs
-`finance.ledger.view`, and posting a statement line needs
+`finance.ledger.view`, and posting or reversing a statement line needs
 `finance.ledger.entries.post`, because the ledger authorizes its own calls.
 The Tenant Owner role holds every reconciliation capability. Importing,
 matching, opening, finalising, and posting are separate capabilities, so a
@@ -205,12 +206,25 @@ The entry names this module and the statement line as its owner
 (`finance/reconciliation`, `statement_line:<id>`, through
 `Ledger.post_entry/4`'s `owner` option), so the ledger holds one entry per
 line: a line unmatched after it posted is matched to that entry again, and
-posting it again is `{:error, :statement_line_posted}`. Nothing here
-reverses an entry, so the ledger refuses `Ledger.reverse_entry/4` on it
-(`{:error, {:owned_by, owner}}`): a wrong charge is corrected by a manual
-journal. Entries this module posted before the ledger recorded owners stay
-unowned (`legacy`): a match names an entry, not which module posted it, so
-no claim is derivable.
+posting it again is `{:error, :statement_line_posted}`. The ledger refuses
+`Ledger.reverse_entry/4` on the entry (`{:error, {:owned_by, owner}}`); the
+owner's path is `reverse_statement_line/4`. Entries this module posted
+before the ledger recorded owners stay unowned (`legacy`): a match names an
+entry, not which module posted it, so no claim is derivable.
+
+`reverse_statement_line/4` corrects a wrong charge or interest entry. It
+needs a `reason` (blank or over 500 characters is `{:error,
+:invalid_reason}`), the line standing matched, alone, to the entry it
+posted (`:statement_line_not_matched`; any other match is
+`:statement_line_not_posted`), and no finalised reconciliation having
+counted that match (`:match_finalised`). In one write transaction it
+appends the match's `unmatched` event, which carries the reason and the
+actor, then posts the entry's reversal through
+`Ledger.reverse_owned_entry/5` as the line's owner, dated `entry_date`
+(default today). The ledger's refusal (a closed period) rolls both back.
+The line then stands unmatched with no unreversed entry of its own, and it
+is not posted again (the ledger holds an entry for it): book the right
+figure with a manual journal and match that.
 
 ## Pages
 

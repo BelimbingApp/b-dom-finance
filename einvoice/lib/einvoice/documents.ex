@@ -13,7 +13,7 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Einvoice.Configuration
-  alias Bilimbi.Finance.Einvoice.Consolidation
+  alias Bilimbi.Finance.Einvoice.{ConsolidatedSource, Consolidation}
   alias Bilimbi.Finance.Einvoice.{Document, Line, SourceLink, StatusEvent, SubmitWorker}
 
   @max_bigint 9_223_372_036_854_775_807
@@ -136,6 +136,27 @@ defmodule Bilimbi.Finance.Einvoice.Documents do
     |> Enum.filter(fn {_id, status} -> status in @standing_statuses end)
     |> Enum.map(&elem(&1, 0))
     |> Enum.min(fn -> nil end)
+  end
+
+  @doc """
+  Whether another document that stands links one of this document's
+  sources (the documents this one covers do not count): `true` or `false`.
+  The trigger on submissions refuses to store one in that case, so this is
+  asked before storing, under the company lock.
+  """
+  def source_taken?(%Scope{} = scope, company_id, %{id: document_id, source_links: links}) do
+    covered =
+      from(c in Tenancy.scope_query(ConsolidatedSource, scope),
+        where: c.company_id == ^company_id and c.document_id == ^document_id,
+        select: c.source_document_id
+      )
+      |> Repo.all()
+
+    Enum.any?(links, fn link ->
+      standing_source_document(scope, company_id, link.module, link.record, [
+        document_id | covered
+      ])
+    end)
   end
 
   @doc "Records a source link for the document, in the transaction that records it."

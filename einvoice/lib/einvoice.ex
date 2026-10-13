@@ -129,7 +129,8 @@ defmodule Bilimbi.Finance.Einvoice do
       linked document never posts to the ledger when validated, nor
       reverses when cancelled: its accounting, and its correction (a credit
       note, a payment reversal), belong to the source module, and the note
-      issued for that correction links to the correcting record. Reading
+      issued for that correction links to the correcting record, and is
+      refused without a `source` when its original is linked. Reading
       the entry needs `finance.ledger.view`.
 
   The company's own party (the supplier, or the buyer of a self-billed
@@ -164,7 +165,7 @@ defmodule Bilimbi.Finance.Einvoice do
 
       with {:ok, draft} <- Changeset.apply_action(changeset, :insert),
            :ok <- unused_code_number(scope, company_id, environment(scope, company_id), draft),
-           {:ok, source} <- source_link(scope, company_id, changeset, draft, attributes) do
+           {:ok, source} <- source_link(scope, company_id, changeset, draft, original, attributes) do
         document =
           record_document!(scope, company_id, profile, draft, details(draft, original), original)
 
@@ -546,7 +547,8 @@ defmodule Bilimbi.Finance.Einvoice do
   Queues the document's submission to the authority as the signed-in
   user: `{:ok, %{job_id: id}}`. Refused before queuing when the document's
   status is not `issued`, `refused`, or `invalid` (`:not_submittable`),
-  the company lacks credentials for the document's environment
+  another document that stands already links a source of this one
+  (`:source_taken`), the company lacks credentials for the document's environment
   (`:missing_credentials`), or the chosen format version needs a signature
   and the certificate and key are missing or mismatched
   (`:signing_key_required`), or a submit job for the document is already
@@ -558,6 +560,7 @@ defmodule Bilimbi.Finance.Einvoice do
              write_refusal()
              | :document_not_found
              | :not_submittable
+             | :source_taken
              | :missing_credentials
              | :signing_key_required
              | atom()}
@@ -978,10 +981,10 @@ defmodule Bilimbi.Finance.Einvoice do
   # module and record own it, it stands unreversed, and it recognises what
   # the document bills, in the document's currency; and no other standing
   # document links the source. A problem is a `source` error on the draft.
-  defp source_link(scope, company_id, changeset, draft, attributes) do
+  defp source_link(scope, company_id, changeset, draft, original, attributes) do
     case attribute(attributes, :source) do
       nil ->
-        {:ok, nil}
+        unlinked(changeset, original)
 
       source when is_map(source) ->
         module = attribute(source, :module)
@@ -1002,6 +1005,20 @@ defmodule Bilimbi.Finance.Einvoice do
          Changeset.add_error(changeset, :source, "names a module, a record, and a ledger entry")}
     end
   end
+
+  # A note whose original is linked corrects a transaction another module
+  # recognised: it names the record that module corrected it with, or its
+  # own correcting entry would be a second one.
+  defp unlinked(changeset, %{recognised_by_source?: true}) do
+    {:error,
+     Changeset.add_error(
+       changeset,
+       :source,
+       "is required: the original document is the tax document of a transaction another module recognised"
+     )}
+  end
+
+  defp unlinked(_changeset, _original), do: {:ok, nil}
 
   defp attribute(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 

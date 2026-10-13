@@ -150,4 +150,134 @@ defmodule Bilimbi.Finance.Reconciliation.PostingTest do
     assert {:error, :unauthorized} =
              Reconciliation.post_statement_line(without_module, 73, fee.id, %{kind: "charge"})
   end
+
+  describe "reversing the entry a line posted" do
+    test "unmatches the line and reverses the entry as its owner, in one step", context do
+      %{operator: operator, fee: fee, bank_account: bank_account} = context
+
+      {:ok, %{entry: entry, match: match}} =
+        Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+      assert {:error, :invalid_reason} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{reason: "  "})
+
+      assert {:error, :invalid_reason} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{})
+
+      assert {:ok, %{reversal: reversal, match: unmatched}} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{
+                 reason: "Charged in error",
+                 entry_date: ~D[2026-10-22]
+               })
+
+      assert reversal.entry_date == ~D[2026-10-22]
+      assert reversal.reverses_entry_id == entry.id
+
+      assert reversal.owner == %{
+               module: "finance/reconciliation",
+               record: "statement_line:#{fee.id}"
+             }
+
+      assert {:ok, %{reversed_by_entry_id: reversal_id}} =
+               Ledger.get_entry(operator, 73, entry.id)
+
+      assert reversal_id == reversal.id
+
+      assert unmatched.id == match.id and unmatched.status == "unmatched"
+
+      assert [%{action: "matched"}, %{action: "unmatched", reason: "Charged in error"} = event] =
+               unmatched.events
+
+      assert event.recorded_by_user_id == 91
+
+      assert {:ok, %{lines: [%{id: line_id}, _interest]}} =
+               Reconciliation.unmatched_items(operator, 73, bank_account.id)
+
+      assert line_id == fee.id
+
+      # The line's own entry stays the line's: it is not posted again, and
+      # nothing is left to reverse a second time.
+      assert {:error, :statement_line_posted} =
+               Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+      assert {:error, :statement_line_not_matched} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{reason: "Again"})
+    end
+
+    test "refuses a line whose match is not its own posting, recording nothing", context do
+      %{operator: operator, fee: fee, bank_account: bank_account} = context
+
+      assert {:error, :statement_line_not_matched} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{reason: "Unposted"})
+
+      assert {:error, :statement_line_not_found} =
+               Reconciliation.reverse_statement_line(operator, 73, 999, %{reason: "Missing"})
+
+      manual =
+        bank_entry!(context, ~D[2026-10-20], "-5.00")
+
+      {:ok, match} =
+        Reconciliation.match(operator, 73, bank_account.id, %{
+          statement_line_ids: [fee.id],
+          entry_ids: [manual.id]
+        })
+
+      assert {:error, :statement_line_not_posted} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{reason: "Manual"})
+
+      assert {:ok, %{status: "matched"}} = Reconciliation.get_match(operator, 73, match.id)
+      assert {:ok, %{reversed_by_entry_id: nil}} = Ledger.get_entry(operator, 73, manual.id)
+    end
+
+    test "rolls the unmatch back when the ledger refuses the reversal", context do
+      %{operator: operator, fee: fee} = context
+
+      {:ok, %{entry: entry, match: match}} =
+        Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+      {:ok, year} = Ledger.open_fiscal_year(operator, 73, %{start_date: ~D[2026-01-01]})
+
+      for period <- Enum.take(year.periods, 10) do
+        {:ok, _} = Ledger.close_period(operator, 73, period.id, %{})
+      end
+
+      assert {:error, changeset} =
+               Reconciliation.reverse_statement_line(operator, 73, fee.id, %{
+                 reason: "Charged in error",
+                 entry_date: ~D[2026-10-22]
+               })
+
+      assert %{entry_date: ["falls in a closed period"]} = errors_on(changeset)
+      assert {:ok, %{status: "matched"}} = Reconciliation.get_match(operator, 73, match.id)
+      assert {:ok, %{reversed_by_entry_id: nil}} = Ledger.get_entry(operator, 73, entry.id)
+    end
+
+    test "needs the reversing capability and the ledger's posting grant", context do
+      %{first_scope: first, operator: operator, fee: fee} = context
+
+      {:ok, _posted} =
+        Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
+
+      without_module =
+        TestFixtures.sign_in!(first, 73, 92, [
+          "finance.reconciliation.view",
+          "finance.reconciliation.statement-lines.post",
+          "finance.ledger.entries.post",
+          "finance.ledger.view"
+        ])
+
+      assert {:error, :unauthorized} =
+               Reconciliation.reverse_statement_line(without_module, 73, fee.id, %{reason: "No"})
+
+      without_ledger =
+        TestFixtures.sign_in!(first, 73, 93, [
+          "finance.reconciliation.view",
+          "finance.reconciliation.statement-lines.manage",
+          "finance.ledger.view"
+        ])
+
+      assert {:error, :unauthorized} =
+               Reconciliation.reverse_statement_line(without_ledger, 73, fee.id, %{reason: "No"})
+    end
+  end
 end

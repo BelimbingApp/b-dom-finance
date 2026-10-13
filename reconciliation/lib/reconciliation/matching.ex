@@ -107,6 +107,20 @@ defmodule Bilimbi.Finance.Reconciliation.Matching do
     scope |> standing_query(company_id, bank_account_id, through) |> Repo.all()
   end
 
+  @doc "The bank account's standing match holding the statement line, or `nil`."
+  def standing_for_line(scope, company_id, bank_account_id, line_id) do
+    ids = standing_query(scope, company_id, bank_account_id, nil)
+
+    Records.query(MatchLine, scope, company_id)
+    |> where([l], l.statement_line_id == ^line_id and l.match_id in subquery(ids))
+    |> select([l], l.match_id)
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      match_id -> fetch(scope, company_id, match_id)
+    end
+  end
+
   @doc "The standing matches at `through` with their lines, entries, and events."
   def standing_matches(scope, company_id, bank_account_id, through \\ nil) do
     ids = standing_query(scope, company_id, bank_account_id, through)

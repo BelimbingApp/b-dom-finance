@@ -44,6 +44,60 @@ defmodule Bilimbi.Finance.Reconciliation.Posting do
     end
   end
 
+  @doc """
+  Reverses the entry `line` posted: `line` must stand matched, alone, to
+  that entry. The match is unmatched with `reason` (an `unmatched` event, so
+  never once a finalised reconciliation counted it) and the entry reversed
+  as its owner, dated `entry_date` (default today). Returns
+  `{:ok, %{reversal, match}}`.
+  """
+  def reverse_statement_line(scope, company_id, bank_account, line, attributes) do
+    with {:ok, reason} <- reason(attributes),
+         {:ok, match} <- standing_match(scope, company_id, bank_account, line),
+         {:ok, entry} <- posted_entry(scope, company_id, line, match),
+         {:ok, unmatched} <- Matching.unmatch(scope, company_id, match, %{reason: reason}),
+         {:ok, reversal} <-
+           Ledger.reverse_owned_entry(scope, company_id, entry.id, owner(line), %{
+             entry_date: Records.fetch(attributes, :entry_date) || Date.utc_today(),
+             description: String.slice("Reversal of " <> entry.description, 0, 500),
+             reference: entry.reference
+           }) do
+      {:ok, %{reversal: reversal, match: unmatched}}
+    end
+  end
+
+  defp standing_match(scope, company_id, bank_account, line) do
+    case Matching.standing_for_line(scope, company_id, bank_account.id, line.id) do
+      nil -> {:error, :statement_line_not_matched}
+      match -> {:ok, match}
+    end
+  end
+
+  defp reason(attributes) do
+    case Records.fetch(attributes, :reason) do
+      text when is_binary(text) ->
+        trimmed = String.trim(text)
+        if trimmed != "" and String.length(trimmed) <= 500, do: {:ok, trimmed}, else: invalid()
+
+      _none ->
+        invalid()
+    end
+  end
+
+  defp invalid, do: {:error, :invalid_reason}
+
+  defp posted_entry(scope, company_id, line, %{lines: [_line], entries: [%{entry_id: entry_id}]}) do
+    owner = owner(line)
+
+    case Ledger.get_entry(scope, company_id, entry_id) do
+      {:ok, %{owner: ^owner} = entry} -> {:ok, entry}
+      {:ok, _other} -> {:error, :statement_line_not_posted}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp posted_entry(_scope, _company_id, _line, _match), do: {:error, :statement_line_not_posted}
+
   @module_id "finance/reconciliation"
 
   @doc "This module's descriptor ID, the `owner_module` of every entry it posts."

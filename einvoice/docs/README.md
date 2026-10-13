@@ -278,7 +278,14 @@ the sale is recognised once, by its source, whatever the authority decides.
 Tax-clearance state and financial recognition stay apart: cancelling the
 fiscal document changes nothing in the books, and the owner's correction (a
 receivables credit note, a payment reversal) posts in that module, whose
-correcting record the credit or refund note issued for it links to in turn.
+correcting record the credit or refund note issued for it links to in turn:
+a note whose original is linked and that names no `source` is refused with
+a `source` changeset error, so the owner's correction is the only one.
+A document is not submitted while another standing document links one of
+its sources: `submit_document/3` refuses it (`{:error, :source_taken}`), and
+a job that finds the source taken since records an `unsendable` event with
+the reason and stops (`{:cancel, :source_taken}`); it is submitted once the
+other document no longer stands.
 A consolidated document whose sources are all linked carries their links
 and never posts either; sources with links and without do not consolidate
 together (`{:error, :mixed_source_links}`). A document issued without a
