@@ -200,8 +200,10 @@ defmodule Bilimbi.Finance.Reconciliation do
   `Bilimbi.Finance.Attachments` (`Bilimbi.Finance.Reconciliation.StatementSource`),
   retained as the company's retention says from the statement's end date,
   so the lines reproduce from it; the import needs
-  `finance.attachments.create` for that, and `finance.ledger.view` for the
-  book's currency precision. The file is stored only once the statement
+  `finance.reconciliation.statements.import`, `finance.reconciliation.view`
+  (the statement is read back when the file is linked to it),
+  `finance.attachments.create` for the file, and `finance.ledger.view` for the
+  book's currency precision, all checked before anything is stored. The file is stored only once the statement
   passes every check below, before the transaction that records both, and
   a storage refusal (`{:error, :retention_not_configured}` until an operator
   sets Base Artifacts' storage root) imports nothing.
@@ -229,6 +231,7 @@ defmodule Bilimbi.Finance.Reconciliation do
   def import_statement(%Scope{} = scope, company_id, bank_account_id, attributes)
       when is_map(attributes) do
     with :ok <- authorize(scope, company_id, @import_statements),
+         :ok <- authorize(scope, company_id, StatementSource.view_capability()),
          {:ok, account} <- active_bank_account(scope, company_id, bank_account_id),
          {:ok, book} <- Ledger.get_book(scope, company_id),
          {:ok, prepared} <- Import.prepare(scope, company_id, account, book, attributes),

@@ -325,15 +325,14 @@ defmodule Bilimbi.Finance.Receivables do
   account (`receivable_account_id`), the entry's ID and number, and who
   issued it; the database stamps when.
 
-  Call it outside a transaction, as `Bilimbi.Finance.Reconciliation.import_statement/4`
-  is (`{:error, :inside_transaction}` otherwise, before anything is issued):
-  once the issue commits, the document's source documents are queued for the
-  retention its issue date says
+  Right after the document is issued, inside the same transaction, its
+  source documents are queued for the retention its issue date says
   (`Bilimbi.Finance.Attachments.refresh_retention/4`, a Base Queue job that
-  asks the issuer no attachments grant). The issued document answers
-  `retention_refresh`: `:queued`, `:none` when no source document needs it, or
-  `{:error, reason}` (also logged); calling `refresh_retention/4` again redoes
-  a failed one.
+  asks the issuer no attachments grant), so the job commits with the issue
+  and is never lost. The issued document answers `retention_refresh`:
+  `:queued`, `:none` when no source document needs it, or `{:error, reason}`
+  (also logged, and the issue stands); calling `refresh_retention/4` again
+  redoes a failed one.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -342,20 +341,14 @@ defmodule Bilimbi.Finance.Receivables do
              | context_refusal()
              | :document_not_found
              | :not_a_draft
-             | :inside_transaction
              | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, document_id) do
-    if Repo.in_transaction?() do
-      {:error, :inside_transaction}
-    else
-      with {:ok, document} <-
-             write(scope, company_id, @issue_documents, fn ->
-               Documents.issue(scope, company_id, document_id)
-             end) do
+    write(scope, company_id, @issue_documents, fn ->
+      with {:ok, document} <- Documents.issue(scope, company_id, document_id) do
         {:ok,
          Map.put(document, :retention_refresh, refresh_attachments(scope, company_id, document))}
       end
-    end
+    end)
   end
 
   defp refresh_attachments(scope, company_id, document) do

@@ -359,7 +359,13 @@ defmodule Bilimbi.Finance.Attachments do
   def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
       when is_list(options) do
     with :ok <- authorize(scope, company_id, @view) do
-      Evidence.page(scope, company_id, dataset, options, readable_source_modules(scope, company_id))
+      Evidence.page(
+        scope,
+        company_id,
+        dataset,
+        options,
+        readable_source_modules(scope, company_id)
+      )
     end
   end
 
@@ -417,7 +423,9 @@ defmodule Bilimbi.Finance.Attachments do
   system principal `finance.attachments.retention_refresh` with the computed
   retain-until as an argument, so the person who finalised the record need
   hold no attachments grant. A module calls it once the record is final,
-  after its own transaction commits; repeating it is safe.
+  inside the transaction that finalises it (the job is an insert, so it
+  commits with the record and is never lost) or after it; repeating it is
+  safe.
   """
   @spec refresh_retention(Scope.t(), term(), module(), term()) ::
           {:ok, :queued | :none} | {:error, write_refusal() | term()}
@@ -458,8 +466,7 @@ defmodule Bilimbi.Finance.Attachments do
     } = arguments
 
     with true <- Scope.tenant_id(scope) == tenant_id || {:error, :tenant_mismatch},
-         source when not is_nil(source) <-
-           Source.from_name(source) || {:error, :source_unavailable},
+         {:ok, source} <- mounted_source(source),
          true <- Company.live_company?(scope, company_id) || {:error, :company_not_found} do
       reason = "#{source.source_id()}: retention follows the record's final date"
 
@@ -482,6 +489,13 @@ defmodule Bilimbi.Finance.Attachments do
           {:error, _reason} = error -> {:halt, error}
         end
       end)
+    end
+  end
+
+  defp mounted_source(name) do
+    case Source.from_name(name) do
+      nil -> {:error, :source_unavailable}
+      source -> {:ok, source}
     end
   end
 

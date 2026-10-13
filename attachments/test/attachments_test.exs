@@ -473,9 +473,10 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert_agrees(operator, attachment.id)
     end
 
-    test "refresh_retention queues the extension to the record's final date, never a shortening", %{
-      operator: operator
-    } do
+    test "refresh_retention queues the extension to the record's final date, never a shortening",
+         %{
+           operator: operator
+         } do
       {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
       assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
 
@@ -567,6 +568,31 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       end
     end
 
+    test "a refresh job whose source is no longer mounted is cancelled, not crashed", %{
+      first_scope: scope
+    } do
+      {:ok, token} = Authentication.delegate_system(scope, ArtifactOwner.refresh_principal(), 73)
+      {:ok, system} = Authentication.resume_system(token)
+
+      args = %{
+        "tenant_id" => 41,
+        "company_id" => 73,
+        "source" => "Elixir.Gone.Source",
+        "document_id" => 1,
+        "retain_until" => "2034-12-31T23:59:59.999999Z"
+      }
+
+      execution = %Bilimbi.Base.Queue.Execution{
+        job_id: 1,
+        attempt: 1,
+        max_attempts: 10,
+        queue: "default",
+        scope: system
+      }
+
+      assert {:cancel, :source_unavailable} = RetentionRefreshWorker.handle_job(args, execution)
+    end
+
     test "a read records a missed change as whoever Base Artifacts recorded, once", %{
       operator: operator,
       first_scope: scope
@@ -587,7 +613,8 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
           reason: "B's reason"
         )
 
-      reader = TestFixtures.sign_in!(scope, 73, 95, ~w(finance.ledger.view finance.attachments.view))
+      reader =
+        TestFixtures.sign_in!(scope, 73, 95, ~w(finance.ledger.view finance.attachments.view))
 
       for _read <- 1..2 do
         assert {:ok, %{retain_until: ~U[2041-01-01 23:59:59.999999Z], events: events}} =

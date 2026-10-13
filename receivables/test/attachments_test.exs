@@ -97,6 +97,34 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              )
   end
 
+  test "the refresh is queued with the issue, inside a caller's transaction too", context do
+    {:ok, draft, attachment} = draft_with_contract!(context)
+
+    {:ok, _draft} =
+      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    assert {:error, :abort} =
+             Bilimbi.Base.Repo.transact(fn ->
+               assert {:ok, %{retention_refresh: :queued}} =
+                        Receivables.issue_document(context.operator, 73, draft.id)
+
+               {:error, :abort}
+             end)
+
+    assert {:ok, %{status: "draft"}} = Receivables.get_document(context.operator, 73, draft.id)
+    assert {:error, _no_job} = refresh_job()
+
+    assert {:ok, {:ok, %{retention_refresh: :queued}}} =
+             Bilimbi.Base.Repo.transact(fn ->
+               {:ok, Receivables.issue_document(context.operator, 73, draft.id)}
+             end)
+
+    assert :ok = perform_refresh_job!()
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+  end
+
   test "a refresh job Base Artifacts refuses fails for the queue to retry, and what it extended stays",
        context do
     {:ok, draft, attachment} = draft_with_contract!(context)
@@ -242,19 +270,25 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
     )
   end
 
-  defp perform_refresh_job! do
+  defp refresh_job do
     import Ecto.Query
     worker = Bilimbi.Finance.Attachments.RetentionRefreshWorker
 
-    job =
-      Bilimbi.Base.Repo.one!(
-        from(j in Oban.Job,
-          where: j.worker == ^"#{inspect(worker)}.ObanAdapter",
-          order_by: [desc: j.id],
-          limit: 1
-        )
+    Bilimbi.Base.Repo.one(
+      from(j in Oban.Job,
+        where: j.worker == ^"#{inspect(worker)}.ObanAdapter",
+        order_by: [desc: j.id],
+        limit: 1
       )
+    )
+    |> case do
+      nil -> {:error, :no_job}
+      job -> {:ok, job}
+    end
+  end
 
-    Bilimbi.Base.Queue.Worker.perform(worker, job)
+  defp perform_refresh_job! do
+    {:ok, job} = refresh_job()
+    Bilimbi.Base.Queue.Worker.perform(Bilimbi.Finance.Attachments.RetentionRefreshWorker, job)
   end
 end

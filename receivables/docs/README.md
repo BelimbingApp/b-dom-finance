@@ -128,13 +128,12 @@ the end of the financial year the document's date falls in; a draft's
 attachments can be replaced or removed, an issued document's are kept as
 they are. A draft's date may change after its attachments were kept, so
 issuing a document extends each attachment's retain-until to the issue
-date's financial year (`Attachments.refresh_retention/4`, after the issue
-commits; it queues a Base Queue job that asks the issuer no attachments grant).
-`issue_document/3` is called outside a transaction (`{:error,
-:inside_transaction}` otherwise, before anything is issued) and answers the
-issued document with `retention_refresh`: `:queued`, `:none` when no source
-document needs it, or `{:error, reason}`, which is also logged; calling
-`refresh_retention/4` again redoes a failed one.
+date's financial year (`Attachments.refresh_retention/4`, called inside the
+transaction that issues, so its Base Queue job commits with the issue and asks
+the issuer no attachments grant). `issue_document/3` answers the issued
+document with `retention_refresh`: `:queued`, `:none` when no source document
+needs it, or `{:error, reason}`, which is also logged and does not undo the
+issue; calling `refresh_retention/4` again redoes a failed one.
 This module has no pages, so attachments are made through the
 facade and read on the source documents page, `/finance/attachments`.
 

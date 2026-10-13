@@ -61,7 +61,8 @@ captured it when, and never changed afterwards.
   lock on the attachment's row so it is recorded once. A record whose date can
   change while it is not final (a draft invoice) may be re-dated after its
   attachments were kept; its module calls `refresh_retention/4` once the
-  record is final, after its own transaction commits. That checks, with the
+  record is final, inside the transaction that finalises it (the job is an
+  insert, so it commits with the record) or after it. That checks, with the
   caller's own scope, that the record is readable and final and computes the
   retain-until its date gives (`finance.ledger.view` for the fiscal years),
   then queues `RetentionRefreshWorker` with Base Queue's

@@ -100,6 +100,32 @@ defmodule Bilimbi.Finance.Reconciliation.AttachmentsTest do
     assert {:error, :unauthorized} = Attachments.read_attachment(reader, 73, attachment.id)
   end
 
+  test "an import without the reconciliation view grant stores no artifact", context do
+    importer =
+      TestFixtures.sign_in!(
+        context.first_scope,
+        73,
+        98,
+        ~w(finance.ledger.view finance.reconciliation.statements.import finance.attachments.create)
+      )
+
+    assert {:error, :unauthorized} =
+             Reconciliation.import_statement(importer, 73, context.bank_account.id, %{
+               file_name: "october.csv",
+               content: TestFixtures.csv(@rows)
+             })
+
+    assert %{rows: [[0]]} =
+             Ecto.Adapters.SQL.query!(
+               Bilimbi.Base.Repo,
+               "SELECT count(*) FROM base_artifacts",
+               []
+             )
+
+    assert {:ok, []} =
+             Reconciliation.list_statements(context.operator, 73, context.bank_account.id)
+  end
+
   test "an import needs the attachments create capability and Base Artifacts storage", context do
     importer =
       TestFixtures.sign_in!(

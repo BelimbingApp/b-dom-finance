@@ -22,8 +22,8 @@ defmodule Bilimbi.Finance.Attachments.Source do
     retention counts from. A record whose date can change while it is not
     final (a draft invoice) makes its module call
     `Bilimbi.Finance.Attachments.refresh_retention/4` once the record is
-    final and its transaction has committed, so the retention follows the
-    final date: that confirms the record through `document/3` with the
+    final, inside the transaction that finalises it or after, so the
+    retention follows the final date: that confirms the record through `document/3` with the
     caller's own scope, then queues a Base Queue job
     (`Bilimbi.Finance.Attachments.RetentionRefreshWorker`) that extends the
     retention as a system principal, so the caller needs no attachments grant;
