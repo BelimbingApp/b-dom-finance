@@ -4,11 +4,11 @@ defmodule Bilimbi.Finance.Payables.OwnershipTest do
   @module "finance/payables"
 
   setup context do
-    %{accounts: accounts, operator: operator} = context
+    %{accounts: accounts} = context
     bill = post_bill!(context, bill("P-1", "INV-1", [line(accounts.expense, "100")]))
 
     {:ok, payment} =
-      Payables.post_payment(operator, 73, %{
+      pay(context, %{
         payment_date: ~D[2026-10-05],
         party_key: "P-1",
         paid_from_account_id: accounts.bank.id,

@@ -134,7 +134,8 @@ defmodule Bilimbi.Finance.Ledger.TestFixtures do
 
   def create_ledger_tables! do
     Enum.each(
-      ledger_statements() ++ closing_statements() ++ owner_statements() ++ duty_separation_statements(),
+      ledger_statements() ++
+        closing_statements() ++ owner_statements() ++ duty_separation_statements(),
       &SQL.query!(Repo, &1, [])
     )
   end

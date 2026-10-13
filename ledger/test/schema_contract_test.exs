@@ -345,7 +345,6 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
         "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
       ])
 
-
     journal = fn id ->
       "INSERT INTO finance_ledger_journals (id, tenant_id, company_id, journal_number, entry_date, description, currency_code, submitted_by_user_id, submitted_at) VALUES (#{id}, 1, 1, 99, '2026-10-01', 'Accrual', 'XTS', 1, '2000-01-01')"
     end
@@ -433,7 +432,6 @@ defmodule Bilimbi.Finance.Ledger.SchemaContractTest do
         "INSERT INTO finance_ledger_books (tenant_id, company_id, currency_code, minor_units, inserted_at) VALUES (1, 1, 'XTS', 2, now())",
         "INSERT INTO finance_ledger_accounts (id, tenant_id, company_id, code, name, account_type, inserted_at, updated_at) VALUES (1, 1, 1, '1', 'Debit', 'asset', now(), now()), (2, 1, 1, '2', 'Credit', 'income', now(), now())"
       ])
-
 
     {:ok, _} = in_transaction.(entry.(1, nil))
     {:ok, _} = in_transaction.(entry.(2, 1))
