@@ -1,0 +1,954 @@
+defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
+  use Bilimbi.Finance.Attachments.AttachmentsCase
+
+  alias Bilimbi.Base.Artifacts
+  alias Bilimbi.Base.Repo
+  alias Bilimbi.Base.Tenancy.Authentication
+  alias Bilimbi.Finance.Attachments.ArtifactOwner
+  alias Bilimbi.Finance.Attachments.RetentionRefreshWorker
+  alias Ecto.Adapters.SQL
+
+  @sha256_of_scan :crypto.hash(:sha256, "made-up scan") |> Base.encode16(case: :lower)
+
+  setup do
+    StubSource.put_document!(1)
+    StubSource.put_document!(2, %{label: "Record 2", date: ~D[2027-03-15]})
+    :ok
+  end
+
+  describe "attach/5" do
+    test "keeps the file as a retained artifact linked to the record, with who and when",
+         %{operator: operator} do
+      assert {:ok, attachment} =
+               Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert attachment.attachment_number == 1
+      assert attachment.source == "finance/test/record"
+      assert attachment.source_label == "Test record"
+      assert attachment.document_id == 1
+      assert attachment.document_label == "Record 1"
+      assert attachment.document_date == ~D[2026-10-01]
+      assert attachment.file_name == "scan.txt"
+      assert attachment.content_type == "text/plain"
+      assert attachment.byte_size == byte_size("made-up scan")
+      assert attachment.sha256 == @sha256_of_scan
+      assert attachment.retention_years == 7
+      # Seven years after the end of the calendar year the record falls in.
+      assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+      assert attachment.captured_by_user_id == 91
+      assert attachment.captured_by_impersonator_id == nil
+      assert %DateTime{} = attachment.captured_at
+      assert attachment.status == "standing"
+      assert attachment.events == []
+
+      assert {:ok, %{metadata: metadata, bytes: "made-up scan"}} =
+               Artifacts.read(operator, 73, ArtifactOwner, attachment.artifact_id)
+
+      assert metadata.retain_until == attachment.retain_until
+      assert metadata.expires_at == nil
+      assert metadata.subject == "finance/test/record"
+      assert metadata.kind == "source-document"
+    end
+
+    test "counts the retention from the end of the ledger's fiscal year covering the record",
+         %{operator: operator} do
+      {:ok, _year} =
+        Ledger.open_fiscal_year(operator, 73, %{
+          start_date: ~D[2026-07-01],
+          end_date: ~D[2027-06-30]
+        })
+
+      assert {:ok, attachment} =
+               Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file())
+
+      assert attachment.document_date == ~D[2027-03-15]
+      assert attachment.retain_until == ~U[2034-06-30 23:59:59.999999Z]
+
+      assert {:ok, ~U[2034-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2027-03-15])
+
+      # A date after the last opened year takes the company's own year end.
+      assert {:ok, ~U[2035-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2027-08-15])
+
+      assert {:ok, ~U[2036-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2029-01-10])
+
+      # A date before the first opened year projects backward from it.
+      assert {:ok, ~U[2032-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2025-02-01])
+
+      assert {:ok, ~U[2033-06-30 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2026-06-30])
+    end
+
+    test "a company without a fiscal year counts from the calendar year's end",
+         %{operator: operator} do
+      assert {:ok, ~U[2032-12-31 23:59:59.999999Z]} =
+               Attachments.retain_until(operator, 73, ~D[2025-02-01])
+    end
+
+    test "applies the company's lengthened retention to documents captured afterwards",
+         %{operator: operator} do
+      {:ok, first} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:ok, %{years: 10, change: %{reason: "a dispute is open"}}} =
+               Attachments.set_retention(operator, 73, %{years: 10, reason: "a dispute is open"})
+
+      {:ok, second} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("b.txt"))
+      assert first.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+      assert second.retain_until == ~U[2036-12-31 23:59:59.999999Z]
+      assert second.retention_years == 10
+    end
+
+    test "a final record still takes attachments", %{operator: operator} do
+      StubSource.finalise!(1)
+
+      assert {:ok, %{status: "standing"}} =
+               Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+    end
+
+    test "refuses what the source refuses, an undated record, and a bad file",
+         %{operator: operator} do
+      assert {:error, :not_found} =
+               Attachments.attach(operator, 73, StubSource, 99, TestFixtures.file())
+
+      assert {:error, :not_found} =
+               Attachments.attach(operator, 73, StubSource, "x", TestFixtures.file())
+
+      StubSource.put_document!(3, %{date: nil})
+
+      assert {:error, :document_undated} =
+               Attachments.attach(operator, 73, StubSource, 3, TestFixtures.file())
+
+      assert {:error, :invalid_source} =
+               Attachments.attach(operator, 73, String, 1, TestFixtures.file())
+
+      assert {:error, :invalid_file_name} =
+               Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("  "))
+
+      assert {:error, :empty_file} =
+               Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt", ""))
+
+      assert {:error, :invalid_content_type} =
+               Attachments.attach(
+                 operator,
+                 73,
+                 StubSource,
+                 1,
+                 TestFixtures.file("a.txt", "x", "not a type")
+               )
+
+      assert {:error, :file_too_large} =
+               Attachments.attach(operator, 73, StubSource, 1, %{
+                 file_name: "big.bin",
+                 content: :binary.copy(<<0>>, Attachments.max_file_bytes() + 1)
+               })
+
+      assert {:ok, []} = Attachments.list_attachments(operator, 73, StubSource, 1)
+    end
+
+    test "stores nothing when Base Artifacts has no storage", %{operator: operator} do
+      :ok = Bilimbi.Base.Settings.delete("artifacts.storage_root")
+
+      assert {:error, _storage} =
+               Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:ok, []} = Attachments.list_attachments(operator, 73, StubSource, 1)
+    end
+
+    test "needs the create capability in the company", %{
+      first_scope: scope,
+      viewer: viewer,
+      operator: operator
+    } do
+      assert {:error, :unauthorized} =
+               Attachments.attach(viewer, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :unauthorized} =
+               Attachments.attach(operator, 74, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :company_not_found} =
+               Attachments.attach(operator, 75, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :unauthorized} =
+               Attachments.attach(scope, 73, StubSource, 1, TestFixtures.file())
+    end
+
+    test "a missing default content type is the octet stream", %{operator: operator} do
+      assert {:ok, %{content_type: "application/octet-stream"}} =
+               Attachments.attach(operator, 73, StubSource, 1, %{file_name: "x.bin", content: "x"})
+    end
+  end
+
+  test "a blank content type is the octet stream", %{operator: operator} do
+    assert {:ok, %{content_type: "application/octet-stream"}} =
+             Attachments.attach(operator, 73, StubSource, 1, %{
+               file_name: "x.bin",
+               content: "x",
+               content_type: ""
+             })
+  end
+
+  describe "capture_file/5 and attach_capture/5" do
+    test "store before a transaction and link inside it", %{operator: operator} do
+      assert {:ok, capture} =
+               Attachments.capture_file(
+                 operator,
+                 73,
+                 StubSource,
+                 TestFixtures.file(),
+                 ~D[2026-10-01]
+               )
+
+      assert capture.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+
+      assert {:ok, attachment} =
+               Repo.transact(fn ->
+                 StubSource.put_document!(7)
+                 Attachments.attach_capture(operator, 73, StubSource, 7, capture)
+               end)
+
+      assert attachment.document_id == 7
+      assert attachment.artifact_id == capture.artifact_id
+      assert {:ok, [%{id: id}]} = Attachments.list_attachments(operator, 73, StubSource, 7)
+      assert id == attachment.id
+    end
+
+    test "refuses a capture whose source or date is not the record's", %{operator: operator} do
+      {:ok, capture} =
+        Attachments.capture_file(operator, 73, StubSource, TestFixtures.file(), ~D[2026-10-01])
+
+      assert {:error, :capture_mismatch} =
+               Attachments.attach_capture(operator, 73, StubSource, 2, capture)
+
+      {:ok, capture} =
+        Attachments.capture_file(operator, 73, StubSource, TestFixtures.file(), ~D[2027-03-15])
+
+      assert {:error, :invalid_source} =
+               Attachments.attach_capture(operator, 73, String, 2, capture)
+
+      assert {:ok, _attachment} = Attachments.attach_capture(operator, 73, StubSource, 2, capture)
+      # One artifact, one attachment.
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Attachments.attach_capture(operator, 73, StubSource, 2, capture)
+
+      assert %{artifact_id: ["has already been taken"]} = errors_on(changeset)
+    end
+  end
+
+  describe "replace/4 and remove/4" do
+    test "replace captures the new file and ends the old one, which stays readable",
+         %{operator: operator} do
+      {:ok, old} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:ok, new} =
+               Attachments.replace(
+                 operator,
+                 73,
+                 old.id,
+                 TestFixtures.file("better.txt", "better")
+               )
+
+      assert new.attachment_number == 2
+      assert new.document_id == 1
+
+      assert {:ok, %{status: "replaced", events: [event]}} =
+               Attachments.get_attachment(operator, 73, old.id)
+
+      assert event.event == "replaced"
+      assert event.replacement_id == new.id
+      assert event.actor_user_id == 91
+      assert %DateTime{} = event.occurred_at
+
+      assert {:ok, [standing]} = Attachments.list_attachments(operator, 73, StubSource, 1)
+      assert standing.id == new.id
+      assert {:ok, %{bytes: "made-up scan"}} = Attachments.read_attachment(operator, 73, old.id)
+
+      assert {:error, :attachment_not_standing} =
+               Attachments.replace(operator, 73, old.id, TestFixtures.file())
+    end
+
+    test "remove ends a draft record's attachment with its reason", %{operator: operator} do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Attachments.remove(operator, 73, attachment.id, %{})
+
+      assert %{reason: ["is required"]} = errors_on(changeset)
+
+      assert {:ok, %{status: "removed", events: [%{event: "removed", reason: "wrong file"}]}} =
+               Attachments.remove(operator, 73, attachment.id, %{reason: "wrong file"})
+
+      assert {:ok, []} = Attachments.list_attachments(operator, 73, StubSource, 1)
+
+      assert {:ok, [%{status: "removed"}]} =
+               Attachments.list_company_attachments(operator, 73, status: "removed")
+
+      assert {:error, :attachment_not_standing} =
+               Attachments.remove(operator, 73, attachment.id, %{reason: "again"})
+
+      # The bytes are retained: Base refuses to delete them.
+      assert {:error, :retained} =
+               Artifacts.delete(operator, 73, ArtifactOwner, attachment.artifact_id)
+    end
+
+    test "a final record's attachments are kept as they are", %{operator: operator} do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      StubSource.finalise!(1)
+
+      assert {:error, :document_final} =
+               Attachments.replace(operator, 73, attachment.id, TestFixtures.file())
+
+      assert {:error, :document_final} =
+               Attachments.remove(operator, 73, attachment.id, %{reason: "no"})
+
+      assert {:ok, [%{status: "standing"}]} =
+               Attachments.list_attachments(operator, 73, StubSource, 1)
+    end
+
+    test "each asks its own capability", %{operator: operator, viewer: viewer, first_scope: scope} do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :unauthorized} =
+               Attachments.replace(viewer, 73, attachment.id, TestFixtures.file())
+
+      assert {:error, :unauthorized} =
+               Attachments.remove(viewer, 73, attachment.id, %{reason: "no"})
+
+      remover =
+        TestFixtures.sign_in!(
+          scope,
+          73,
+          93,
+          ~w(finance.attachments.view finance.attachments.delete)
+        )
+
+      assert {:error, :unauthorized} =
+               Attachments.replace(remover, 73, attachment.id, TestFixtures.file())
+
+      assert {:ok, %{status: "removed"}} =
+               Attachments.remove(remover, 73, attachment.id, %{reason: "duplicate"})
+    end
+  end
+
+  describe "retention of one attachment" do
+    test "extend_retention moves the retain-until later and records it", %{
+      operator: operator,
+      viewer: viewer
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :retention_not_extended} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2033-12-31],
+                 reason: "same"
+               })
+
+      assert {:error, :reason_required} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01]
+               })
+
+      assert {:ok, %{events: [event]}} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "a tax query"
+               })
+
+      assert event.event == "retention_extended"
+      assert event.retain_until == ~U[2040-01-01 23:59:59.999999Z]
+      assert event.reason == "a tax query"
+
+      assert {:ok, %{retain_until: ~U[2040-01-01 23:59:59.999999Z]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:ok, [%{retain_until: ~U[2040-01-01 23:59:59.999999Z]}]} =
+               Attachments.list_attachments(operator, 73, StubSource, 1)
+
+      assert {:ok, %{metadata: %{retain_until: ~U[2040-01-01 23:59:59.999999Z]}}} =
+               Artifacts.read(operator, 73, ArtifactOwner, attachment.artifact_id)
+
+      assert_agrees(operator, attachment.id)
+
+      assert {:error, :unauthorized} =
+               Attachments.extend_retention(viewer, 73, attachment.id, %{
+                 retain_until: ~D[2041-01-01],
+                 reason: "no"
+               })
+    end
+
+    test "a read appends the retention Base Artifacts holds and the events lack", %{
+      operator: operator
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      reason = [reason: "out of band"]
+      until = ~U[2041-01-01 23:59:59.999999Z]
+
+      {:ok, _} =
+        Artifacts.retain(operator, 73, ArtifactOwner, attachment.artifact_id, until, reason)
+
+      {:ok, _} = Artifacts.place_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
+
+      assert {:ok, %{retain_until: ^until, on_hold: true, events: events}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert [
+               %{event: "retention_extended", retain_until: ^until, reason: "out of band"},
+               %{event: "hold_placed", reason: "out of band", actor_user_id: 91}
+             ] = events
+
+      assert_agrees(operator, attachment.id)
+
+      {:ok, _} =
+        Artifacts.release_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
+
+      assert {:ok, %{bytes: "made-up scan"}} =
+               Attachments.read_attachment(operator, 73, attachment.id)
+
+      assert {:ok, %{on_hold: false, events: [_, _, %{event: "hold_released"}]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert_agrees(operator, attachment.id)
+    end
+
+    test "a change is checked against what Base Artifacts holds, not the stale events", %{
+      operator: operator
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      {:ok, _} =
+        Artifacts.retain(
+          operator,
+          73,
+          ArtifactOwner,
+          attachment.artifact_id,
+          ~U[2045-01-01 23:59:59.999999Z],
+          reason: "out of band"
+        )
+
+      assert {:error, :retention_not_extended} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "shorter than storage"
+               })
+
+      assert_agrees(operator, attachment.id)
+    end
+
+    test "Base Artifacts holds and retains only for the owner's capabilities", %{
+      operator: operator,
+      viewer: viewer
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      id = attachment.artifact_id
+      {:ok, _} = Artifacts.place_hold(operator, 73, ArtifactOwner, id, reason: "case")
+
+      assert {:error, :forbidden} =
+               Artifacts.release_hold(viewer, 73, ArtifactOwner, id, reason: "no")
+
+      assert {:error, :forbidden} =
+               Artifacts.place_hold(viewer, 73, ArtifactOwner, id, reason: "no")
+
+      assert {:error, :forbidden} =
+               Artifacts.retain(viewer, 73, ArtifactOwner, id, ~U[2060-01-01 00:00:00.000000Z],
+                 reason: "no"
+               )
+
+      assert {:ok, %{on_hold: true}} = Attachments.get_attachment(operator, 73, attachment.id)
+    end
+
+    test "each retention change leaves the view and Base Artifacts in agreement", %{
+      operator: operator
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      assert_agrees(operator, attachment.id)
+
+      assert {:ok, %{retain_until: ~U[2041-01-01 23:59:59.999999Z]}} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2041-01-01],
+                 reason: "tax query"
+               })
+
+      assert_agrees(operator, attachment.id)
+
+      assert {:error, :retention_not_extended} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2038-01-01],
+                 reason: "shorter"
+               })
+
+      assert {:ok, %{on_hold: true}} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "case"})
+
+      assert_agrees(operator, attachment.id)
+
+      assert {:ok, %{on_hold: false}} =
+               Attachments.release_hold(operator, 73, attachment.id, %{reason: "closed"})
+
+      assert_agrees(operator, attachment.id)
+    end
+
+    test "refresh_retention queues the extension to the record's final date, never a shortening",
+         %{
+           operator: operator
+         } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+
+      assert {:error, :document_not_final} =
+               Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      StubSource.put_document!(1, %{final?: true})
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+      assert queued_jobs() == []
+
+      StubSource.put_document!(1, %{date: ~D[2027-02-01], final?: true})
+      assert {:ok, :queued} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      assert [%{args: args}] = queued_jobs()
+
+      assert args == %{
+               "tenant_id" => 41,
+               "company_id" => 73,
+               "source" => Atom.to_string(StubSource),
+               "document_id" => 1,
+               "retain_until" => "2034-12-31T23:59:59.999999Z"
+             }
+
+      assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert :ok = perform_queued!()
+
+      assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert %{event: "retention_extended", actor_user_id: 0} = event
+      assert event.actor_system_principal == ArtifactOwner.refresh_principal()
+      assert_agrees(operator, attachment.id)
+
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      StubSource.put_document!(1, %{date: ~D[2026-02-01], final?: true})
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+    end
+
+    test "the refresh job asks the issuer no attachments grant and runs as the principal", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      StubSource.put_document!(1, %{date: ~D[2027-02-01], final?: true})
+
+      issuer = TestFixtures.sign_in!(scope, 73, 98, ~w(finance.ledger.view))
+
+      assert {:error, :unauthorized} =
+               Attachments.extend_retention(issuer, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "no"
+               })
+
+      assert {:ok, :queued} = Attachments.refresh_retention(issuer, 73, StubSource, 1)
+      assert :ok = perform_queued!()
+      assert_agrees(operator, attachment.id)
+
+      {:ok, history} =
+        Artifacts.retention_history(operator, 73, ArtifactOwner, attachment.artifact_id)
+
+      assert %{event: "retention_extended", actor_type: "system", system_principal: principal} =
+               List.last(history)
+
+      assert principal == ArtifactOwner.refresh_principal()
+    end
+
+    test "the refresh job takes identifiers and one date, and nothing else" do
+      valid = %{
+        "tenant_id" => 41,
+        "company_id" => 73,
+        "source" => Atom.to_string(StubSource),
+        "document_id" => 1,
+        "retain_until" => "2034-12-31T23:59:59.999999Z"
+      }
+
+      assert {:ok, ^valid} = RetentionRefreshWorker.validate_args(valid)
+
+      for invalid <- [
+            Map.put(valid, "file_name", "x"),
+            Map.delete(valid, "document_id"),
+            Map.put(valid, "source", "Elixir.NoSuchSource"),
+            Map.put(valid, "retain_until", "tomorrow"),
+            Map.put(valid, "company_id", "73")
+          ] do
+        assert {:error, :invalid_refresh} = RetentionRefreshWorker.validate_args(invalid)
+      end
+    end
+
+    test "a refresh job whose source is no longer mounted is cancelled, not crashed", %{
+      first_scope: scope
+    } do
+      {:ok, token} = Authentication.delegate_system(scope, ArtifactOwner.refresh_principal(), 73)
+      {:ok, system} = Authentication.resume_system(token)
+
+      args = %{
+        "tenant_id" => 41,
+        "company_id" => 73,
+        "source" => "Elixir.Gone.Source",
+        "document_id" => 1,
+        "retain_until" => "2034-12-31T23:59:59.999999Z"
+      }
+
+      execution = %Bilimbi.Base.Queue.Execution{
+        job_id: 1,
+        attempt: 1,
+        max_attempts: 10,
+        queue: "default",
+        scope: system
+      }
+
+      assert {:cancel, :source_unavailable} = RetentionRefreshWorker.handle_job(args, execution)
+    end
+
+    test "a read records a missed change as whoever Base Artifacts recorded, once", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      id = attachment.artifact_id
+
+      assert {:ok, %{retain_until: ~U[2038-01-01 23:59:59.999999Z]}} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2038-01-01],
+                 reason: "A's reason"
+               })
+
+      writer = TestFixtures.sign_in!(scope, 73, 94, ~w(finance.attachments.retention.manage))
+
+      {:ok, _} =
+        Artifacts.retain(writer, 73, ArtifactOwner, id, ~U[2041-01-01 23:59:59.999999Z],
+          reason: "B's reason"
+        )
+
+      reader =
+        TestFixtures.sign_in!(scope, 73, 95, ~w(finance.ledger.view finance.attachments.view))
+
+      for _read <- 1..2 do
+        assert {:ok, %{retain_until: ~U[2041-01-01 23:59:59.999999Z], events: events}} =
+                 Attachments.get_attachment(reader, 73, attachment.id)
+
+        assert [
+                 %{reason: "A's reason", actor_user_id: 91},
+                 %{reason: "B's reason", actor_user_id: 94, actor_system_principal: nil}
+               ] = events
+      end
+
+      {:ok, token} =
+        Authentication.delegate_system(scope, ArtifactOwner.refresh_principal(), 73)
+
+      {:ok, system} = Authentication.resume_system(token)
+
+      {:ok, _} =
+        Artifacts.retain(system, 73, ArtifactOwner, id, ~U[2045-01-01 23:59:59.999999Z],
+          reason: "by the queue"
+        )
+
+      assert {:ok, %{retain_until: ~U[2045-01-01 23:59:59.999999Z], events: events}} =
+               Attachments.get_attachment(reader, 73, attachment.id)
+
+      assert %{
+               reason: "by the queue",
+               actor_user_id: 0,
+               actor_system_principal: "finance.attachments.retention_refresh"
+             } = List.last(events)
+
+      assert length(events) == 3
+      assert_agrees(operator, attachment.id)
+    end
+
+    test "a legal hold is placed and released with reasons", %{operator: operator} do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:error, :not_on_hold} =
+               Attachments.release_hold(operator, 73, attachment.id, %{reason: "x"})
+
+      assert {:ok, %{on_hold: false}} = Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:ok, %{on_hold: true, events: [%{event: "hold_placed", reason: "case 12"}]}} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "case 12"})
+
+      assert {:error, :already_on_hold} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "again"})
+
+      assert {:error, :legal_hold} =
+               Artifacts.delete(operator, 73, ArtifactOwner, attachment.artifact_id)
+
+      assert {:ok,
+              %{
+                on_hold: false,
+                events: [_placed, %{event: "hold_released", reason: "case closed"}]
+              }} =
+               Attachments.release_hold(operator, 73, attachment.id, %{reason: "case closed"})
+    end
+  end
+
+  describe "reading without access to the source" do
+    test "the attachments grant alone shows no attachment's metadata", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      blind = TestFixtures.sign_in!(scope, 73, 94, ~w(finance.attachments.view))
+
+      assert {:ok, []} = Attachments.list_attachments(blind, 73, StubSource, 1)
+      assert {:ok, []} = Attachments.list_company_attachments(blind, 73)
+      assert {:ok, []} = Attachments.list_company_attachments(blind, 73, status: "all")
+      assert {:error, :unauthorized} = Attachments.get_attachment(blind, 73, attachment.id)
+      assert {:error, :unauthorized} = Attachments.read_attachment(blind, 73, attachment.id)
+
+      assert {:ok, [%{id: id}]} = Attachments.list_company_attachments(operator, 73)
+      assert id == attachment.id
+    end
+
+    test "a retention manager who cannot read the source cannot change its attachment", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      manager =
+        TestFixtures.sign_in!(scope, 73, 95, ~w(finance.attachments.retention.manage))
+
+      assert {:error, :unauthorized} =
+               Attachments.place_hold(manager, 73, attachment.id, %{reason: "case"})
+
+      assert {:error, :unauthorized} =
+               Attachments.extend_retention(manager, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "tax query"
+               })
+    end
+  end
+
+  describe "evidence_page/4" do
+    test "exports the company's attachments, events and retention changes by ID", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, first} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))
+      {:ok, _} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("b.txt"))
+      {:ok, _} = Attachments.remove(operator, 73, first.id, %{reason: "duplicate"})
+
+      assert Attachments.evidence_datasets() ==
+               ~w(attachment attachment_event retention_change)
+
+      assert {:ok, %{fields: fields, rows: [%{file_name: "a.txt"} = row, %{file_name: "b.txt"}]}} =
+               Attachments.evidence_page(operator, 73, "attachment")
+
+      assert :sha256 in fields and :retain_until in fields
+      assert row.sha256 == first.sha256
+
+      assert {:ok, %{rows: [%{file_name: "b.txt"}], next: nil}} =
+               Attachments.evidence_page(operator, 73, "attachment", after: first.id)
+
+      assert {:ok, %{rows: [%{event: "removed", reason: "duplicate"}]}} =
+               Attachments.evidence_page(operator, 73, "attachment_event")
+
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(operator, 73, "retention_change")
+
+      assert {:error, :invalid_option} = Attachments.evidence_page(operator, 73, "nothing")
+      assert {:error, :unauthorized} = Attachments.evidence_page(operator, 74, "attachment")
+
+      none = TestFixtures.sign_in!(scope, 73, 99, ~w(finance.ledger.view))
+      assert {:error, :unauthorized} = Attachments.evidence_page(none, 73, "attachment")
+
+      blind = TestFixtures.sign_in!(scope, 73, 96, ~w(finance.attachments.view))
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "attachment")
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "attachment_event")
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "retention_change")
+    end
+  end
+
+  describe "list_sources/2" do
+    test "lists each kind of record with attachments once, whatever its standing", %{
+      operator: operator,
+      viewer: viewer,
+      first_scope: scope
+    } do
+      assert {:ok, []} = Attachments.list_sources(operator, 73)
+
+      {:ok, first} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))
+      {:ok, _} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("b.txt"))
+      {:ok, _} = Attachments.remove(operator, 73, first.id, %{reason: "duplicate"})
+
+      assert {:ok, [%{source: "finance/test/record", source_label: "Test record"}]} =
+               Attachments.list_sources(viewer, 73)
+
+      blind = TestFixtures.sign_in!(scope, 73, 96, ~w(finance.attachments.view))
+      assert {:ok, []} = Attachments.list_sources(blind, 73)
+
+      none = TestFixtures.sign_in!(scope, 73, 97, ~w(finance.ledger.view))
+      assert {:error, :unauthorized} = Attachments.list_sources(none, 73)
+      assert {:error, :unauthorized} = Attachments.list_sources(operator, 74)
+    end
+  end
+
+  describe "reading" do
+    test "lists by record and by company, newest page after a number", %{operator: operator} do
+      {:ok, a} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))
+      {:ok, b} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("b.txt"))
+      {:ok, c} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("c.txt"))
+
+      assert {:ok, [%{id: a_id}, %{id: c_id}]} =
+               Attachments.list_attachments(operator, 73, StubSource, 1)
+
+      assert {a_id, c_id} == {a.id, c.id}
+      assert {:ok, [%{id: b_id}]} = Attachments.list_attachments(operator, 73, StubSource, 2)
+      assert b_id == b.id
+      assert {:ok, [_, _, _]} = Attachments.list_company_attachments(operator, 73)
+
+      assert {:ok, [%{file_name: "c.txt"}]} =
+               Attachments.list_company_attachments(operator, 73, after: 2)
+
+      assert {:ok, [_, _]} = Attachments.list_company_attachments(operator, 73, limit: 2)
+
+      assert {:ok, [%{file_name: "b.txt"}]} =
+               Attachments.list_company_attachments(operator, 73, document_ids: [2])
+
+      assert {:ok, [%{file_name: "a.txt"}, %{file_name: "c.txt"}]} =
+               Attachments.list_company_attachments(operator, 73, document_ids: [1, 3])
+
+      assert {:ok, []} = Attachments.list_company_attachments(operator, 73, document_ids: [])
+
+      assert {:error, :invalid_option} =
+               Attachments.list_company_attachments(operator, 73, document_ids: ["x"])
+
+      assert {:ok, [_, _, _]} =
+               Attachments.list_company_attachments(operator, 73, source: "finance/test/record")
+
+      assert {:ok, []} =
+               Attachments.list_company_attachments(operator, 73, source: "finance/other")
+
+      assert {:error, :invalid_option} =
+               Attachments.list_company_attachments(operator, 73, limit: 0)
+
+      assert {:error, :invalid_option} =
+               Attachments.list_company_attachments(operator, 73, status: "lost")
+
+      assert {:error, :unauthorized} = Attachments.list_company_attachments(operator, 74)
+    end
+
+    test "read_attachment re-reads the record and the bytes", %{
+      operator: operator,
+      viewer: viewer
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert {:ok,
+              %{
+                bytes: "made-up scan",
+                file_name: "scan.txt",
+                content_type: "text/plain",
+                sha256: sha
+              }} =
+               Attachments.read_attachment(viewer, 73, attachment.id)
+
+      assert sha == @sha256_of_scan
+
+      assert {:error, :attachment_not_found} =
+               Attachments.read_attachment(operator, 73, attachment.id + 1)
+
+      assert {:error, :attachment_not_found} = Attachments.read_attachment(operator, 73, "nope")
+
+      # The record must still be readable through its source.
+      Process.put({StubSource, :documents}, %{})
+      assert {:error, :not_found} = Attachments.read_attachment(operator, 73, attachment.id)
+    end
+
+    test "a sibling company and a system scope see nothing", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      assert {:error, :unauthorized} = Attachments.get_attachment(operator, 74, attachment.id)
+      assert {:error, :unauthorized} = Attachments.read_attachment(scope, 73, attachment.id)
+      assert {:error, :unauthorized} = Attachments.list_company_attachments(scope, 73)
+    end
+  end
+
+  describe "the database" do
+    test "keeps attachments and their events, and ends one once", %{operator: operator} do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      assert_raise Postgrex.Error, ~r/UPDATE is refused/, fn ->
+        SQL.query!(Repo, "UPDATE finance_attachments SET file_name = 'x' WHERE id = $1", [
+          attachment.id
+        ])
+      end
+
+      assert_raise Postgrex.Error, ~r/DELETE is refused/, fn ->
+        SQL.query!(Repo, "DELETE FROM finance_attachments WHERE id = $1", [attachment.id])
+      end
+
+      {:ok, _removed} = Attachments.remove(operator, 73, attachment.id, %{reason: "wrong file"})
+
+      assert_raise Postgrex.Error, ~r/finance_attachment_events_standing_unique/, fn ->
+        SQL.query!(
+          Repo,
+          "INSERT INTO finance_attachment_events (tenant_id, company_id, attachment_id, event, reason, actor_user_id, occurred_at) VALUES (41, 73, $1, 'removed', 'twice', 91, now())",
+          [attachment.id]
+        )
+      end
+
+      assert_raise Postgrex.Error, ~r/UPDATE is refused/, fn ->
+        SQL.query!(Repo, "UPDATE finance_attachment_events SET reason = 'x'", [])
+      end
+    end
+
+    test "a replacement is a later attachment of the same record", %{operator: operator} do
+      {:ok, first} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))
+      {:ok, other} = Attachments.attach(operator, 73, StubSource, 2, TestFixtures.file("b.txt"))
+
+      assert_raise Postgrex.Error, ~r/same record/, fn ->
+        SQL.query!(
+          Repo,
+          "INSERT INTO finance_attachment_events (tenant_id, company_id, attachment_id, event, replacement_id, actor_user_id, occurred_at) VALUES (41, 73, $1, 'replaced', $2, 91, now())",
+          [first.id, other.id]
+        )
+      end
+
+      assert_raise Postgrex.Error, ~r/same record/, fn ->
+        SQL.query!(
+          Repo,
+          "INSERT INTO finance_attachment_events (tenant_id, company_id, attachment_id, event, replacement_id, actor_user_id, occurred_at) VALUES (41, 73, $1, 'replaced', $2, 91, now())",
+          [other.id, first.id]
+        )
+      end
+    end
+  end
+
+  defp assert_agrees(scope, attachment_id) do
+    {:ok, view} = Attachments.get_attachment(scope, 73, attachment_id)
+    {:ok, history} = Artifacts.retention_history(scope, 73, ArtifactOwner, view.artifact_id)
+    base = List.last(history)
+
+    assert view.retain_until == base.retain_until
+    assert view.on_hold == base.legal_hold
+  end
+
+  defp queued_jobs do
+    import Ecto.Query
+
+    Repo.all(
+      from(j in Oban.Job,
+        where: j.worker == "Bilimbi.Finance.Attachments.RetentionRefreshWorker.ObanAdapter",
+        order_by: [asc: j.id]
+      )
+    )
+  end
+
+  defp perform_queued! do
+    job = List.last(queued_jobs())
+    Bilimbi.Base.Queue.Worker.perform(RetentionRefreshWorker, job)
+  end
+end

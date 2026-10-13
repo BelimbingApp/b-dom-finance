@@ -14,6 +14,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, aged receivables, and the receivable control-account tie-out |
 | [`reconciliation/`](reconciliation/docs/README.md) | `finance/reconciliation` | bank accounts mapped to ledger accounts, immutable imported bank statements, matches between statement lines and ledger entries with their append-only events, and reconciliations finalised at zero difference by someone other than their preparer (or recorded as an exception) and kept with their figures |
 | [`payroll/`](payroll/docs/README.md) | `finance/payroll` | each company's mapping of payroll components and claim categories to ledger accounts with its change history, one balanced entry per finalised payroll run and per approved staff claim posted once through the ledger, reversals with reasons, and the append-only record of every attempt; the runs and claims come from the People Domain when it is mounted |
+| [`attachments/`](attachments/docs/README.md) | `finance/attachments` | source documents kept with the records they support (a supplier's invoice behind a bill, a remittance behind a payment, a contract behind an invoice, a voucher behind a manual journal, the bank's file behind a statement) as records-grade Base Artifacts documents retained for the company's retention years after the end of the financial year, append-only with who captured each when, replaceable only while the record is a draft, the company's retention setting and its history, and the source documents page with a download each |
 | [`sst/`](sst/docs/README.md) | `finance/sst` | Malaysia's Sales and Service Tax return (SST-02): the registration and tax code mappings as numbered versions, and returns per tax and taxable period computed from posted documents, reconciled with the tax accounts, finalised into immutable snapshots, and amended by new versions |
 
 The ledger is the first module. Other Finance modules, such as receivables,
@@ -38,8 +39,13 @@ through their facades, and have pages to prepare, review, finalise, amend,
 and export each return and to set up the registration and tax code
 mappings. Fixed assets has pages for categories, the register, asset
 schedules and depreciation runs, and posts charges and disposals through the
-ledger facade. Each module's "Standards addressed" section says which
-bookkeeping and audit standards it meets.
+ledger facade. Attachments keeps the original files behind payables',
+receivables', the ledger's, and reconciliation's records through Base
+Artifacts' records-grade retention, each module describing its records to it
+through a source module; the bill page and the statements page embed its
+panel, and its own page indexes the company's source documents. Each module's
+"Standards addressed" section says which bookkeeping and audit standards it
+meets.
 
 ## Mount
 

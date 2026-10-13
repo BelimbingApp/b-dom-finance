@@ -1,11 +1,11 @@
 defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
   @moduledoc """
-  One bank account: its statements, the form that imports the next one
-  from the bank's CSV export, and its reconciliations with the form that
-  opens the next. The import reads the uploaded file once and hands its
-  bytes to the facade, which refuses a file or a line already imported;
-  the file itself is not kept, the statement is. Every write re-asks its
-  capability.
+  One bank account: its statements, each with a link to the bank's file it
+  was read from, the form that imports the next one from the bank's CSV
+  export, and its reconciliations with the form that opens the next. The
+  import reads the uploaded file once and hands its bytes to the facade,
+  which refuses a file or a line already imported and keeps the file whole
+  as the statement's source document. Every write re-asks its capability.
   """
 
   use Bilimbi.Base.UI, :live_view
@@ -13,6 +13,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
   alias Bilimbi.Base.Authz.LiveAuthorization
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Base.UI.Params
+  alias Bilimbi.Finance.Attachments
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Reconciliation
   alias Bilimbi.Finance.Reconciliation.Csv
@@ -51,6 +52,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
           items(Records.all_pages(&Reconciliation.list_statements(scope, company_id, id, &1)))
 
         reconciliations = items(Reconciliation.list_reconciliations(scope, company_id, id))
+        files = statement_files(scope, company_id, statements)
 
         book =
           case Ledger.get_book(scope, company_id) do
@@ -63,6 +65,7 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
         |> assign(:refusal, nil)
         |> assign(:page_title, account.name)
         |> assign(:statements, Enum.reverse(statements))
+        |> assign(:files, files)
         |> assign(:reconciliations, Enum.reverse(reconciliations))
         |> assign(:minor_units, (book && book.minor_units) || 2)
         |> assign(
@@ -150,12 +153,35 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
     end
   end
 
-  # The uploaded bytes are read once, here, and handed to the facade; the
-  # file is not stored, the statement is.
+  # The standing source document of each statement, by statement ID, for
+  # the download link; a statement imported before files were kept has none.
+  defp statement_files(scope, company_id, statements) do
+    statements
+    |> Enum.map(& &1.id)
+    |> Enum.chunk_every(100)
+    |> Enum.flat_map(fn ids ->
+      case Attachments.list_company_attachments(scope, company_id,
+             source: Reconciliation.StatementSource.source_id(),
+             document_ids: ids
+           ) do
+        {:ok, attachments} -> attachments
+        {:error, _reason} -> []
+      end
+    end)
+    |> Map.new(&{&1.document_id, &1})
+  end
+
+  # The uploaded bytes are read once, here, and handed to the facade, which
+  # keeps the file as the statement's source document.
   defp import_file(socket) do
     files =
       consume_uploaded_entries(socket, :statement, fn %{path: path}, entry ->
-        {:ok, %{file_name: entry.client_name, content: File.read!(path)}}
+        {:ok,
+         %{
+           file_name: entry.client_name,
+           content: File.read!(path),
+           content_type: entry.client_type
+         }}
       end)
 
     case files do
@@ -340,7 +366,22 @@ defmodule Bilimbi.Finance.Reconciliation.Web.ImportLive do
               row_id={&"statement-#{&1.id}"}
             >
               <:col :let={statement} label="Number">{statement.statement_number}</:col>
-              <:col :let={statement} label="File">{statement.file_name}</:col>
+              <:col :let={statement} label="File">
+                <%= if file = @files[statement.id] do %>
+                  <.link
+                    id={"statement-#{statement.id}-file"}
+                    href={~p"/finance/attachments/#{file.id}/download"}
+                    download={statement.file_name}
+                    title={"SHA-256 #{statement.file_sha256}"}
+                  >
+                    {statement.file_name}
+                  </.link>
+                <% else %>
+                  <span title={"SHA-256 #{statement.file_sha256}; no source file is linked"}>
+                    {statement.file_name}
+                  </span>
+                <% end %>
+              </:col>
               <:col :let={statement} label="From">{statement.start_date}</:col>
               <:col :let={statement} label="To">{statement.end_date}</:col>
               <:col :let={statement} label="Lines" align={:right}>{statement.line_count}</:col>

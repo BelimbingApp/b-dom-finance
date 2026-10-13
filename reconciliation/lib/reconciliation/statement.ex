@@ -12,6 +12,7 @@ defmodule Bilimbi.Finance.Reconciliation.Statement do
     field(:statement_number, :integer, read_after_writes: true)
     field(:file_name, :string)
     field(:file_sha256, :string)
+    field(:import_mapping, :map)
     field(:line_count, :integer)
     field(:start_date, :date)
     field(:end_date, :date)

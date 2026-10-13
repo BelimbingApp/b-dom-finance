@@ -225,8 +225,25 @@ who recorded, approved, posted, or voided it, and for a bill naming order
 lines the figures its last match compared, its exceptions, and every match
 event. Its actions, each a facade call that asks its own capability, are
 approve, post, approve the exceptions with a reason, and void with a
-reason. Bills are recorded through the facade; a recording page is later
-work, as is a settings page for the payable account and tolerances.
+reason. The page also embeds the attachments panel
+(`Bilimbi.Finance.Attachments.Web.Panel`): the party's invoice, the
+delivery record, and any other source document behind the bill, listed with
+a download each, attached from the page, and replaced or removed while the
+bill is a draft. Bills are recorded through the facade; a recording page is
+later work, as is a settings page for the payable account and tolerances.
+
+### Source documents
+
+A document and a payment request each take source documents through
+`Bilimbi.Finance.Attachments` with this module's sources,
+`Bilimbi.Finance.Payables.Attachments.Bill` (a bill or debit note; final
+from approval on) and `Bilimbi.Finance.Payables.Attachments.Payment` (a
+payment request, the payment's record from submission on; final once
+decided). The file is kept as a records-grade document retained for the
+company's retention years after the end of the financial year the
+document's date falls in; while the record is a draft its attachments can
+be replaced or removed, and afterwards they are kept as they are. The
+attachments module's README has the rules.
 
 ## Payments
 

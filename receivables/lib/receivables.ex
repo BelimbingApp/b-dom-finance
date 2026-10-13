@@ -30,9 +30,13 @@ defmodule Bilimbi.Finance.Receivables do
   Results are plain maps; the schemas stay private to this module.
   """
 
+  require Logger
+
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Attachments
+  alias Bilimbi.Finance.Receivables.Attachments.Document, as: AttachmentsDocument
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
   alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TaxReport, TieOut}
@@ -320,6 +324,15 @@ defmodule Bilimbi.Finance.Receivables do
   receivable account its invoice recorded. The document records that
   account (`receivable_account_id`), the entry's ID and number, and who
   issued it; the database stamps when.
+
+  Right after the document is issued, inside the same transaction, its
+  source documents are queued for the retention its issue date says
+  (`Bilimbi.Finance.Attachments.refresh_retention/4`, a Base Queue job that
+  asks the issuer no attachments grant), so the job commits with the issue
+  and is never lost. The issued document answers `retention_refresh`:
+  `:queued`, `:none` when no source document needs it, or `{:error, reason}`
+  (also logged, and the issue stands); calling `refresh_retention/4` again
+  redoes a failed one.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -331,8 +344,25 @@ defmodule Bilimbi.Finance.Receivables do
              | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, document_id) do
     write(scope, company_id, @issue_documents, fn ->
-      Documents.issue(scope, company_id, document_id)
+      with {:ok, document} <- Documents.issue(scope, company_id, document_id) do
+        {:ok,
+         Map.put(document, :retention_refresh, refresh_attachments(scope, company_id, document))}
+      end
     end)
+  end
+
+  defp refresh_attachments(scope, company_id, document) do
+    case Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id) do
+      {:ok, status} ->
+        status
+
+      {:error, reason} = error ->
+        Logger.warning(
+          "source documents of receivables document #{document.id} kept short of its issue date: #{inspect(reason)}"
+        )
+
+        error
+    end
   end
 
   @doc """

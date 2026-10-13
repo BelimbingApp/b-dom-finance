@@ -12,15 +12,13 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
   """
 
   alias Bilimbi.Base.Authz
-  alias Bilimbi.Base.Authz.ContributionValidator
   alias Bilimbi.Base.Authz.TestFixtures, as: AuthzFixtures
-  alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
-  alias Bilimbi.Finance.Ledger
+  alias Bilimbi.Finance.Attachments.TestFixtures, as: AttachmentsFixtures
   alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Payables
   alias Ecto.Adapters.SQL
@@ -53,14 +51,16 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
 
   @doc """
   Tenant 41 with companies 73 and 74, and tenant 42 with company 75, the
-  ledger, payables, and Authz tables, and an Authz snapshot that knows the
-  ledger's and payables' capabilities. Returns the two tenants' system
-  scopes.
+  ledger, attachments (with Base Artifacts'), payables, and Authz tables,
+  and an Authz snapshot that knows the ledger's, attachments', and payables'
+  capabilities. Returns the two tenants' system scopes.
   """
   def setup_payables! do
     CompanyFixtures.create_company_identity_tables!()
     AuthzFixtures.create_authz_tables!()
+    AttachmentsFixtures.create_artifacts_tables!()
     LedgerFixtures.create_ledger_tables!()
+    AttachmentsFixtures.create_attachments_tables!()
     create_payables_tables!()
     install_authz!()
 
@@ -75,20 +75,15 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
     %{first_scope: first, second_scope: second}
   end
 
-  @doc "An Authz snapshot over the platform's, the ledger's, and payables' capabilities."
-  def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/payables", :bilimbi_finance_payables, Payables.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
-
-    ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
-      "finance-payables-test"
+  @doc """
+  An Authz snapshot over the platform's, Base Artifacts', the ledger's,
+  attachments', and payables' capabilities (the attachments fixtures' own,
+  plus payables'), and those of any `providers` (`{id, otp_app, module}`) a
+  dependent module's tests add.
+  """
+  def install_authz!(providers \\ []) do
+    AttachmentsFixtures.install_authz!(
+      [{"finance/payables", :bilimbi_finance_payables, Payables.Contributions}] ++ providers
     )
   end
 

@@ -15,7 +15,7 @@ defmodule Bilimbi.Finance.Einvoice.SchemaContract do
   def migration_versions,
     do: [
       20_261_012_200_000,
-      20_261_013_090_000,
+      20_261_013_090_100,
       20_261_013_143_000,
       20_261_013_221_500,
       20_261_015_150_300,

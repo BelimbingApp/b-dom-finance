@@ -115,6 +115,28 @@ themselves; they reduce the invoice they credit.
 total less its issued credit notes and its allocations from payments that
 were not reversed.
 
+## Source documents
+
+A document and a payment each take source documents (a contract, an order,
+a delivery record, a customer's remittance) through
+`Bilimbi.Finance.Attachments` with this module's sources,
+`Bilimbi.Finance.Receivables.Attachments.Document` (final once issued or
+discarded) and `Bilimbi.Finance.Receivables.Attachments.Payment` (final
+from the start, as a payment posts as it is recorded). The file is kept as a
+records-grade document retained for the company's retention years after
+the end of the financial year the document's date falls in; a draft's
+attachments can be replaced or removed, an issued document's are kept as
+they are. A draft's date may change after its attachments were kept, so
+issuing a document extends each attachment's retain-until to the issue
+date's financial year (`Attachments.refresh_retention/4`, called inside the
+transaction that issues, so its Base Queue job commits with the issue and asks
+the issuer no attachments grant). `issue_document/3` answers the issued
+document with `retention_refresh`: `:queued`, `:none` when no source document
+needs it, or `{:error, reason}`, which is also logged and does not undo the
+issue; calling `refresh_retention/4` again redoes a failed one.
+This module has no pages, so attachments are made through the
+facade and read on the source documents page, `/finance/attachments`.
+
 ## Payments
 
 `record_payment/3` records money received from one customer into a deposit

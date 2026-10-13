@@ -37,19 +37,33 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContractTest do
     # The ledger's migrations come first, as in a composed database: the
     # claim migration calls the ledger's claim function.
     {ledger, ledger_later} = Enum.split(LedgerFixtures.migrations(), 3)
-    [create, claim] = TestFixtures.migrations()
-    migrate!.(ledger ++ [create])
+    [create, claim, mapping] = TestFixtures.migrations()
+    migrate!.(ledger ++ [create, mapping])
     # One test posts before the ledger recorded owners and migrates itself.
     unless context[:before_claim], do: migrate!.(ledger_later ++ [claim])
 
     %{repo: repo, migrate_claim!: fn -> migrate!.(ledger_later ++ [claim]) end}
   end
 
-  test "the fresh migration implements the complete reconciliation contract", %{repo: repo} do
+  test "the fresh migrations implement the complete reconciliation contract", %{repo: repo} do
     assert Enum.map(TestFixtures.migrations(), &elem(&1, 0)) ==
              SchemaContract.migration_versions()
 
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
+  end
+
+  test "the later migration rolls back on its own", %{repo: repo} do
+    {version, module} = List.last(TestFixtures.migrations())
+    assert :ok = Ecto.Migrator.down(Repo, version, module, log: false, dynamic_repo: repo)
+
+    %{rows: rows} =
+      SQL.query!(
+        repo,
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'finance_reconciliation_statements' AND column_name = 'import_mapping'",
+        []
+      )
+
+    assert rows == []
   end
 
   # The module's other suites prove these rules on temporary copies of the

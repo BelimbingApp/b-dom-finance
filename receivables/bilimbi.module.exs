@@ -11,6 +11,7 @@
     "base/module_registry",
     "base/tenancy",
     "core/company",
+    "finance/attachments",
     "finance/ledger"
   ],
   migrations: "priv/repo/migrations",

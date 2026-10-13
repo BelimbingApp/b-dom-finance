@@ -14,15 +14,13 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
   """
 
   alias Bilimbi.Base.Authz
-  alias Bilimbi.Base.Authz.ContributionValidator
   alias Bilimbi.Base.Authz.TestFixtures, as: AuthzFixtures
-  alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy
   alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company.TestFixtures, as: CompanyFixtures
-  alias Bilimbi.Finance.Ledger
+  alias Bilimbi.Finance.Attachments.TestFixtures, as: AttachmentsFixtures
   alias Bilimbi.Finance.Ledger.TestFixtures, as: LedgerFixtures
   alias Bilimbi.Finance.Reconciliation
   alias Ecto.Adapters.SQL
@@ -33,7 +31,9 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
     {20_261_014_090_000, Bilimbi.Finance.Reconciliation.Migrations.CreateReconciliation,
      "20261014090000_create_finance_reconciliation.exs"},
     {20_261_015_150_600, Bilimbi.Finance.Reconciliation.Migrations.ClaimEntries,
-     "20261015150600_claim_finance_reconciliation_entries.exs"}
+     "20261015150600_claim_finance_reconciliation_entries.exs"},
+    {20_261_017_090_100, Bilimbi.Finance.Reconciliation.Migrations.AddImportMapping,
+     "20261017090100_add_finance_reconciliation_import_mapping.exs"}
   ]
 
   @doc "The first migration's module, loaded from its file once."
@@ -58,7 +58,9 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
   def setup_reconciliation! do
     CompanyFixtures.create_company_identity_tables!()
     AuthzFixtures.create_authz_tables!()
+    AttachmentsFixtures.create_artifacts_tables!()
     LedgerFixtures.create_ledger_tables!()
+    AttachmentsFixtures.create_attachments_tables!()
     create_reconciliation_tables!()
     install_authz!()
 
@@ -73,22 +75,15 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
     %{first_scope: first, second_scope: second}
   end
 
-  @doc "An Authz snapshot over the platform's, the ledger's, and this module's capabilities."
+  @doc """
+  An Authz snapshot over the platform's, Base Artifacts', the ledger's,
+  attachments', and this module's capabilities (the attachments fixtures'
+  own, plus this module's).
+  """
   def install_authz! do
-    entries =
-      for {id, app, provider} <- [
-            {"base/authz", :bilimbi_base_authz, Bilimbi.Base.Authz.Contributions},
-            {"core/company", :bilimbi_core_company, Bilimbi.Core.Company.Contributions},
-            {"finance/ledger", :bilimbi_finance_ledger, Ledger.Contributions},
-            {"finance/reconciliation", :bilimbi_finance_reconciliation,
-             Reconciliation.Contributions}
-          ],
-          do: %{descriptor: %{id: id, otp_app: app}, payload: provider.contributions().authz}
-
-    ContributionRegistry.put_consumers_for_test!(
-      %{authz: ContributionValidator.validate_contributions!(entries)},
-      "finance-reconciliation-test"
-    )
+    AttachmentsFixtures.install_authz!([
+      {"finance/reconciliation", :bilimbi_finance_reconciliation, Reconciliation.Contributions}
+    ])
   end
 
   @doc """
@@ -118,10 +113,11 @@ defmodule Bilimbi.Finance.Reconciliation.TestFixtures do
   end
 
   def create_reconciliation_tables! do
-    # The migration is loaded at run time, so the call is dynamic.
-    migration()
-    |> apply(:statements, [[temporary: true]])
-    |> Enum.each(&SQL.query!(Repo, &1, []))
+    # The migrations are loaded at run time, so the calls are dynamic.
+    for {_version, module} <- migrations(),
+        statement <- apply(module, :statements, [[temporary: true]]) do
+      SQL.query!(Repo, statement, [])
+    end
   end
 
   @doc """

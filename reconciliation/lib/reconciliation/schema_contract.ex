@@ -11,7 +11,8 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContract do
   # Check text is PostgreSQL's canonical form, which the verifier compares
   # after removing whitespace and parentheses.
 
-  def migration_versions, do: [20_261_014_090_000, 20_261_015_150_600]
+  def migration_versions,
+    do: [20_261_014_090_000, 20_261_015_150_600, 20_261_017_090_100]
 
   def migration_version, do: List.last(migration_versions())
 
@@ -84,6 +85,7 @@ defmodule Bilimbi.Finance.Reconciliation.SchemaContract do
             "statement_number" => column(:bigint, false),
             "file_name" => column({:varchar, 255}, false),
             "file_sha256" => column({:varchar, 64}, false),
+            "import_mapping" => column(:jsonb, true),
             "line_count" => column(:integer, false),
             "start_date" => column(:date, false),
             "end_date" => column(:date, false),

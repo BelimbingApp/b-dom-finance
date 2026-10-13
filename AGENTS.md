@@ -100,11 +100,34 @@ here; they govern this code and are not copied here.
   from its stored figures and items (`get_reconciliation/3`); reproduce
   them with `preview_reconciliation/5` at the three `through_*` numbers it
   recorded, never by recomputing without them. A statement's CSV bytes are
-  read once at import and not kept; the statement is the record, and its
-  `file_sha256` and line fingerprints are what refuse a repeat.
+  read once at import and kept whole as the statement's source document
+  through `Bilimbi.Finance.Attachments`; the statement is the record, and
+  its `file_sha256` and line fingerprints are what refuse a repeat.
+- Keep an original file (a supplier's invoice, a remittance, a contract, a
+  bank's statement export) through `Bilimbi.Finance.Attachments`, never
+  through `Bilimbi.Base.Artifacts` directly and never as bytes in a module's
+  own table: `attach/5` for an existing record, `capture_file/5` before and
+  `attach_capture/5` inside the transaction that creates the record (as
+  `reconciliation/lib/reconciliation.ex`'s `import_statement/4` does). The
+  owning module describes its record with a `Bilimbi.Finance.Attachments.Source`
+  module (`payables/lib/payables/attachments/bill.ex`): the label, the date
+  the retention counts from, and whether it is final, after which nothing is
+  replaced or removed. A record's page embeds
+  `Bilimbi.Finance.Attachments.Web.Panel`; the retention years are the
+  company's setting, never a module constant. Finance code that must change
+  retention without a user's grant (a record's finalisation) calls
+  `Attachments.refresh_retention/4`, which queues
+  `Attachments.RetentionRefreshWorker`; never call Base Artifacts or
+  `Bilimbi.Base.Tenancy.Authentication` for it.
+- A Finance migration version must be unique across Bilimbi's modules too,
+  not only Finance's: `find apps -path '*/priv/repo/migrations/*'` in the
+  mounted checkout before picking one (einvoice's `20261013090000` clashed
+  with a Base Artifacts migration and had to be renumbered).
 - Base Menu already declares the `finance` menu root; a module contributes
   its items with `parent: "finance"` and never declares the root, or boot
-  fails on a duplicate id.
+  fails on a duplicate id. A menu item's `icon` must be one Bilimbi's
+  `apps/web/assets/css/app.css` safelists (`hero-{...}`), or the Web suite's
+  `menu_icon_safelist_test` fails; Finance cannot add to that list.
 - Record an e-invoice status event through
   `Bilimbi.Finance.Einvoice.Documents.record_event!/4` and an outcome's
   audit action through `Documents.record_action!/4`, never by inserting the

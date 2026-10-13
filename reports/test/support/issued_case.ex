@@ -42,6 +42,7 @@ defmodule Bilimbi.Finance.Reports.IssuedCase do
         Bilimbi.Finance.Payroll.TestFixtures.create_payroll_tables!()
         Bilimbi.Finance.Sst.TestFixtures.create_sst_tables!()
         Bilimbi.Finance.FixedAssets.TestFixtures.create_tables!()
+        Bilimbi.Finance.Attachments.TestFixtures.create_attachments_tables!()
         Bilimbi.Base.Audit.TestFixtures.create_audit_tables!()
         Bilimbi.Base.Artifacts.TestFixtures.create_artifacts_table!()
 
@@ -78,7 +79,8 @@ defmodule Bilimbi.Finance.Reports.IssuedCase do
       "finance.einvoice.view",
       "finance.payroll.view",
       "finance.sst.view",
-      "finance.fixed-assets.view"
+      "finance.fixed-assets.view",
+      "finance.attachments.view"
     ]
 
     operator =
@@ -101,7 +103,8 @@ defmodule Bilimbi.Finance.Reports.IssuedCase do
             {"finance/einvoice", Bilimbi.Finance.Einvoice.Contributions},
             {"finance/payroll", Bilimbi.Finance.Payroll.Contributions},
             {"finance/sst", Bilimbi.Finance.Sst.Contributions},
-            {"finance/fixed_assets", Bilimbi.Finance.FixedAssets.Contributions}
+            {"finance/fixed_assets", Bilimbi.Finance.FixedAssets.Contributions},
+            {"finance/attachments", Bilimbi.Finance.Attachments.Contributions}
           ] do
         payload = provider.contributions()
         %{descriptor: %{id: id, otp_app: Application.get_application(provider)}, payload: payload}
