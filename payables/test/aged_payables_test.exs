@@ -29,11 +29,11 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
         lines: [line(accounts.expense, "5")]
       })
 
-    {:ok, _} = Payables.approve_document(context.operator, 73, note.id)
+    {:ok, _} = Payables.approve_document(context.approver, 73, note.id)
     {:ok, _} = Payables.post_document(context.operator, 73, note.id)
 
     {:ok, payment} =
-      Payables.post_payment(context.operator, 73, %{
+      pay(context, %{
         payment_date: ~D[2026-10-20],
         party_key: "P-1",
         paid_from_account_id: accounts.bank.id,
@@ -99,11 +99,11 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
   end
 
   test "reproduces a report after a back-dated posting", context do
-    %{operator: operator, accounts: accounts, overdue: overdue} = context
+    %{accounts: accounts, overdue: overdue} = context
     report = aged(context, ~D[2026-11-01])
 
     {:ok, _} =
-      Payables.post_payment(operator, 73, %{
+      pay(context, %{
         payment_date: ~D[2026-10-15],
         party_key: "P-1",
         paid_from_account_id: accounts.bank.id,
@@ -131,7 +131,7 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
     bill = post_bill!(context, bill("P-3", "X", [line(accounts.expense, "100")]))
 
     {:ok, payment} =
-      Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-10]))
+      pay(context, payment_to(context, bill, ~D[2026-10-10]))
 
     {:ok, _} = Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-11-01]})
 
@@ -145,7 +145,7 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
              })
 
     assert {:error, changeset} =
-             Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-05]))
+             pay(context, payment_to(context, bill, ~D[2026-10-05]))
 
     assert %{allocations: [%{amount: ["exceeds what is owed on the bill"]}]} =
              errors_on(changeset)
@@ -163,7 +163,7 @@ defmodule Bilimbi.Finance.Payables.AgedPayablesTest do
     bill = post_bill!(context, bill("P-3", "X", [line(accounts.expense, "100")]))
 
     {:ok, payment} =
-      Payables.post_payment(operator, 73, payment_to(context, bill, ~D[2026-10-10]))
+      pay(context, payment_to(context, bill, ~D[2026-10-10]))
 
     {:ok, _} = Payables.reverse_payment(operator, 73, payment.id, %{payment_date: ~D[2026-11-01]})
 

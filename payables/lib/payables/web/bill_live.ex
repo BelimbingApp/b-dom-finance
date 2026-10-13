@@ -181,6 +181,12 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
   end
 
   defp approve_message(:not_draft), do: "Only a draft can be approved."
+
+  defp approve_message(:same_person),
+    do:
+      "This company separates duties: someone other than whoever recorded the document " <>
+        "must approve it."
+
   defp approve_message(:unauthorized), do: "You do not have permission to approve documents."
   defp approve_message(:company_archived), do: "This company is archived."
   defp approve_message(reason), do: "The document could not be approved (#{inspect(reason)})."
@@ -213,6 +219,11 @@ defmodule Bilimbi.Finance.Payables.Web.BillLive do
   defp exception_message(:stale_hold),
     do:
       "The bill was matched again since this page loaded. Review the new figures and approve again."
+
+  defp exception_message(:same_person),
+    do:
+      "This company separates duties: someone other than whoever recorded the bill or " <>
+        "tried to post it must approve its exceptions."
 
   defp exception_message(:unauthorized),
     do: "You do not have permission to approve match exceptions."

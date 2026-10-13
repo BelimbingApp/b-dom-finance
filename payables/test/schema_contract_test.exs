@@ -367,4 +367,86 @@ defmodule Bilimbi.Finance.Payables.SchemaContractTest do
                "SELECT id, payment_number, posted_at > '2026-01-01' FROM finance_payables_payments ORDER BY id"
              )
   end
+
+  @tag :capture_log
+  test "the migration's triggers keep payment requests allocated, numbered, and decided once",
+       %{repo: repo} do
+    Repo.put_dynamic_repo(repo)
+    query! = fn sql -> SQL.query!(repo, sql, []) end
+
+    in_transaction = fn statements ->
+      Repo.transaction(fn -> Enum.each(statements, query!) end)
+    end
+
+    {:ok, _} =
+      in_transaction.([
+        "INSERT INTO finance_payables_documents (id, tenant_id, company_id, document_type, status, party_key, party_name, party_document_number, document_date, due_date, currency_code, total_net, total_tax, total, created_by_user_id) VALUES (1, 1, 1, 'bill', 'draft', 'P', 'Party', 'D-1', '2026-10-01', '2026-10-01', 'XTS', 50, 0, 50, 1)",
+        "INSERT INTO finance_payables_document_lines (tenant_id, company_id, document_id, line_number, description, account_id, amount) VALUES (1, 1, 1, 1, 'Line', 5, 50)"
+      ])
+
+    # The writer's own number and time are replaced by the database's.
+    request = fn id, amount ->
+      "INSERT INTO finance_payables_payment_requests (id, tenant_id, company_id, request_number, payment_date, party_key, party_name, paid_from_account_id, amount, currency_code, submitted_by_user_id, submitted_at) VALUES (#{id}, 1, 1, 99, '2026-10-05', 'P', 'Party', 3, #{amount}, 'XTS', 1, '2000-01-01')"
+    end
+
+    allocation = fn request_id, number, amount ->
+      "INSERT INTO finance_payables_payment_request_allocations (tenant_id, company_id, request_id, line_number, document_id, amount) VALUES (1, 1, #{request_id}, #{number}, 1, #{amount})"
+    end
+
+    payment = fn id, amount ->
+      [
+        "INSERT INTO finance_payables_payments (id, tenant_id, company_id, payment_number, payment_date, party_key, party_name, paid_from_account_id, amount, currency_code, entry_id, entry_number, posted_by_user_id, posted_at) VALUES (#{id}, 1, 1, 99, '2026-10-05', 'P', 'Party', 3, #{amount}, 'XTS', #{id}, #{id}, 2, now())",
+        "INSERT INTO finance_payables_payment_allocations (tenant_id, company_id, payment_id, line_number, document_id, amount) VALUES (1, 1, #{id}, 1, 1, #{amount})"
+      ]
+    end
+
+    event = fn request_id, payment_id ->
+      "INSERT INTO finance_payables_payment_request_events (tenant_id, company_id, request_id, event, payment_id, actor_user_id, occurred_at) VALUES (1, 1, #{request_id}, 'posted', #{payment_id}, 2, '2000-01-01')"
+    end
+
+    assert {:ok, _} = in_transaction.([request.(1, 20), allocation.(1, 1, 20)])
+
+    assert_raise Postgrex.Error, ~r/request 2 allocations differ from its amount/, fn ->
+      in_transaction.([request.(2, 20), allocation.(2, 1, 19)])
+    end
+
+    assert_raise Postgrex.Error, ~r/request 3 allocations differ from its amount/, fn ->
+      in_transaction.([request.(3, 20)])
+    end
+
+    assert_raise Postgrex.Error, ~r/already submitted: an allocation cannot be added/, fn ->
+      in_transaction.([allocation.(1, 2, 1)])
+    end
+
+    assert_raise Postgrex.Error, ~r/posted only by a payment of what it requested/, fn ->
+      in_transaction.(payment.(1, 19) ++ [event.(1, 1)])
+    end
+
+    assert {:ok, _} = in_transaction.(payment.(2, 20) ++ [event.(1, 2)])
+
+    assert_raise Postgrex.Error, ~r/finance_payables_payment_request_events_request_unique/, fn ->
+      in_transaction.([
+        "INSERT INTO finance_payables_payment_request_events (tenant_id, company_id, request_id, event, reason, actor_user_id, occurred_at) VALUES (1, 1, 1, 'rejected', 'Late', 2, now())"
+      ])
+    end
+
+    for sql <- [
+          "UPDATE finance_payables_payment_requests SET amount = 1",
+          "DELETE FROM finance_payables_payment_request_allocations",
+          "DELETE FROM finance_payables_payment_request_events",
+          "TRUNCATE finance_payables_payment_requests CASCADE"
+        ] do
+      assert_raise Postgrex.Error, ~r/finance payables keeps/, fn -> query!.(sql) end
+    end
+
+    assert %{rows: [[1, true]]} =
+             query!.(
+               "SELECT request_number, submitted_at > '2026-01-01' FROM finance_payables_payment_requests"
+             )
+
+    assert %{rows: [[true]]} =
+             query!.(
+               "SELECT occurred_at > '2026-01-01' FROM finance_payables_payment_request_events"
+             )
+  end
 end

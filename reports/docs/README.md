@@ -3,8 +3,11 @@
 Module ID: `finance/reports`. A company's financial statements, read live
 from its general ledger: profit and loss for any date range, the balance
 sheet and the cash position as of any date, headline figures against the
-previous period, and the entries behind any account's figure. It owns no
-table and writes nothing; every figure comes from `finance/ledger`'s facade.
+previous period, and the entries behind any account's figure; and the page
+an independent reviewer reads the ledger's approval exceptions on. It owns no
+table; every figure comes from `finance/ledger`'s facade, and the only
+writes its pages make (the separation setting, a review) are that facade's
+calls.
 
 ## Public API
 
@@ -130,6 +133,18 @@ again when an entry posts. "Pin these figures" adds the report's entry
 number to the address, which then shows the same figures for good and does
 not update; that address is the reproducible reference to a report.
 
+`/finance/reports/approval-exceptions` (menu Finance › Approval
+exceptions, route capability `finance.ledger.view`) is the ledger's approval
+exceptions by period, chosen with the shared period filter in the viewer's
+time zone: every same-person approval and every override of a control, with
+the record, who prepared and approved it, the reason, and its review,
+filtered by review status. It shows the company's separation of duties and
+every change to it, and offers turning it off with a reason (or requiring it
+again) to `finance.ledger.duty-separation.manage`, and recording a review to
+`finance.ledger.approval-exceptions.review`; both are the ledger's facade
+calls, which re-ask their capability and refuse a review by whoever approved
+or prepared what an exception records.
+
 ## Performance
 
 Each column is one aggregate query in the ledger: PostgreSQL sums the lines
@@ -150,13 +165,17 @@ accounts are held to. What this slice covers:
   it up, numbered gaplessly by the ledger, with who posted each (and any
   impersonator) and when; reversals and reversed entries are marked, so a
   correction is visible as a reversal, never as a changed figure.
-- **Immutable records, nothing deleted.** Reports write and delete nothing;
+- **Immutable records, nothing deleted.** Reports keep and delete nothing;
   they read only posted entries, which the ledger keeps append-only. The
   section layout is a Base Settings value, and every change to it is a Repo
   write that Base Audit records with its actor and time (ADR 0013).
 - **Double-entry consistency.** Statement totals come from the same
   per-account sums as the trial balance, and the balance sheet balances by
   construction.
+- **Independent review.** The approval exceptions page lists, by period,
+  what an independent reviewer reads when a company cannot separate duties
+  (same-person approvals) and every override of a control, and records each
+  review with the reviewer and time.
 - **No standard hard-coded.** Statements group by the five account types and
   the company's own sections; no chart, heading, or statement format of any
   accounting standard is built in. A company presents to its standard

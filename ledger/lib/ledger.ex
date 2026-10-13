@@ -40,6 +40,14 @@ defmodule Bilimbi.Finance.Ledger do
   Every close, reopen, and lock is an append-only closing event recording who
   did it, when, and why; a status is the latest event's.
 
+  A company requires separation of duties unless it turns it off: the
+  person who approves a record, or whoever impersonated them, is not the
+  person who prepared it. `check_approval/3` is how every Finance approval
+  asks, and records what an independent reviewer should read: a same-person
+  approval while separation is off, and an override of a control, such as a
+  reopened period. A manual journal is submitted and posts only once
+  someone approves it (`submit_journal/3`, `approve_journal/3`).
+
   Results are plain maps; the schemas stay private to this module.
   """
 
@@ -53,10 +61,16 @@ defmodule Bilimbi.Finance.Ledger do
 
   alias Bilimbi.Finance.Ledger.{
     Account,
+    ApprovalException,
     Book,
     ClosingEvent,
+    Duties,
+    DutySeparationChange,
     Entry,
     FiscalYear,
+    Journal,
+    JournalEvent,
+    JournalLine,
     Line,
     Period,
     Postings
@@ -70,6 +84,10 @@ defmodule Bilimbi.Finance.Ledger do
   @manage_periods "finance.ledger.periods.manage"
   @reopen_periods "finance.ledger.periods.reopen"
   @lock_periods "finance.ledger.periods.lock"
+  @manage_duty_separation "finance.ledger.duty-separation.manage"
+  @submit_journals "finance.ledger.journals.submit"
+  @approve_journals "finance.ledger.journals.approve"
+  @review_exceptions "finance.ledger.approval-exceptions.review"
 
   # A year-end close moves these account types' balances into retained earnings.
   @closed_by_year ["income", "expense"]
@@ -98,6 +116,18 @@ defmodule Bilimbi.Finance.Ledger do
 
   @doc "The capability that locks a closed period for good."
   def lock_periods_capability, do: @lock_periods
+
+  @doc "The capability that turns the company's separation of duties on or off."
+  def manage_duty_separation_capability, do: @manage_duty_separation
+
+  @doc "The capability that submits a manual journal for approval."
+  def submit_journals_capability, do: @submit_journals
+
+  @doc "The capability that approves (posting it) or rejects a submitted journal."
+  def approve_journals_capability, do: @approve_journals
+
+  @doc "The capability that records an independent review of an approval exception."
+  def review_exceptions_capability, do: @review_exceptions
 
   ## Book
 
@@ -400,6 +430,414 @@ defmodule Bilimbi.Finance.Ledger do
   defp valid_cursor?({%Date{}, id}), do: is_integer(id) and id in 1..@max_bigint
   defp valid_cursor?(_cursor), do: false
 
+  ## Separation of duties
+
+  @doc """
+  The company's separation of duties: `%{required, change}`, where
+  `change` is the latest change (`list_duty_separation_changes/2` shows
+  one) or nil. A company that never changed it requires separation.
+  """
+  @spec get_duty_separation(Scope.t(), term()) :: {:ok, map()} | {:error, refusal()}
+  def get_duty_separation(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok, duty_separation_view(Duties.latest_change(scope, company_id))}
+    end
+  end
+
+  @doc """
+  Turns the company's separation of duties on or off: `required` (a
+  boolean) and a `reason`, which turning it off needs. The change is
+  appended to the company's history with the actor, any impersonator, and
+  the database's time; a call that changes nothing records nothing.
+
+  While separation is off, an approval by the person who prepared the
+  record is allowed and listed in the approval exceptions for an
+  independent reviewer, with this change's reason.
+  """
+  @spec set_duty_separation(Scope.t(), term(), map()) ::
+          {:ok, map()} | {:error, write_refusal() | Changeset.t()}
+  def set_duty_separation(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
+    write(scope, company_id, @manage_duty_separation, fn ->
+      with {:ok, latest} <- Duties.change(scope, company_id, attributes) do
+        {:ok, duty_separation_view(latest)}
+      end
+    end)
+  end
+
+  @doc "Every change of the company's separation of duties, oldest first."
+  @spec list_duty_separation_changes(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
+  def list_duty_separation_changes(%Scope{} = scope, company_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      {:ok, scope |> Duties.changes(company_id) |> Enum.map(&change_view/1)}
+    end
+  end
+
+  @doc """
+  Whether the scope's actor may approve a record, for the Finance modules
+  that approve, called in the transaction that records the approval (it
+  takes the same company lock), so a refusal rolls the approval back.
+
+  `approval` describes it: `source` (the module ID, such as
+  `"finance/payables"`), `action` and `subject_type` (lower-case codes),
+  `subject_id`, `subject` (a label a reviewer reads), `prepared_by` (a list
+  of `%{user_id, impersonator_id}`, everyone whose work is approved), and,
+  for an approval that overrides a control, `override: true` with the
+  approver's `reason`.
+
+  When the approver, or whoever impersonated them, is someone in
+  `prepared_by` or impersonated someone there, the approval is
+  `{:error, :same_person}` while the company requires separation; while it
+  does not, the approval is allowed and recorded as a same-person approval
+  exception with the reason the setting was turned off. An override is
+  always recorded. Anything else records nothing. The caller needs
+  `finance.ledger.view`, which the exceptions are read with.
+  """
+  @spec check_approval(Scope.t(), term(), map()) ::
+          :ok | {:error, write_refusal() | :same_person | Changeset.t()}
+  def check_approval(%Scope{} = scope, company_id, approval) when is_map(approval) do
+    with {:ok, _exception} <-
+           write(scope, company_id, @view, fn -> Duties.check(scope, company_id, approval) end),
+         do: :ok
+  end
+
+  @doc """
+  The company's approval exceptions, oldest first, each with its `review`
+  or nil: `exception_number`, `source`, `action`, `subject_type`,
+  `subject_id`, `subject`, `same_person`, `override`, who prepared and
+  approved it, `reason`, `separation_change_id`, and `recorded_at`.
+
+  Options: `recorded_from` and `recorded_before` (`DateTime`s: from is
+  inclusive and before exclusive, so a period's bounds in any time zone
+  select it exactly), `reviewed` (`true` or `false`; omitted lists both),
+  `limit` (default 100, at most 500), and `after`, the last
+  `exception_number` of the previous page. A malformed option is
+  `{:error, :invalid_option}`.
+  """
+  @spec list_approval_exceptions(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def list_approval_exceptions(%Scope{} = scope, company_id, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, filters} <- exception_options(options) do
+      {:ok, scope |> Duties.exceptions(company_id, filters) |> Enum.map(&exception_view/1)}
+    end
+  end
+
+  defp exception_options(options) do
+    with true <- Keyword.keyword?(options),
+         {:ok, filters} <-
+           Keyword.validate(options,
+             recorded_from: nil,
+             recorded_before: nil,
+             reviewed: nil,
+             limit: @default_entry_limit,
+             after: nil
+           ),
+         filters = Map.new(filters),
+         true <- optional_instant?(filters.recorded_from),
+         true <- optional_instant?(filters.recorded_before),
+         true <- filters.reviewed in [nil, true, false],
+         true <- is_integer(filters.limit) and filters.limit in 1..@max_entry_limit,
+         true <- is_nil(filters.after) or (is_integer(filters.after) and filters.after >= 0) do
+      {:ok, filters}
+    else
+      _invalid -> {:error, :invalid_option}
+    end
+  end
+
+  defp optional_instant?(value), do: is_nil(value) or match?(%DateTime{}, value)
+
+  @doc "One approval exception, as `list_approval_exceptions/3` shows it."
+  @spec get_approval_exception(Scope.t(), term(), term()) ::
+          {:ok, map()} | {:error, refusal() | :exception_not_found}
+  def get_approval_exception(%Scope{} = scope, company_id, exception_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      case Duties.exception(scope, company_id, exception_id) do
+        nil -> {:error, :exception_not_found}
+        exception -> {:ok, exception_view(exception)}
+      end
+    end
+  end
+
+  @doc """
+  Records an independent review of an approval exception, with an optional
+  `note`: the reviewer, any impersonator, and the database's time. An
+  exception is reviewed once (`{:error, :already_reviewed}`), and never by
+  whoever approved or prepared what it records, nor anyone impersonating
+  them (`{:error, :reviewer_not_independent}`), whatever the company's
+  separation setting.
+  """
+  @spec review_approval_exception(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :exception_not_found
+             | :already_reviewed
+             | :reviewer_not_independent
+             | Changeset.t()}
+  def review_approval_exception(%Scope{} = scope, company_id, exception_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @review_exceptions, fn ->
+      with %ApprovalException{} = exception <-
+             Duties.exception(scope, company_id, exception_id) ||
+               {:error, :exception_not_found},
+           {:ok, _review} <- Duties.review(scope, company_id, exception, attributes) do
+        {:ok, exception_view(Duties.exception(scope, company_id, exception.id))}
+      end
+    end)
+  end
+
+  ## Manual journals
+
+  @doc """
+  Submits a manual journal for approval: `entry_date`, `description`, an
+  optional `reference`, and `lines`, as `post_entry/4` takes them. It is
+  checked as an entry would be (balanced, active accounts of the company,
+  an open period) and kept, numbered per company, with the submitter and
+  the database's time; nothing posts until `approve_journal/3`.
+  """
+  @spec submit_journal(Scope.t(), term(), map()) ::
+          {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
+  def submit_journal(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
+    write(scope, company_id, @submit_journals, fn ->
+      with {:ok, book} <- open_book_for_write(scope, company_id) do
+        lines = attributes |> fetch(:lines) |> List.wrap()
+
+        scope
+        |> journal_changeset(book, Map.drop(attributes, [:lines, "lines"]), lines)
+        |> validate_open_period(scope, company_id)
+        |> validate_accounts(scope, company_id, [])
+        |> Repo.insert()
+        |> case do
+          {:ok, journal} -> {:ok, journal_view(fetch_journal(scope, company_id, journal.id))}
+          error -> error
+        end
+      end
+    end)
+  end
+
+  @doc """
+  Approves a submitted journal, which posts it as an entry on its date with
+  its lines, by the approver, and records the `approved` event naming the
+  entry. The entry is checked as `post_entry/4` checks one, now: a period
+  closed or an account deactivated since submission is the ledger's
+  changeset, and the journal stays submitted.
+
+  The approver differs from the submitter (`{:error, :same_person}`)
+  unless the company has turned separation of duties off, when the
+  approval is recorded as an approval exception (`check_approval/3`).
+  Anything but a submitted journal is `{:error, :journal_decided}`.
+  """
+  @spec approve_journal(Scope.t(), term(), term()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :book_not_open
+             | :journal_not_found
+             | :journal_decided
+             | :same_person
+             | Changeset.t()}
+  def approve_journal(%Scope{} = scope, company_id, journal_id) do
+    write(scope, company_id, @approve_journals, fn ->
+      with {:ok, book} <- open_book_for_write(scope, company_id),
+           {:ok, journal} <- submitted_journal(scope, company_id, journal_id),
+           {:ok, _exception} <- Duties.check(scope, company_id, journal_approval(journal)),
+           {:ok, entry} <- post_journal(scope, company_id, book, journal),
+           {:ok, _event} <- decide_journal(scope, journal, "approved", %{}, entry.id) do
+        {:ok, journal_view(fetch_journal(scope, company_id, journal.id))}
+      end
+    end)
+  end
+
+  @doc """
+  Rejects a submitted journal with a `reason`; it never posts. Anything but
+  a submitted journal is `{:error, :journal_decided}`.
+  """
+  @spec reject_journal(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error, write_refusal() | :journal_not_found | :journal_decided | Changeset.t()}
+  def reject_journal(%Scope{} = scope, company_id, journal_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @approve_journals, fn ->
+      with {:ok, journal} <- submitted_journal(scope, company_id, journal_id),
+           {:ok, _event} <- decide_journal(scope, journal, "rejected", attributes, nil) do
+        {:ok, journal_view(fetch_journal(scope, company_id, journal.id))}
+      end
+    end)
+  end
+
+  @doc """
+  One journal with its lines, `status` (`submitted`, `approved`, or
+  `rejected`), and `decision`: who approved or rejected it, when, any
+  `reason`, and the `entry_id` an approval posted.
+  """
+  @spec get_journal(Scope.t(), term(), term()) ::
+          {:ok, map()} | {:error, refusal() | :journal_not_found}
+  def get_journal(%Scope{} = scope, company_id, journal_id) do
+    with :ok <- authorize(scope, company_id, @view) do
+      case fetch_journal(scope, company_id, journal_id) do
+        nil -> {:error, :journal_not_found}
+        journal -> {:ok, journal_view(journal)}
+      end
+    end
+  end
+
+  @doc """
+  The company's journals by number, as `get_journal/3` shows them. Options:
+  `status` (one of `journal_statuses/0`), `limit` (default 100, at most
+  500), and `after`, the last `journal_number` of the previous page.
+  """
+  @spec list_journals(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def list_journals(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, filters} <- journal_options(options) do
+      {:ok,
+       scope
+       |> journals_query(company_id)
+       |> journal_status(scope, filters.status)
+       |> then(fn query ->
+         if filters.after, do: where(query, [j], j.journal_number > ^filters.after), else: query
+       end)
+       |> order_by([j], asc: j.journal_number)
+       |> limit(^filters.limit)
+       |> preload_journal(scope)
+       |> Repo.all()
+       |> Enum.map(&journal_view/1)}
+    end
+  end
+
+  @doc "The statuses a journal moves through."
+  @spec journal_statuses() :: [String.t()]
+  def journal_statuses, do: Journal.statuses()
+
+  defp journal_options(options) do
+    with true <- Keyword.keyword?(options),
+         {:ok, filters} <-
+           Keyword.validate(options, status: nil, limit: @default_entry_limit, after: nil),
+         filters = Map.new(filters),
+         true <- is_nil(filters.status) or filters.status in Journal.statuses(),
+         true <- is_integer(filters.limit) and filters.limit in 1..@max_entry_limit,
+         true <- is_nil(filters.after) or (is_integer(filters.after) and filters.after >= 0) do
+      {:ok, filters}
+    else
+      _invalid -> {:error, :invalid_option}
+    end
+  end
+
+  defp journal_status(query, _scope, nil), do: query
+
+  defp journal_status(query, scope, "submitted") do
+    decided = select(Tenancy.scope_query(JournalEvent, scope), [e], e.journal_id)
+    where(query, [j], j.id not in subquery(decided))
+  end
+
+  defp journal_status(query, scope, event) do
+    decided =
+      JournalEvent
+      |> Tenancy.scope_query(scope)
+      |> where([e], e.event == ^event)
+      |> select([e], e.journal_id)
+
+    where(query, [j], j.id in subquery(decided))
+  end
+
+  defp journal_changeset(scope, book, attributes, lines) do
+    %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+    line_changesets =
+      lines
+      |> Enum.with_index(1)
+      |> Enum.map(fn {line, number} ->
+        %JournalLine{tenant_id: book.tenant_id, company_id: book.company_id, line_number: number}
+        |> Line.changeset(if(is_map(line), do: line, else: %{}), book.minor_units)
+      end)
+
+    %Journal{
+      tenant_id: book.tenant_id,
+      company_id: book.company_id,
+      currency_code: book.currency_code,
+      submitted_by_user_id: user_id,
+      submitted_by_impersonator_id: impersonator_id
+    }
+    |> Journal.changeset(attributes)
+    |> Changeset.put_assoc(:lines, line_changesets)
+    |> validate_balance(line_changesets)
+  end
+
+  defp submitted_journal(scope, company_id, journal_id) do
+    case fetch_journal(scope, company_id, journal_id) do
+      nil -> {:error, :journal_not_found}
+      %Journal{event: nil} = journal -> {:ok, journal}
+      _decided -> {:error, :journal_decided}
+    end
+  end
+
+  defp journal_approval(journal) do
+    %{
+      source: "finance/ledger",
+      action: "journal_approval",
+      subject_type: "journal",
+      subject_id: journal.id,
+      subject: "Journal #{journal.journal_number}: #{journal.description}",
+      prepared_by: [
+        %{
+          user_id: journal.submitted_by_user_id,
+          impersonator_id: journal.submitted_by_impersonator_id
+        }
+      ]
+    }
+  end
+
+  defp post_journal(scope, company_id, book, journal) do
+    lines =
+      Enum.map(journal.lines, fn line ->
+        Map.take(line, [:account_id, :debit, :credit, :description])
+      end)
+
+    scope
+    |> entry_changeset(book, Map.take(journal, [:entry_date, :description, :reference]), lines)
+    |> validate_open_period(scope, company_id)
+    |> validate_accounts(scope, company_id, [])
+    |> insert_entry(scope)
+  end
+
+  defp decide_journal(scope, journal, event, attributes, entry_id) do
+    %Actor{type: :user, user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+    %JournalEvent{
+      tenant_id: journal.tenant_id,
+      company_id: journal.company_id,
+      journal_id: journal.id,
+      event: event,
+      entry_id: entry_id,
+      actor_user_id: user_id,
+      actor_impersonator_id: impersonator_id
+    }
+    |> JournalEvent.changeset(attributes)
+    |> Repo.insert()
+  end
+
+  defp fetch_journal(scope, company_id, journal_id) when is_integer(journal_id) do
+    scope
+    |> journals_query(company_id)
+    |> where([j], j.id == ^journal_id)
+    |> preload_journal(scope)
+    |> Repo.one()
+  end
+
+  defp fetch_journal(_scope, _company_id, _journal_id), do: nil
+
+  defp journals_query(scope, company_id),
+    do: where(Tenancy.scope_query(Journal, scope), [j], j.company_id == ^company_id)
+
+  defp preload_journal(query, scope) do
+    preload(query,
+      lines: ^order_by(Tenancy.scope_query(JournalLine, scope), [l], asc: l.line_number),
+      event: ^Tenancy.scope_query(JournalEvent, scope)
+    )
+  end
+
   ## Fiscal years and periods
 
   @doc """
@@ -550,8 +988,10 @@ defmodule Bilimbi.Finance.Ledger do
 
       with {:ok, period} <- find_period(state, period_id),
            {_previous, next} = neighbours(state, period),
-           :ok <- reopenable(state, period, next) do
-        change_period(scope, company_id, period, "reopen", attributes)
+           :ok <- reopenable(state, period, next),
+           {:ok, reopened} <- change_period(scope, company_id, period, "reopen", attributes),
+           {:ok, _exception} <- record_reopen(scope, company_id, "period", period, attributes) do
+        {:ok, reopened}
       end
     end)
   end
@@ -653,7 +1093,8 @@ defmodule Bilimbi.Finance.Ledger do
            :ok <- year_reopenable(year, last, next),
            {:ok, _event} <- record_event(scope, company_id, year, nil, "reopen", attributes),
            {:ok, _event} <- record_event(scope, company_id, year, last, "reopen", attributes),
-           {:ok, _reversal} <- reverse_closing_entry(scope, company_id, book, year) do
+           {:ok, _reversal} <- reverse_closing_entry(scope, company_id, book, year),
+           {:ok, _exception} <- record_reopen(scope, company_id, "fiscal_year", year, attributes) do
         fiscal_year_result(scope, company_id, year.id)
       end
     end)
@@ -816,6 +1257,23 @@ defmodule Bilimbi.Finance.Ledger do
     with {:ok, _event} <- record_event(scope, company_id, year, period, action, attributes) do
       {:ok, Map.put(period, :status, ClosingEvent.status_after(action))}
     end
+  end
+
+  # A reopen overrides a close, so it is listed for independent review, with
+  # the reason the closing log already holds.
+  defp record_reopen(scope, company_id, subject_type, closed, attributes) do
+    label = if subject_type == "period", do: "Period", else: "Fiscal year"
+
+    Duties.check(scope, company_id, %{
+      source: "finance/ledger",
+      action: "#{subject_type}_reopen",
+      subject_type: subject_type,
+      subject_id: closed.id,
+      subject: "#{label} #{closed.start_date} to #{closed.end_date}",
+      prepared_by: [],
+      override: true,
+      reason: fetch(attributes, :reason)
+    })
   end
 
   # The database numbers and stamps the event and refuses one that breaks
@@ -1458,6 +1916,90 @@ defmodule Bilimbi.Finance.Ledger do
     period
     |> Map.take([:id, :fiscal_year_id, :period_number, :start_date, :end_date])
     |> Map.put(:status, status)
+  end
+
+  defp duty_separation_view(latest) do
+    %{
+      required: DutySeparationChange.required?(latest),
+      change: latest && change_view(latest)
+    }
+  end
+
+  defp change_view(change) do
+    Map.take(change, [
+      :id,
+      :change_number,
+      :required,
+      :reason,
+      :changed_by_user_id,
+      :changed_by_impersonator_id,
+      :changed_at
+    ])
+  end
+
+  defp exception_view(exception) do
+    exception
+    |> Map.take([
+      :id,
+      :exception_number,
+      :source,
+      :action,
+      :subject_type,
+      :subject_id,
+      :subject,
+      :same_person,
+      :override,
+      :prepared_by_user_id,
+      :prepared_by_impersonator_id,
+      :approved_by_user_id,
+      :approved_by_impersonator_id,
+      :reason,
+      :separation_change_id,
+      :recorded_at
+    ])
+    |> Map.put(
+      :review,
+      exception.review &&
+        Map.take(exception.review, [
+          :note,
+          :reviewed_by_user_id,
+          :reviewed_by_impersonator_id,
+          :reviewed_at
+        ])
+    )
+  end
+
+  defp journal_view(journal) do
+    journal
+    |> Map.take([
+      :id,
+      :journal_number,
+      :entry_date,
+      :description,
+      :reference,
+      :currency_code,
+      :submitted_by_user_id,
+      :submitted_by_impersonator_id,
+      :submitted_at
+    ])
+    |> Map.merge(%{
+      status: Journal.status(journal),
+      decision:
+        journal.event &&
+          Map.take(journal.event, [
+            :event,
+            :reason,
+            :entry_id,
+            :actor_user_id,
+            :actor_impersonator_id,
+            :occurred_at
+          ]),
+      lines:
+        Enum.map(
+          journal.lines,
+          &Map.take(&1, [:line_number, :account_id, :debit, :credit, :description])
+        )
+    })
   end
 
   defp event_view(event) do

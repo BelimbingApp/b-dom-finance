@@ -80,10 +80,17 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
     }
   end
 
+  # Another keeper approves what the keeper records: the company separates
+  # duties.
+  defp checker! do
+    {:ok, scope} = Tenancy.scope(41)
+    TestFixtures.sign_in!(scope, 73, 93, Bilimbi.Finance.Payables.PayablesCase.all_capabilities())
+  end
+
   # A bill of 4 units on order line 11, of which 3 were received: held.
   defp held_bill!(keeper, accounts) do
     bill = bill!(keeper, "INV-H", [order_line(accounts.stock, "400", 11, "4")])
-    {:ok, _} = Payables.approve_document(keeper, 73, bill.id)
+    {:ok, _} = Payables.approve_document(checker!(), 73, bill.id)
     {:ok, %{status: "held"}} = Payables.post_document(keeper, 73, bill.id)
     bill
   end
@@ -167,11 +174,6 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
 
       {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills/#{held.id}")
 
-      # Posting a held bill unapproved matches again and holds again.
-      view |> element("#payables-bill-post") |> render_click()
-      assert has_element?(view, "#flash-warning", "held")
-      assert has_element?(view, "#payables-bill-match-status", "held")
-
       view |> element("#payables-bill-open-approve-exception") |> render_click()
       assert has_element?(view, "#payables-bill-approve-exception-modal")
 
@@ -190,7 +192,7 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       assert has_element?(view, "#payables-bill-match-status", "posted with exceptions")
       refute has_element?(view, "#payables-bill-post")
 
-      assert {:ok, %{status: "posted", match_events: [_, _, _, %{event: "posted"}]}} =
+      assert {:ok, %{status: "posted", match_events: [_, _, %{event: "posted"}]}} =
                Payables.get_document(keeper, 73, held.id)
     end
 
@@ -229,7 +231,7 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       keeper: keeper,
       accounts: accounts
     } do
-      grant_capabilities!([@view, @approve])
+      grant_capabilities!([@view, @approve, "finance.ledger.view"])
 
       draft =
         bill!(keeper, "INV-1", [%{description: "Fee", account_id: accounts.stock.id, amount: "5"}])
@@ -252,6 +254,59 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       assert has_element?(view, "#flash-success", "voided")
       assert has_element?(view, "#payables-bill-document-facts", "Wrong order")
       refute has_element?(view, "#payables-bill-match-status")
+    end
+  end
+
+  describe "separation of duties" do
+    test "refuses the exceptions to whoever posted the bill into its hold", %{
+      conn: conn,
+      keeper: keeper,
+      accounts: accounts
+    } do
+      grant_capabilities!([@view, @post, @approve_exceptions | @ledger])
+      held = held_bill!(keeper, accounts)
+
+      {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills/#{held.id}")
+
+      # Posting a held bill unapproved matches again and holds again.
+      view |> element("#payables-bill-post") |> render_click()
+      assert has_element?(view, "#flash-warning", "held")
+      assert has_element?(view, "#payables-bill-match-status", "held")
+
+      view |> element("#payables-bill-open-approve-exception") |> render_click()
+
+      view
+      |> form("#payables-bill-approve-exception-form", dialog: %{reason: "Short delivery agreed"})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", "separates duties")
+      assert has_element?(view, "#payables-bill-match-status", "held")
+    end
+
+    test "refuses to let whoever recorded a bill approve it", %{
+      conn: conn,
+      scope: scope,
+      accounts: accounts
+    } do
+      grant_capabilities!([@view, @approve, "finance.ledger.view"])
+
+      recorder =
+        TestFixtures.sign_in!(scope, 73, 91, [
+          "finance.payables.documents.create",
+          "finance.ledger.view"
+        ])
+
+      own =
+        bill!(recorder, "INV-O", [
+          %{description: "Fee", account_id: accounts.stock.id, amount: "5"}
+        ])
+
+      {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/payables/bills/#{own.id}")
+      view |> element("#payables-bill-approve") |> render_click()
+
+      assert has_element?(view, "#flash-error", "separates duties")
+      assert has_element?(view, "#payables-bill-approve")
+      assert {:ok, %{status: "draft"}} = Payables.get_document(recorder, 73, own.id)
     end
   end
 
@@ -351,7 +406,7 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
 
         # 8 billed against 6 received: held, with the real figures.
         bill = bill!(keeper, "INV-R", [order_line(accounts.stock, "20.00", bolts.id, "8")])
-        {:ok, _} = Payables.approve_document(keeper, 73, bill.id)
+        {:ok, _} = Payables.approve_document(checker!(), 73, bill.id)
         assert {:ok, held} = Payables.post_document(keeper, 73, bill.id)
         assert %{status: "held", match_events: [%{lines: [match_line]}]} = held
         assert Decimal.equal?(match_line.ordered_quantity, 10)

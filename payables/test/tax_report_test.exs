@@ -2,7 +2,7 @@ defmodule Bilimbi.Finance.Payables.TaxReportTest do
   use Bilimbi.Finance.Payables.PayablesCase
 
   test "sums posted documents per type and tax code, by document date", context do
-    %{operator: operator, accounts: accounts, tax_code: tax_code} = context
+    %{operator: operator, approver: approver, accounts: accounts, tax_code: tax_code} = context
 
     bill =
       post_bill!(
@@ -27,7 +27,7 @@ defmodule Bilimbi.Finance.Payables.TaxReportTest do
         lines: [line(accounts.expense, "25", %{tax_code_id: tax_code.id})]
       })
 
-    {:ok, _approved} = Payables.approve_document(operator, 73, note.id)
+    {:ok, _approved} = Payables.approve_document(approver, 73, note.id)
     {:ok, _posted} = Payables.post_document(operator, 73, note.id)
 
     # Neither a draft nor a document dated outside the window counts.
