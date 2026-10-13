@@ -58,6 +58,16 @@ defmodule Bilimbi.Finance.FixedAssets do
   def void_capability, do: @void
   def capabilities, do: Contributions.capabilities()
 
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.FixedAssets.Evidence.datasets()
+
+  @doc "One company-authorized ID-ordered evidence page; consume every page in one repeatable-read transaction."
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.FixedAssets.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
+
   @doc "Creates a category and its first immutable revision; reason is required."
   def create_category(%Scope{} = scope, company_id, attrs) when is_map(attrs) do
     write(scope, company_id, @configure, fn ->

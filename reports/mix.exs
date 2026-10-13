@@ -15,11 +15,18 @@ defmodule Bilimbi.Finance.Reports.MixProject do
   end
 
   def application do
-    Bilimbi.Base.ModuleRegistry.MixDiscovery.module_application(__DIR__)
+    Bilimbi.Base.ModuleRegistry.MixDiscovery.module_application(__DIR__,
+      extra_applications: [:crypto]
+    )
   end
 
   defp deps do
     [
+      {:ecto_sql, "~> 3.14"},
+      {:jason, "~> 1.4"},
+      {:plug, "~> 1.20"},
+      {:phoenix, "~> 1.8"},
+      {:postgrex, "~> 0.22"},
       {:decimal, "~> 3.1"},
       {:phoenix_live_view, "~> 1.2.0"}
     ]

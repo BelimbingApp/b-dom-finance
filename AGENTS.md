@@ -86,7 +86,8 @@ here; they govern this code and are not copied here.
 - Read ledger figures with `Ledger.account_totals/3`, which sums in
   PostgreSQL, not by adding up `list_entries/3` lines in memory; read every
   column of one report at the first read's `through_entry_number`, as
-  `reports/lib/reports.ex` does, so the figures reproduce.
+  `reports/lib/reports.ex` does, so postings reproduce. Whole issued reports
+  use its stored snapshots: entry pins alone do not freeze chart or layout.
 - React to postings with `Ledger.subscribe_postings/2`, never a broadcast
   sent after a facade write: the ledger's trigger notifies at commit, while
   a broadcast inside a caller's transaction announces uncommitted entries.
@@ -137,7 +138,8 @@ here; they govern this code and are not copied here.
   Receiving stops declaring the authz verb `post` that Ledger owns, the Web
   host refuses to boot with both mounted and the payables test only runs
   its unmounted branch. Declare no new authz verb in a Finance module
-  (`view` and `manage` are Base's, `post` is Ledger's): a verb two mounted
+  (`view` and `manage` are Base's, `post` is Ledger's) unless it carries the
+  module's own prefix (`sst-prepare`, `reports-export`): a verb two mounted
   Domains both declare is that boot failure.
 - Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
   `post_payroll_run/3`, `post_claim/3`, or `post_claims/3` (a batch posted
