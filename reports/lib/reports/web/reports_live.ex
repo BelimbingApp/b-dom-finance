@@ -8,8 +8,8 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
   The page reads through the `Bilimbi.Finance.Reports` facade and subscribes
   to the company's postings, so figures read again as soon as an entry's
   transaction commits. A report pinned to an entry number (the `through`
-  parameter) stays as it is: its figures cannot change, which is what makes
-  the address a reproducible reference.
+  parameter) stops automatic posting updates and freezes counted entries.
+  Its labels and layout remain current; only a stored issued copy is immutable.
   """
 
   use Bilimbi.Base.UI, :live_view
@@ -29,6 +29,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
       |> assign(:page_title, "Management reports")
       |> assign(:active_nav, "finance.reports")
       |> assign(:browser_timezone, nil)
+      |> assign(:auditor_pack, nil)
 
     if connected?(socket), do: Reports.subscribe(scope(socket), company_id(socket))
 
@@ -56,6 +57,7 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
 
     {:noreply,
      socket
+     |> assign(:auditor_pack, nil)
      |> assign(:params, params)
      |> assign(state)
      |> assign(:state, state)
@@ -68,12 +70,37 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
     handle_params(socket.assigns.params, nil, assign(socket, :browser_timezone, timezone))
   end
 
+  def handle_event("export_auditor_pack", _params, socket) do
+    with {:ok, socket} <-
+           Bilimbi.Base.Authz.LiveAuthorization.authorize_event(
+             socket,
+             Reports.export_capability()
+           ) do
+      case Reports.export_auditor_pack(
+             scope(socket),
+             company_id(socket),
+             socket.assigns.period.to
+           ) do
+        {:ok, artifact} ->
+          {:noreply,
+           socket
+           |> assign(:auditor_pack, artifact)
+           |> put_flash(:success, "Auditor pack generated.")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, export_refusal(reason))}
+      end
+    else
+      {:denied, socket} -> {:noreply, socket}
+    end
+  end
+
   def handle_event("compare", params, socket) do
     compare = if get_in(params, ["report", "compare"]) == "true", do: nil, else: "none"
     {:noreply, push_patch(socket, to: report_path(socket.assigns.state, compare: compare))}
   end
 
-  # A pinned report cannot change, so it ignores postings. Notices already
+  # A pinned report ignores later postings; metadata remains live. Notices already
   # waiting are taken with this one, so a burst of postings reads once.
   @impl true
   def handle_info({:finance_ledger_posted, _notice}, socket) do
@@ -124,6 +151,25 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
       {:error, reason} -> socket |> assign(:report, nil) |> assign(:refusal, reason)
     end
   end
+
+  defp export_refusal(:snapshot_changed),
+    do: "The company changed while the pack was being generated. Generate it again."
+
+  defp export_refusal(:unauthorized),
+    do:
+      "Auditor packs require read access to every Finance module. Ask your administrator for auditor access."
+
+  defp export_refusal(:invalid_size),
+    do:
+      "The archive exceeds the configured download size limit. Ask your administrator to increase it."
+
+  defp export_refusal(:retention_not_configured),
+    do:
+      "Document retention has not been configured. Ask your administrator to configure downloads."
+
+  defp export_refusal(_reason),
+    do:
+      "The auditor pack could not be generated. Retry or ask your administrator to check document storage."
 
   defp columns(current, previous, true), do: [current, previous]
   defp columns(current, _previous, false), do: [current]
@@ -179,12 +225,18 @@ defmodule Bilimbi.Finance.Reports.Web.ReportsLive do
             <span :if={@pinned}> · pinned</span>
           </:subtitle>
           <:actions :if={@report}>
+            <.button id="export-auditor-pack" phx-click="export_auditor_pack">Generate auditor pack</.button>
+            <.button
+              :if={@auditor_pack}
+              id="download-auditor-pack"
+              href={~p"/finance/reports/auditor-packs/#{@auditor_pack.id}"}
+            >Download auditor pack</.button>
             <.button
               :if={is_nil(@pinned)}
               id="pin-report"
               patch={report_path(@state, through: @report.through_entry_number)}
             >
-              Pin these figures
+              Pin entry cutoff
             </.button>
             <.button :if={@pinned} id="unpin-report" patch={report_path(@state, through: nil)}>
               Show latest figures

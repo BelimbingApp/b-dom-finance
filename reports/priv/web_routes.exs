@@ -1,5 +1,12 @@
 [
   %{
+    path: "/finance/reports/auditor-packs/:artifact_id",
+    controller: Bilimbi.Finance.Reports.Web.AuditorPackController,
+    action: :show,
+    session: :auth,
+    capability: "finance.reports.reports-export"
+  },
+  %{
     path: "/finance/reports",
     live: Bilimbi.Finance.Reports.Web.ReportsLive,
     session: :auth,

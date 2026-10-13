@@ -5,10 +5,10 @@ from its general ledger: profit and loss for any date range, the balance
 sheet and the cash position as of any date, headline figures against the
 previous period, and the entries behind any account's figure; and the pages
 an independent reviewer reads the ledger's approval exceptions and entries
-recorded late on, with the company's bookkeeping controls. It owns no table;
-every figure comes from `finance/ledger`'s facade, and the only writes its
-pages make (the separation setting, controlled bookkeeping, a fiscal year, a
-review) are that facade's calls.
+recorded late on, with the company's bookkeeping controls. It stores
+immutable issued snapshots; ledger figures come through `finance/ledger`'s
+facade, and the only other writes its pages make (the separation setting,
+controlled bookkeeping, a fiscal year, a review) are that facade's calls.
 
 ## Management reports, not statutory statements
 
@@ -144,8 +144,8 @@ position, each labelled as a management report. Each
 account's amount links to `/finance/reports/accounts/:account_id`, which
 lists the entries behind it with who posted each and when. The page reads
 again when an entry posts. "Pin these figures" adds the report's entry
-number to the address, which then shows the same figures for good and does
-not update; that address is the reproducible reference to a report.
+number to the address and stops automatic posting updates. The address
+freezes ledger postings; it is not an issued copy and metadata can still change.
 
 `/finance/reports/bookkeeping` (menu Finance › Bookkeeping, route capability
 `finance.ledger.view`) shows whether the company is controlled, and why it
@@ -186,9 +186,10 @@ four columns, and the overview four windows.
 The module supports the audit trail a company's accounts are reviewed on.
 What it covers:
 
-- **Reproducible reports.** Every report states the last entry it counts,
-  and that number reproduces its figures exactly at any later time. A
-  pinned page is a durable reference an auditor can return to.
+- **Issued reports.** `issue_report/5` stores the figures, dates, entry cutoff,
+  chart, layout, labels, generator version, issuer and database-stamped time.
+  `get_issued_report/3` returns that immutable stored copy. Entry pins alone
+  reproduce postings, not complete live reports.
 - **Traceability.** Every figure on a statement opens the entries that make
   it up, numbered gaplessly by the ledger, with who posted each (and any
   impersonator) and when; reversals and reversed entries are marked, so a
@@ -233,3 +234,58 @@ module's setting. `web_test/` drives the pages in the real host, the
 bookkeeping page included; a sandboxed
 post never commits, so the live update is proved there by delivering the
 notice the ledger sends after a commit.
+
+## Issuing and evidence export
+
+`issue_report(scope, company, kind, dates, options)` supports `:profit_and_loss`,
+`:balance_sheet`, `:cash_position`, `:trial_balance`, `:aged_receivables` and
+`:aged_payables`. Arguments follow their live APIs. It requires an outer
+repeatable-read transaction and the writable company lock; call outside a
+transaction. The stored `content`, `chart`, `layout` and `membership` are durable JSON with
+string keys, exact decimal strings and ISO dates/timestamps. `get_issued_report/3`
+reads these stored values rather than recalculating. The report implementation
+version is independent of future code changes. Section membership is stored explicitly for every covered chart account;
+the configured layout and effective section headings are retained too.
+
+`export_auditor_pack(scope, company, as_of)` returns Base Artifacts metadata
+for a ZIP download. `read_auditor_pack/3` rechecks export and all Finance source view grants,
+and verifies integrity on every download. The reports page provides generation
+and download controls. Source evidence is all company records visible in one repeatable-read
+database snapshot, including drafts, reversals and lifecycle events; the trial
+balance and aging summaries additionally use the supplied date and the same
+ledger entry cutoff. Each owning Finance facade exposes bounded, ID-ordered
+`evidence_page/4` reads; the generator consumes every page through the terminal
+cursor and writes CSV incrementally. Source schemas remain private.
+
+The archive includes line-level ledger entries/lines and chart, trial balance,
+AR/AP documents, lines, tax, payments and allocations, payment requests with
+their events, fiscal closing events, manual journals with their lines and
+decisions, approval exceptions with their reviews, duty-separation changes,
+e-invoice code overrides, e-invoice submissions and status events, bank statements and lines, matches,
+match events, stored reconciliation figures/items, and issued report snapshots.
+Base Audit trails are not included: they stay behind Base Audit's own
+capability. The source-file index names imported bank files with their original
+SHA-256; their original bytes are not retained. Exact authority submission
+payloads are included with their hashes. No source uploads exist for the current
+AR/AP document APIs.
+
+The pack covers the Ledger, Receivables, Payables, Reconciliation, E-invoice,
+Payroll, SST and Fixed Assets modules: each facade's `evidence_page/4` exports every table of
+the module, including payroll posting events, mapping and settings changes,
+and SST registrations, mappings, returns, return events, boxes, accounts,
+sources and adjustments; and fixed-asset categories, revisions, assets, runs, items, exceptions and events. Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
+A test lists every table of those modules and fails unless the pack exports it
+or an exclusion names it with a reason (the only exclusion is the issued
+report table, which the pack writes as `issued-reports.csv`), so a new table
+cannot be left out unnoticed.
+
+`manifest.json` records the company/tenant, database snapshot, ledger cutoff,
+filters, UTC timezone, generator version, actor/time, file hashes, CSV row counts
+and line debit/credit control totals, verified against ledger aggregates. Amounts retain their exact decimal written
+form, never floats. Text that could be interpreted as a spreadsheet formula is
+prefixed with an apostrophe before CSV quoting. Numeric Decimal cells remain
+numeric, including negative balances. Archive publication is bounded by the
+configured Base Artifacts size limit; errors return no downloadable partial pack.
+Artifacts have their configured expiry, distinct from durable issued snapshots.
+Grant auditors Finance view and export capabilities through ordinary company
+authorization; database credentials are unnecessary.

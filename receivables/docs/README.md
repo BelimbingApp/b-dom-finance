@@ -199,9 +199,9 @@ buckets.
 Every invoice, credit note, payment, and reversal counts from its own date,
 and each posted one ledger entry. The report names `through_entry_number`,
 the last entry it counts; passing the same `as_of` and
-`through_entry_number` reproduces its figures exactly, the way the ledger's
-trial balance does, because those records never change and later ones post
-later entry numbers. While the receivable account takes postings only from
+`through_entry_number` reproduces its amounts exactly, the way the ledger's
+trial balance does (customer names and codes are not frozen), because those
+records never change and later ones post later entry numbers. While the receivable account takes postings only from
 this module, the report's total equals that account's balance in
 `Bilimbi.Finance.Ledger.trial_balance/4` for the same date and entry
 number. Customer codes and names are read as they are now; each row also
@@ -322,8 +322,9 @@ sales ledger is held to. What this slice covers:
   value, and a database-stamped time. Drafts, setup, series, tax codes, and
   customers change through Repo writes, which Base Audit records with their
   actor in the composed host (ADR 0013).
-- **Reproducible reports.** Any past aged-receivables report reproduces
-  exactly from its `as_of` and `through_entry_number`.
+- **Pinned amounts.** Aged-receivables amounts reproduce from `as_of` and
+  `through_entry_number`; current customer names and codes can change. Use
+  `Bilimbi.Finance.Reports.issue_report/5` for an immutable issued copy.
 - **Retention.** Nothing is deleted: the database refuses DELETE and
   TRUNCATE on every receivables table, except deleting a draft's own lines
   and tax lines while it is a draft, and unmounting Finance keeps every row. How long records must
