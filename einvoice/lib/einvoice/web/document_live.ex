@@ -179,6 +179,10 @@ defmodule Bilimbi.Finance.Einvoice.Web.DocumentLive do
     do:
       "Only a recorded, released, refused, or invalid document can be submitted; a consolidated document reports the documents it covers, and one the authority refused or found invalid is never sent again: consolidate the month again."
 
+  defp submit_message(:source_taken),
+    do:
+      "Another document that stands (submitted, valid, rejected, or consolidated) is already the tax document of the same transaction."
+
   defp submit_message(:missing_credentials),
     do: "Set the client ID and secret for this environment in the e-invoice settings first."
 

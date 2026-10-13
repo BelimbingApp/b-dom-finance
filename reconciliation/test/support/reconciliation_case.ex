@@ -39,6 +39,7 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationCase do
     finance.reconciliation.reconciliations.manage
     finance.reconciliation.reconciliations.finalise
     finance.reconciliation.statement-lines.post
+    finance.reconciliation.statement-lines.manage
   )
 
   @doc "Every ledger and reconciliation capability the case grants."

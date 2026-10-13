@@ -43,7 +43,8 @@ here; they govern this code and are not copied here.
   sale or purchase another module already posted names it as `source`
   (`module`, `record`, `ledger_entry_id`), so e-invoicing links to that entry
   and never posts the transaction again; never issue such a document without
-  the source and let both post.
+  the source and let both post (a note whose original names one is refused
+  without its own).
 - Write UBL JSON through `MyInvois.Json` (`einvoice/lib/einvoice/my_invois/json.ex`),
   not `Jason.encode!/1` of a map: the authority signs exact bytes, so key
   order and each number's written form must survive.

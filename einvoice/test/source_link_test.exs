@@ -3,8 +3,11 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
   use Bilimbi.Base.Database.DataCase, async: false
 
   alias Bilimbi.Base.ModuleRegistry.ContributionRegistry
+  alias Bilimbi.Base.Queue.Execution
+  alias Bilimbi.Base.Repo
   alias Bilimbi.Finance.Einvoice
-  alias Bilimbi.Finance.Einvoice.{Documents, Posting, TestFixtures}
+  alias Bilimbi.Finance.Einvoice.{Documents, Posting, Submission, SubmitWorker, TestFixtures}
+  alias Bilimbi.Finance.Einvoice.MyInvois.TokenCache
   alias Bilimbi.Finance.Ledger
 
   import Bilimbi.Base.Database.TestHelpers, only: [errors_on: 1]
@@ -160,6 +163,64 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
       assert {:ok, entries} = Ledger.list_entries(op, 73)
       assert Enum.map(entries, & &1.owner) == [owner("document:17"), owner("document:18")]
       assert {:ok, %{unposted: [], unreversed: []}} = Einvoice.reconciliation(op, 73)
+    end
+
+    test "a note against a linked original must link to the owner's correction",
+         %{operator: op, accounts: accounts} do
+      invoice_entry = sale_entry!(op, accounts, "document:17")
+      invoice = linked_invoice!(op, invoice_entry, "document:17")
+      :ok = TestFixtures.validate!(op, 73, invoice.id)
+
+      for type <- ["02", "03", "04"] do
+        assert {:error, changeset} =
+                 Einvoice.issue_document(
+                   op,
+                   73,
+                   TestFixtures.invoice_attributes(%{
+                     document_type: type,
+                     code_number: "N-#{type}",
+                     original_document_id: invoice.id
+                   })
+                 )
+
+        assert %{source: [message]} = errors_on(changeset)
+        assert message =~ "is required: the original document is the tax document"
+      end
+
+      assert {:ok, notes} = Einvoice.list_documents(op, 73)
+      assert Enum.map(notes, & &1.id) == [invoice.id]
+      assert entry_count(op) == 1
+
+      # Named, the note links to the correcting record and still posts nothing.
+      credit_entry = sale_entry!(op, accounts, "document:18", mirror: true)
+
+      assert {:ok, %{recognised_by_source?: true}} =
+               Einvoice.issue_document(
+                 op,
+                 73,
+                 TestFixtures.invoice_attributes(%{
+                   document_type: "02",
+                   code_number: "CN-1",
+                   original_document_id: invoice.id,
+                   source: source(credit_entry, "document:18")
+                 })
+               )
+    end
+
+    test "a note against an unlinked original needs no source", %{operator: op} do
+      {:ok, original} = Einvoice.issue_document(op, 73, TestFixtures.invoice_attributes())
+      :ok = TestFixtures.validate!(op, 73, original.id)
+
+      assert {:ok, %{recognised_by_source?: false}} =
+               Einvoice.issue_document(
+                 op,
+                 73,
+                 TestFixtures.invoice_attributes(%{
+                   document_type: "02",
+                   code_number: "CN-1",
+                   original_document_id: original.id
+                 })
+               )
     end
 
     test "a self-billed document links to the bill payables recognised",
@@ -327,6 +388,71 @@ defmodule Bilimbi.Finance.Einvoice.SourceLinkTest do
                    source: source(entry, "document:17")
                  })
                )
+    end
+  end
+
+  describe "submitting a document whose source another document took" do
+    setup %{first_scope: scope} do
+      :ok = TestFixtures.put_credentials!(scope, 73)
+      :ok = TestFixtures.put_settings!(scope, 73, %{"document_version" => "1.0"})
+      TokenCache.delete({73, "sandbox", "test-client-id"})
+      on_exit(fn -> TokenCache.delete({73, "sandbox", "test-client-id"}) end)
+      Application.put_env(:bilimbi_finance_einvoice, :poll_interval_ms, 0)
+      on_exit(fn -> Application.delete_env(:bilimbi_finance_einvoice, :poll_interval_ms) end)
+
+      TestFixtures.stub_authority!(%{
+        {"POST", "/connect/token"} => &TestFixtures.token_response/1,
+        {"POST", "/api/v1.0/documentsubmissions/"} => &TestFixtures.accepted_response(&1, "INV-2")
+      })
+
+      :ok
+    end
+
+    defp execution(scope),
+      do: %Execution{job_id: 1, attempt: 1, max_attempts: 20, queue: "default", scope: scope}
+
+    defp args(document), do: %{"company_id" => 73, "document_id" => document.id}
+
+    test "records the refusal and stops, instead of raising", %{operator: op, accounts: accounts} do
+      entry = sale_entry!(op, accounts, "document:17")
+      first = linked_invoice!(op, entry, "document:17")
+      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+
+      assert :ok = SubmitWorker.handle_job(args(second), execution(op))
+      assert {:ok, %{status: "submitted"}} = Einvoice.get_document(op, 73, second.id)
+      assert [%{document_id: second_id}] = Repo.all(Submission)
+      assert second_id == second.id
+
+      assert {:error, :source_taken} = Einvoice.submit_document(op, 73, first.id)
+
+      assert {:cancel, :source_taken} = SubmitWorker.handle_job(args(first), execution(op))
+
+      assert {:ok, %{status: "issued", events: events}} = Einvoice.get_document(op, 73, first.id)
+
+      assert [
+               %{event: "issued"},
+               %{event: "unsendable", reason: "cannot submit: source_taken"}
+             ] = events
+
+      assert [%{document_id: ^second_id}] = Repo.all(Submission)
+    end
+
+    test "submits again once the standing document no longer stands",
+         %{operator: op, accounts: accounts} do
+      entry = sale_entry!(op, accounts, "document:17")
+      first = linked_invoice!(op, entry, "document:17")
+      second = linked_invoice!(op, entry, "document:17", %{code_number: "INV-2"})
+      assert :ok = SubmitWorker.handle_job(args(second), execution(op))
+      assert {:cancel, :source_taken} = SubmitWorker.handle_job(args(first), execution(op))
+
+      Documents.record_event!(op, 73, second.id, %{
+        event: "invalid",
+        document_uuid: "F9D425P6DS7D8IU",
+        authority_status: "Invalid",
+        reason: "Rejected"
+      })
+
+      assert {:ok, %{job_id: _}} = Einvoice.submit_document(op, 73, first.id)
     end
   end
 

@@ -231,6 +231,13 @@ defmodule Bilimbi.Finance.Reconciliation.ReconciliationsTest do
       assert {:error, :match_finalised} =
                Reconciliation.unmatch(operator, 73, posted.match.id, %{reason: "Try"})
 
+      # The owner's reversal unmatches first, so it keeps the entry too.
+      assert {:error, :match_finalised} =
+               Reconciliation.reverse_statement_line(operator, 73, fee_line.id, %{reason: "Try"})
+
+      assert {:ok, %{reversed_by_entry_id: nil}} =
+               Ledger.get_entry(operator, 73, posted.entry.id)
+
       assert_raise Postgrex.Error,
                    ~r/was counted by a finalised reconciliation and is kept/,
                    fn ->

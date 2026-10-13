@@ -108,7 +108,8 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
   """
   @spec prepare(Scope.t(), pos_integer(), map()) ::
           {:ok, map()}
-          | {:error, :not_submittable | :missing_credentials | :signing_key_required}
+          | {:error,
+             :not_submittable | :source_taken | :missing_credentials | :signing_key_required}
   def prepare(%Scope{} = scope, company_id, document) do
     credentials = Configuration.credentials(scope, company_id, document.environment)
     version = Configuration.document_version(scope, company_id)
@@ -123,6 +124,9 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
       document.status in Consolidation.releasing_events() and
           Consolidation.consolidated?(document) ->
         {:error, :not_submittable}
+
+      Documents.source_taken?(scope, company_id, document) ->
+        {:error, :source_taken}
 
       is_nil(credentials.client_id) or is_nil(credentials.client_secret) ->
         {:error, :missing_credentials}
@@ -224,25 +228,34 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
 
     case authority().payload(document, %{version: version, signing_key: key}, now) do
       {:ok, payload} ->
-        submission = store_submission!(scope, company_id, document, payload)
+        case store_submission(scope, company_id, document, payload) do
+          {:ok, submission} ->
+            outcome =
+              authority().submit(scope, company_id, credentials, %{
+                format: payload.format,
+                bytes: payload.bytes,
+                code_number: document.code_number
+              })
 
-        outcome =
-          authority().submit(scope, company_id, credentials, %{
-            format: payload.format,
-            bytes: payload.bytes,
-            code_number: document.code_number
-          })
+            outcome = recover_outcome(scope, company_id, credentials, document, outcome)
 
-        outcome = recover_outcome(scope, company_id, credentials, document, outcome)
+            record_submission_outcome(
+              scope,
+              company_id,
+              document,
+              submission,
+              outcome,
+              now
+            )
 
-        record_submission_outcome(
-          scope,
-          company_id,
-          document,
-          submission,
-          outcome,
-          now
-        )
+          {:error, reason} ->
+            record(scope, company_id, document.id, %{
+              event: "unsendable",
+              reason: "cannot submit: #{reason}"
+            })
+
+            {:cancel, reason}
+        end
 
       {:error, reason} ->
         record(scope, company_id, document.id, %{
@@ -280,26 +293,33 @@ defmodule Bilimbi.Finance.Einvoice.Clearance do
     |> Enum.reject(&(&1.id in settled))
   end
 
-  # The bytes are committed before the authority sees them.
-  defp store_submission!(scope, company_id, document, payload) do
+  # The bytes are committed before the authority sees them, unless another
+  # document that stands took the source since `prepare/3` looked.
+  defp store_submission(scope, company_id, document, payload) do
     actor = actor_columns(scope)
 
     write!(scope, company_id, fn ->
-      Repo.insert!(
-        struct!(
-          Submission,
-          Map.merge(actor, %{
-            tenant_id: Scope.tenant_id(scope),
-            company_id: company_id,
-            document_id: document.id,
-            environment: document.environment,
-            format: payload.format,
-            document_version: payload.version,
-            payload: payload.bytes,
-            payload_sha256: :sha256 |> :crypto.hash(payload.bytes) |> Base.encode16(case: :lower)
-          })
-        )
-      )
+      if Documents.source_taken?(scope, company_id, document) do
+        {:error, :source_taken}
+      else
+        {:ok,
+         Repo.insert!(
+           struct!(
+             Submission,
+             Map.merge(actor, %{
+               tenant_id: Scope.tenant_id(scope),
+               company_id: company_id,
+               document_id: document.id,
+               environment: document.environment,
+               format: payload.format,
+               document_version: payload.version,
+               payload: payload.bytes,
+               payload_sha256:
+                 :sha256 |> :crypto.hash(payload.bytes) |> Base.encode16(case: :lower)
+             })
+           )
+         )}
+      end
     end)
   end
 
