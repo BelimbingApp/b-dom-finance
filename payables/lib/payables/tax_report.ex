@@ -113,11 +113,17 @@ defmodule Bilimbi.Finance.Payables.TaxReport do
     through = Keyword.get(options, :through_entry_number)
 
     cond do
-      not (optional_date?(from) and optional_date?(to)) -> {:error, :invalid_option}
-      from && to && Date.compare(from, to) == :gt -> {:error, :invalid_option}
+      not (optional_date?(from) and optional_date?(to)) ->
+        {:error, :invalid_option}
+
+      from && to && Date.compare(from, to) == :gt ->
+        {:error, :invalid_option}
+
       not (is_nil(through) or (is_integer(through) and through in 0..@max_bigint)) ->
         {:error, :invalid_option}
-      true -> {:ok, from, to, through}
+
+      true ->
+        {:ok, from, to, through}
     end
   end
 

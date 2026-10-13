@@ -45,8 +45,8 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
 
       assert {money(prior.taxable_amount), money(prior.tax_amount)} == {"20.00", "2.00"}
 
-      assert {invoices.document_count, money(invoices.taxable_amount),
-              money(invoices.tax_amount), invoices.account_id} ==
+      assert {invoices.document_count, money(invoices.taxable_amount), money(invoices.tax_amount),
+              invoices.account_id} ==
                {2, "150.00", "15.00", context.accounts.tax.id}
 
       assert {money(reduced_row.taxable_amount), money(reduced_row.tax_amount)} ==
@@ -118,10 +118,12 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
 
       # Half the invoice was received and kept.
       assert %{measure: "received", tax_code: "T10", document_count: 1} = standard_row
+
       assert {money(standard_row.taxable_amount), money(standard_row.tax_amount)} ==
                {"50.00", "5.00"}
 
       assert %{measure: "received", tax_code: "T6"} = reduced_row
+
       assert {money(reduced_row.taxable_amount), money(reduced_row.tax_amount)} ==
                {"25.00", "1.50"}
     end
@@ -138,7 +140,9 @@ defmodule Bilimbi.Finance.Receivables.TaxReportTest do
       # Twelve months from 10 September 2025 run from the 11th to 10
       # September 2026, so the tax on what is still owed is due on the 11th.
       {:ok, _late_payment} = pay(context, invoice, "11", ~D[2026-09-20])
-      _late_credit = issue!(context, "credit_note", ~D[2026-09-25], [taxed("10", standard)], invoice)
+
+      _late_credit =
+        issue!(context, "credit_note", ~D[2026-09-25], [taxed("10", standard)], invoice)
 
       assert {:ok, rows} =
                Receivables.received_tax_totals(operator, 73,

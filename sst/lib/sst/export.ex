@@ -70,14 +70,20 @@ defmodule Bilimbi.Finance.Sst.Export do
       ["", "", "Read through mapping", to_string(figures.through_mapping_number), ""]
     ]
 
-    Enum.map_join(header ++ boxes ++ pins, "", &(Enum.map_join(&1, ",", fn cell -> cell(cell) end) <> "\r\n"))
+    Enum.map_join(
+      header ++ boxes ++ pins,
+      "",
+      &(Enum.map_join(&1, ",", fn cell -> cell(cell) end) <> "\r\n")
+    )
   end
 
   defp status(%{status: "finalised", version: version}), do: "Finalised, version #{version}"
   defp status(_report), do: "Draft, not finalised"
 
   defp amount(nil, _minor_units), do: ""
-  defp amount(amount, minor_units), do: amount |> Decimal.round(minor_units) |> Decimal.to_string(:normal)
+
+  defp amount(amount, minor_units),
+    do: amount |> Decimal.round(minor_units) |> Decimal.to_string(:normal)
 
   # RFC 4180 quoting, and a leading quote on text a spreadsheet would read
   # as a formula; amounts are written as plain numbers.

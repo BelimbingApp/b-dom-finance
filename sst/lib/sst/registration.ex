@@ -50,7 +50,9 @@ defmodule Bilimbi.Finance.Sst.Registration do
       :service_tax_basis,
       :recorded_by_user_id
     ])
-    |> validate_format(:sales_tax_number, @number, message: "is not shaped like A00-0000-00000000")
+    |> validate_format(:sales_tax_number, @number,
+      message: "is not shaped like A00-0000-00000000"
+    )
     |> validate_format(:service_tax_number, @number,
       message: "is not shaped like A00-0000-00000000"
     )

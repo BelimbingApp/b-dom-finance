@@ -88,7 +88,9 @@ defmodule Bilimbi.Finance.Sst.Figures do
          through_mapping_number: mapping_number,
          boxes: boxes,
          tax_payable: Enum.find(boxes, &(&1.key == Form.payable_box())).tax_amount,
-         sources: Enum.with_index(sources, 1) |> Enum.map(fn {row, n} -> Map.put(row, :line_number, n) end),
+         sources:
+           Enum.with_index(sources, 1)
+           |> Enum.map(fn {row, n} -> Map.put(row, :line_number, n) end),
          unmapped: unmapped,
          rate_mismatches: Enum.filter(sources, & &1.rate_mismatch),
          accounts: reconcile(accrual, tax_type, mappings, codes, totals.rows, accounts)
@@ -184,7 +186,13 @@ defmodule Bilimbi.Finance.Sst.Figures do
 
       %{box: nil} = mapping ->
         {:counted,
-         counted(row, mapping, nil, scaled(row.carried_taxable, row.sign), scaled(row.carried_tax, row.sign))}
+         counted(
+           row,
+           mapping,
+           nil,
+           scaled(row.carried_taxable, row.sign),
+           scaled(row.carried_tax, row.sign)
+         )}
 
       %{box: key} = mapping ->
         if Form.mapped_tax_type(key) == tax_type,
@@ -204,7 +212,12 @@ defmodule Bilimbi.Finance.Sst.Figures do
 
   defp to_box(row, mapping, box) do
     row
-    |> counted(mapping, box.key, scaled(row.carried_taxable, row.sign), scaled(row.carried_tax, row.sign))
+    |> counted(
+      mapping,
+      box.key,
+      scaled(row.carried_taxable, row.sign),
+      scaled(row.carried_tax, row.sign)
+    )
     |> Map.put(:rate_mismatch, mismatch?(row, box))
   end
 

@@ -80,6 +80,7 @@ defmodule Bilimbi.Finance.Sst.Returns do
   end
 
   defp tax_type_option(nil), do: :ok
+
   defp tax_type_option(tax_type) when is_binary(tax_type),
     do: if(tax_type in Form.tax_types(), do: :ok, else: {:error, :invalid_option})
 
@@ -451,8 +452,8 @@ defmodule Bilimbi.Finance.Sst.Returns do
 
   defp source_amounts(rows) do
     Enum.map(rows, fn row ->
-      {row.source, row.document_kind, row.measure, row.tax_code_id, row.box,
-       row.document_count, normal(row.taxable_amount), normal(row.tax_amount)}
+      {row.source, row.document_kind, row.measure, row.tax_code_id, row.box, row.document_count,
+       normal(row.taxable_amount), normal(row.tax_amount)}
     end)
   end
 
@@ -775,9 +776,7 @@ defmodule Bilimbi.Finance.Sst.Returns do
     end)
 
     for row <- figures.sources do
-      Repo.insert!(
-        struct(ReturnSource, Map.merge(owned, Map.drop(row, [:rate_mismatch])))
-      )
+      Repo.insert!(struct(ReturnSource, Map.merge(owned, Map.drop(row, [:rate_mismatch]))))
     end
 
     for row <- figures.accounts do

@@ -116,7 +116,7 @@ defmodule Bilimbi.Finance.Sst.Registrations do
 
     start = Changeset.get_field(changeset, :period_start)
 
-    if changed? and start && Date.compare(start, reported_through) != :gt,
+    if (changed? and start) && Date.compare(start, reported_through) != :gt,
       do:
         Changeset.add_error(
           changeset,

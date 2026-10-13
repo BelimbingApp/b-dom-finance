@@ -21,7 +21,9 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
           line(context, "70")
         ])
 
-      _same_period = credit_note!(context, january, ~D[2026-02-01], [line(context, "100", :goods10)])
+      _same_period =
+        credit_note!(context, january, ~D[2026-02-01], [line(context, "100", :goods10)])
+
       _earlier = credit_note!(context, december, ~D[2026-02-02], [line(context, "50", :goods10)])
       _service = invoice!(context, ~D[2026-01-11], [line(context, "400", :services8)])
       _schedule_c = bill!(context, "B-1", ~D[2026-01-20], "400", :schedule_c)
@@ -145,7 +147,9 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
       assert pinned.boxes == before.boxes
       assert {:ok, now} = Sst.preview_return(context.operator, 73, attributes)
       assert box(now, "11a") == {"1500.00", "150.00"}
-      assert {:error, :invalid_option} = Sst.preview_return(context.operator, 73, attributes, at: 1)
+
+      assert {:error, :invalid_option} =
+               Sst.preview_return(context.operator, 73, attributes, at: 1)
     end
   end
 
@@ -171,10 +175,16 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
       assert %{return_number: 2} = open!(context, "service_tax", "2026-01-01")
 
       assert {:error, :not_a_taxable_period} =
-               Sst.open_return(operator, 73, %{tax_type: "sales_tax", period_start: ~D[2026-02-01]})
+               Sst.open_return(operator, 73, %{
+                 tax_type: "sales_tax",
+                 period_start: ~D[2026-02-01]
+               })
 
       assert {:error, :not_registered} =
-               Sst.open_return(operator, 73, %{tax_type: "sales_tax", period_start: ~D[2025-11-01]})
+               Sst.open_return(operator, 73, %{
+                 tax_type: "sales_tax",
+                 period_start: ~D[2025-11-01]
+               })
 
       assert {:error, :invalid_tax_type} =
                Sst.open_return(operator, 73, %{tax_type: "vat", period_start: @january})
@@ -182,7 +192,10 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
       {:ok, _} = Sst.register(operator, 73, %{service_tax_number: ""})
 
       assert {:error, :not_registered_for_tax} =
-               Sst.open_return(operator, 73, %{tax_type: "service_tax", period_start: ~D[2026-03-01]})
+               Sst.open_return(operator, 73, %{
+                 tax_type: "service_tax",
+                 period_start: ~D[2026-03-01]
+               })
     end
 
     test "needs the prepare capability", context do
@@ -289,6 +302,7 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
       assert money(payable) == "93.00"
 
       assert {:ok, report} = Sst.get_return(operator, 73, tax_return.id)
+
       assert [%{action: "opened"}, %{action: "finalised", recorded_by_user_id: 91} = event] =
                report.events
 
@@ -393,7 +407,6 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
           Repo.transaction(fn -> SQL.query!(Repo, sql, []) end)
         end
       end
-
     end
   end
 
@@ -427,6 +440,7 @@ defmodule Bilimbi.Finance.Sst.ReturnsTest do
                Sst.amend_return(operator, 73, original.id, %{reason: "Twice"})
 
       assert {:ok, report} = Sst.get_return(operator, 73, amendment.id)
+
       assert [%{description: "Bad debt relief approved", copied_from_adjustment_id: copied}] =
                report.adjustments
 
