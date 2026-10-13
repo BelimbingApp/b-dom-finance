@@ -34,6 +34,10 @@ and an explicit company ID. Results are plain maps.
 | `cash_position/4` | The balances of the accounts the cash sections cover, as of one to four dates |
 | `overview/4` | Headline figures for a period and `previous_period/1` of it |
 | `account_activity/4` | One account's debits and credits over a window, and the entries behind them |
+| `issue_report/5` | Immutable issued statements, trial balances and aging reports |
+| `get_issued_report/3` | The stored copy, under its source view permissions |
+| `export_auditor_pack/3` | Company evidence ZIP at one pinned database snapshot |
+| `read_auditor_pack/3` | Reauthorized artifact download |
 | `subscribe/2` | The ledger's posting notices (`Ledger.subscribe_postings/2`) |
 | `previous_period/1` | The comparison period: as many whole months before, or as many days |
 | `valid_sections?/1` | The validator Base Settings runs on the layout setting |
@@ -49,16 +53,19 @@ actor and the target company when it runs, through
 `Bilimbi.Core.Company.authorize_company_target/3`, and the ledger calls it
 makes authorize again: a system scope or a missing grant is
 `{:error, :unauthorized}`, and a company the scope cannot see is
-`{:error, :company_not_found}`. Reports have no capability of their own:
-their figures are the ledger's, so reading them is reading the ledger.
+`{:error, :company_not_found}`. Issuing requires `finance.reports.issue` plus the source report's view grants.
+Generating and downloading evidence requires `finance.reports.reports-export` plus
+view grants for each Finance source. Auditor roles can hold these read and
+export grants without posting, setup, approval, or database-console access.
 
 ## Figures that reproduce
 
 A report names `through_entry_number`, the last ledger entry it counts, and
 every column is read at that same number. Posted entries never change and
-are numbered in posting order, so passing the number back reproduces the
-report's figures exactly, whatever was posted since, including entries
-back-dated into its periods. `account_activity/4` given the report's window
+are numbered in posting order, so passing the number back freezes the
+postings counted, including later back-dated entries. It does **not** freeze
+the chart, names, sections, settings, or customer labels. Removing an account
+from a cash section changes even a pinned live cash total. `account_activity/4` given the report's window
 and number lists exactly the entries the figure counted, and its debits and
 credits equal the figure.
 
@@ -195,8 +202,8 @@ What it covers:
   it up, numbered gaplessly by the ledger, with who posted each (and any
   impersonator) and when; reversals and reversed entries are marked, so a
   correction is visible as a reversal, never as a changed figure.
-- **Immutable records, nothing deleted.** Reports keep and delete nothing;
-  they read only posted entries, which the ledger keeps append-only. The
+- **Immutable issued records.** PostgreSQL refuses update, delete and truncate
+  of issued reports; the ledger keeps postings append-only. The
   section layout is a Base Settings value, and every change to it is a Repo
   write that Base Audit records with its actor and time (ADR 0013).
 - **Double-entry consistency.** Statement totals come from the same
@@ -211,8 +218,7 @@ What it covers:
   types and the company's own sections; no chart, heading, or statement
   format of any accounting standard is built in, and none is claimed.
 
-Gapless document numbering does not apply: reports issue no numbered
-documents. Known gaps, not built, so these outputs are management reports only:
+Known gaps, not built, so these outputs are management reports only:
 
 - an accountant-adjustment or statutory-pack bridge from these figures to
   statutory statements;
