@@ -20,6 +20,9 @@ defmodule Bilimbi.Finance.Receivables.Attachments.Payment do
   def source_label, do: "Payment received"
 
   @impl true
+  def view_capability, do: Receivables.view_capability()
+
+  @impl true
   def document(%Scope{} = scope, company_id, payment_id) do
     with {:ok, payment} <- Receivables.get_payment(scope, company_id, payment_id) do
       {:ok,

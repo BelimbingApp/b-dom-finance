@@ -384,6 +384,45 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
     end
   end
 
+  describe "reading without access to the source" do
+    test "the attachments grant alone shows no attachment's metadata", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      blind = TestFixtures.sign_in!(scope, 73, 94, ~w(finance.attachments.view))
+
+      assert {:ok, []} = Attachments.list_attachments(blind, 73, StubSource, 1)
+      assert {:ok, []} = Attachments.list_company_attachments(blind, 73)
+      assert {:ok, []} = Attachments.list_company_attachments(blind, 73, status: "all")
+      assert {:error, :unauthorized} = Attachments.get_attachment(blind, 73, attachment.id)
+      assert {:error, :unauthorized} = Attachments.read_attachment(blind, 73, attachment.id)
+
+      assert {:ok, [%{id: id}]} = Attachments.list_company_attachments(operator, 73)
+      assert id == attachment.id
+    end
+
+    test "a retention manager who cannot read the source cannot change its attachment", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+
+      manager =
+        TestFixtures.sign_in!(scope, 73, 95, ~w(finance.attachments.retention.manage))
+
+      assert {:error, :unauthorized} =
+               Attachments.place_hold(manager, 73, attachment.id, %{reason: "case"})
+
+      assert {:error, :unauthorized} =
+               Attachments.extend_retention(manager, 73, attachment.id, %{
+                 retain_until: ~D[2040-01-01],
+                 reason: "tax query"
+               })
+    end
+  end
+
   describe "reading" do
     test "lists by record and by company, newest page after a number", %{operator: operator} do
       {:ok, a} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file("a.txt"))

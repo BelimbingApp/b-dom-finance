@@ -7,7 +7,12 @@ defmodule Bilimbi.Finance.Attachments.Source do
   once per kind of record (a bill, a payment request, an invoice, a bank
   statement) and hands the module to `Bilimbi.Finance.Attachments`, which
   stores the module's name with each attachment and asks it again on every
-  read and write. `document/3` reads the record through the owning module's
+  read and write. `view_capability/0` is what the owning module asks to read
+  its records: every metadata read of an attachment (`get_attachment/3`, the
+  lists, the source documents page) also needs it, and leaves out the
+  attachments of a source whose records the caller cannot read, so the
+  attachments grant alone discloses no record's label, file name, or date.
+  `document/3` reads the record through the owning module's
   own facade with the caller's scope, so it carries that facade's
   authorization, and answers:
 
@@ -33,6 +38,9 @@ defmodule Bilimbi.Finance.Attachments.Source do
   @doc "The kind of record, as a person reads it (`\"Bill\"`)."
   @callback source_label() :: String.t()
 
+  @doc "The capability the owning module asks to read its records."
+  @callback view_capability() :: String.t()
+
   @doc "The record, read through its module's facade with the caller's scope."
   @callback document(Scope.t(), term(), term()) :: {:ok, document()} | {:error, term()}
 
@@ -41,6 +49,7 @@ defmodule Bilimbi.Finance.Attachments.Source do
   def source?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and function_exported?(module, :source_id, 0) and
       function_exported?(module, :source_label, 0) and
+      function_exported?(module, :view_capability, 0) and
       function_exported?(module, :document, 3)
   end
 

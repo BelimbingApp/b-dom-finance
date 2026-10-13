@@ -107,6 +107,30 @@ defmodule Bilimbi.Finance.Payables.AttachmentsTest do
              Attachments.read_attachment(context.operator, 73, attachment.id)
   end
 
+  test "the attachments grant without payables view shows no bill's file", context do
+    {:ok, bill} =
+      Payables.create_bill(
+        context.operator,
+        73,
+        bill("party", "INV-3", [line(context.accounts.stock, "10.00")])
+      )
+
+    {:ok, attachment} =
+      Attachments.attach(context.operator, 73, Bill, bill.id, AttachmentsFixtures.file())
+
+    reader =
+      Bilimbi.Finance.Payables.TestFixtures.sign_in!(
+        context.first_scope,
+        73,
+        99,
+        ~w(finance.attachments.view)
+      )
+
+    assert {:ok, []} = Attachments.list_attachments(reader, 73, Bill, bill.id)
+    assert {:ok, []} = Attachments.list_company_attachments(reader, 73)
+    assert {:error, :unauthorized} = Attachments.get_attachment(reader, 73, attachment.id)
+  end
+
   test "the source answers payables' refusals", context do
     assert {:error, :document_not_found} = Bill.document(context.operator, 73, 999)
 

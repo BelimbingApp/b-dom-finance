@@ -109,6 +109,26 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              Attachments.read_attachment(context.operator, 73, attachment.id)
   end
 
+  test "the attachments grant without receivables view shows no document's file", context do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-10-02],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    {:ok, attachment} =
+      Attachments.attach(context.operator, 73, Document, draft.id, AttachmentsFixtures.file())
+
+    reader = TestFixtures.sign_in!(context.first_scope, 73, 99, ~w(finance.attachments.view))
+
+    assert {:ok, []} = Attachments.list_attachments(reader, 73, Document, draft.id)
+    assert {:ok, []} = Attachments.list_company_attachments(reader, 73)
+    assert {:error, :unauthorized} = Attachments.get_attachment(reader, 73, attachment.id)
+  end
+
   test "the sources answer receivables' refusals", context do
     assert {:error, :document_not_found} = Document.document(context.operator, 73, 999)
     assert {:error, :payment_not_found} = Payment.document(context.operator, 73, 999)

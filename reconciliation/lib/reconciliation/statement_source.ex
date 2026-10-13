@@ -22,6 +22,9 @@ defmodule Bilimbi.Finance.Reconciliation.StatementSource do
   def source_label, do: "Bank statement"
 
   @impl true
+  def view_capability, do: Reconciliation.view_capability()
+
+  @impl true
   def document(%Scope{} = scope, company_id, statement_id) do
     with {:ok, statement} <- Reconciliation.get_statement(scope, company_id, statement_id) do
       {:ok,
