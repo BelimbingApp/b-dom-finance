@@ -12,6 +12,8 @@ defmodule BilimbiWeb.FinanceAttachmentsLiveTest do
 
   @view "finance.attachments.view"
   @manage "finance.attachments.retention.manage"
+  # StubSource's records are read with the ledger's view grant.
+  @source_view Ledger.view_capability()
 
   setup do
     signed_in_identity!()
@@ -36,7 +38,7 @@ defmodule BilimbiWeb.FinanceAttachmentsLiveTest do
   test "lists the company's attachments with a download each and the retention, withholding the form",
        %{conn: conn, keeper: keeper} do
     {:ok, attachment} = Attachments.attach(keeper, 73, StubSource, 1, TestFixtures.file())
-    grant_capabilities!([@view])
+    grant_capabilities!([@view, @source_view])
     {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/attachments")
 
     assert has_element?(view, "#attachments-retention-years", "7 years")
@@ -65,10 +67,26 @@ defmodule BilimbiWeb.FinanceAttachmentsLiveTest do
     assert conn.resp_body != "made-up scan"
   end
 
+  test "the attachments grant alone lists nothing and refuses the download", %{
+    conn: conn,
+    keeper: keeper
+  } do
+    {:ok, attachment} = Attachments.attach(keeper, 73, StubSource, 1, TestFixtures.file())
+    grant_capabilities!([@view])
+    {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/attachments")
+
+    refute has_element?(view, "#attachment-#{attachment.id}")
+    refute render(view) =~ "scan.txt"
+
+    conn = conn |> recycle() |> log_in_as() |> get(~p"/finance/attachments/#{attachment.id}/download")
+    assert conn.status == 403
+    assert conn.resp_body != "made-up scan"
+  end
+
   test "filters by standing and lengthens the retention with a reason", %{conn: conn, keeper: keeper} do
     {:ok, old} = Attachments.attach(keeper, 73, StubSource, 1, TestFixtures.file("old.txt"))
     {:ok, new} = Attachments.replace(keeper, 73, old.id, TestFixtures.file("new.txt"))
-    grant_capabilities!([@view, @manage])
+    grant_capabilities!([@view, @source_view, @manage])
     {:ok, view, _html} = conn |> log_in_as() |> live(~p"/finance/attachments")
 
     assert has_element?(view, "#attachment-#{new.id}")
