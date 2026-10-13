@@ -273,7 +273,7 @@ passes its own.
 
 The result names `through_entry_number`, the last ledger entry number of a
 payables posting it counts. A posting made later with an earlier date changes
-the figures for that date, so a report reproduces exactly by passing the same
+the figures for that date, so its amounts reproduce by passing the same
 `as_of` and its `through_entry_number`: postings never change and ledger
 entry numbers follow posting order. Party names are the latest bill's
 snapshot.
@@ -418,9 +418,10 @@ payables are held to:
 - **Retention.** Nothing is deleted: a mistaken draft is voided with a reason
   and kept, and the database refuses DELETE and TRUNCATE. How long records
   must be kept is law, not code.
-- **Reproducible reports.** Aged payables as of any date reproduce exactly
+- **Pinned amounts.** Aged-payables amounts as of any date reproduce
   from their `through_entry_number`, and reconcile to the payable accounts:
   a bill owed less than nothing is listed as an exception, never dropped.
+  `Bilimbi.Finance.Reports.issue_report/5` stores a complete issued copy.
 - **Settlement of recorded documents.** A bill and a debit note keep the
   payable account they posted to, and payments and debit notes settle that
   account even if it is no longer the setting. The ledger refuses to

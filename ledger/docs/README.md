@@ -217,8 +217,10 @@ totals) reproduce exactly by passing the same `as_of` and its
 posting order. Account names, parents, and active flags are read as they are
 now. A `through_entry_number` outside 0 to the `bigint` maximum is
 `{:error, :invalid_option}`. Once a period closes, no entry is dated into it
-or before it, so a trial balance as of a closed period's end stays the same
-without `through_entry_number`.
+or before it, so a trial balance's debit and credit figures as of a closed
+period's end stay the same without `through_entry_number`. For a complete
+issued copy with frozen labels and chart metadata, use
+`Bilimbi.Finance.Reports.issue_report/5` when Reports is mounted.
 
 ## Period closing
 

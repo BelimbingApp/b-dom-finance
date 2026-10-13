@@ -165,6 +165,21 @@ defmodule Bilimbi.Finance.Payables do
   @doc "The page sizes `page_documents/3` accepts."
   def page_sizes, do: @page_sizes
 
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.Payables.Evidence.datasets()
+
+  @doc """
+  One ID-ordered evidence page with explicit fields, rows and next cursor.
+  Requires this module's view grant. Consume all pages in one repeatable-read
+  transaction for a consistent export; individual pages are live reads.
+  """
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.Payables.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
+
   ## Settings
 
   @doc """
