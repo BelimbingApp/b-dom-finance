@@ -32,13 +32,15 @@ defmodule Bilimbi.Finance.Attachments.RetentionRefreshWorker do
 
   @impl true
   # An exact allowlist of identifiers and the one computed date.
-  def validate_args(%{
-        "tenant_id" => tenant_id,
-        "company_id" => company_id,
-        "source" => source,
-        "document_id" => document_id,
-        "retain_until" => retain_until
-      } = args)
+  def validate_args(
+        %{
+          "tenant_id" => tenant_id,
+          "company_id" => company_id,
+          "source" => source,
+          "document_id" => document_id,
+          "retain_until" => retain_until
+        } = args
+      )
       when map_size(args) == 5 and is_integer(tenant_id) and tenant_id > 0 and
              is_integer(company_id) and company_id > 0 and is_binary(source) and
              is_integer(document_id) and document_id > 0 and is_binary(retain_until) do
