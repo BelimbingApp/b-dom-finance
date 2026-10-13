@@ -35,6 +35,7 @@ defmodule BilimbiWeb.PayablesBillsLiveTest do
       )
 
     {:ok, _book} = Ledger.open_book(keeper, 73, %{currency_code: "XTS", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(keeper, 73)
 
     accounts =
       for {key, code, type} <-

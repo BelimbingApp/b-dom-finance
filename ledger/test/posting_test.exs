@@ -21,6 +21,7 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, [@view, @manage, @post])
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    TestFixtures.open_fiscal_years!(context.first_scope, 73)
     {:ok, cash} = Ledger.create_account(operator, 73, account("1000", "asset"))
     {:ok, equity} = Ledger.create_account(operator, 73, account("3000", "equity"))
     {:ok, income} = Ledger.create_account(operator, 73, account("4000", "income"))
@@ -300,6 +301,7 @@ defmodule Bilimbi.Finance.Ledger.PostingTest do
 
       sibling = TestFixtures.sign_in!(system, 74, 93, [@manage, @post])
       {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+      TestFixtures.open_fiscal_years!(system, 74)
       {:ok, debit_account} = Ledger.create_account(sibling, 74, account("1000", "asset"))
       {:ok, credit_account} = Ledger.create_account(sibling, 74, account("4000", "income"))
 

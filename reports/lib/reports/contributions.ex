@@ -27,6 +27,14 @@ defmodule Bilimbi.Finance.Reports.Contributions do
           route: "/finance/reports/approval-exceptions",
           capability: @view,
           order: 21
+        },
+        %{
+          id: "finance.reports.bookkeeping",
+          label: "Bookkeeping",
+          parent: "finance",
+          route: "/finance/reports/bookkeeping",
+          capability: @view,
+          order: 22
         }
       ],
       settings: %{

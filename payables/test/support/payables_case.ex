@@ -55,6 +55,7 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, all_capabilities())
     approver = TestFixtures.sign_in!(context.first_scope, 73, 92, all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(operator, 73)
 
     accounts =
       for {key, code, type} <-

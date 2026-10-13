@@ -205,8 +205,8 @@ defmodule Bilimbi.Finance.Reports.StatementsTest do
         retained_earnings: true
       })
 
-    {:ok, year} =
-      Bilimbi.Finance.Ledger.open_fiscal_year(closer, 73, %{start_date: ~D[2026-01-01]})
+    {:ok, years} = Bilimbi.Finance.Ledger.list_fiscal_years(closer, 73)
+    [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
 
     {:ok, %{closing_entry_id: closing}} =
       Bilimbi.Finance.Ledger.close_fiscal_year(closer, 73, year.id)

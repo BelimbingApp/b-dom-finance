@@ -38,6 +38,7 @@ defmodule BilimbiWeb.FinanceReportsLiveTest do
         ])
 
       {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+      Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(operator, 73)
       accounts = TestFixtures.chart!(operator, 73)
 
       for {date, lines} <- [

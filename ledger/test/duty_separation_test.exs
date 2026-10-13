@@ -33,6 +33,7 @@ defmodule Bilimbi.Finance.Ledger.DutySeparationTest do
     reviewer = TestFixtures.sign_in!(context.first_scope, 73, 93, @all)
 
     {:ok, _book} = Ledger.open_book(clerk, 73, %{currency_code: "XTS", minor_units: 2})
+    TestFixtures.open_fiscal_years!(context.first_scope, 73)
 
     {:ok, cash} =
       Ledger.create_account(clerk, 73, %{code: "1000", name: "Cash", account_type: "asset"})
@@ -520,7 +521,8 @@ defmodule Bilimbi.Finance.Ledger.DutySeparationTest do
   describe "reopening" do
     test "a period or fiscal year is recorded as an override", context do
       %{clerk: clerk, approver: approver} = context
-      {:ok, year} = Ledger.open_fiscal_year(clerk, 73, %{start_date: ~D[2026-01-01]})
+      {:ok, years} = Ledger.list_fiscal_years(clerk, 73)
+      [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
       [first | _] = year.periods
       {:ok, _} = Ledger.close_period(clerk, 73, first.id)
 

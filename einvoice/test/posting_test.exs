@@ -78,8 +78,10 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
           "finance.ledger.periods.manage"
         ])
 
-      {:ok, %{periods: [september | _]}} =
-        Ledger.open_fiscal_year(manager, 73, %{start_date: ~D[2026-09-01]})
+      {:ok, years} = Ledger.list_fiscal_years(manager, 73)
+
+      september =
+        years |> Enum.flat_map(& &1.periods) |> Enum.find(&(&1.start_date == ~D[2026-09-01]))
 
       {:ok, _source} =
         Einvoice.issue_document(
@@ -113,6 +115,7 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
       manager: manager,
       september: september
     } do
+      Bilimbi.Finance.Ledger.TestFixtures.close_periods_through!(manager, 73, ~D[2026-08-01])
       assert {:ok, %{status: "closed"}} = Ledger.close_period(manager, 73, september.id)
 
       assert {:error, message} = Posting.post(op, 73, consolidated)
@@ -399,6 +402,7 @@ defmodule Bilimbi.Finance.Einvoice.PostingTest do
 
     :ok = TestFixtures.put_supplier_profile!(context.first_scope, 74)
     {:ok, _book} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(sibling, 74)
 
     :ok =
       TestFixtures.put_settings!(sibling, 74, %{

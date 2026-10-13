@@ -391,6 +391,7 @@ defmodule Bilimbi.Finance.Payables.DocumentsTest do
       %{first_scope: system} = context
       sibling = TestFixtures.sign_in!(system, 74, 92, all_capabilities())
       {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+      Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(sibling, 74)
 
       {:ok, expense} =
         Ledger.create_account(sibling, 74, %{

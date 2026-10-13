@@ -113,7 +113,8 @@ defmodule Bilimbi.Finance.Reconciliation.PostingTest do
 
     # A closed period: the ledger refuses and its changeset comes back, with
     # neither an entry nor a match recorded.
-    {:ok, year} = Ledger.open_fiscal_year(operator, 73, %{start_date: ~D[2026-01-01]})
+    {:ok, years} = Ledger.list_fiscal_years(operator, 73)
+    [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
     [first | _] = year.periods
 
     for period <- Enum.take(year.periods, 10) do
@@ -291,7 +292,8 @@ defmodule Bilimbi.Finance.Reconciliation.PostingTest do
       {:ok, %{entry: entry, match: match}} =
         Reconciliation.post_statement_line(operator, 73, fee.id, %{kind: "charge"})
 
-      {:ok, year} = Ledger.open_fiscal_year(operator, 73, %{start_date: ~D[2026-01-01]})
+      {:ok, years} = Ledger.list_fiscal_years(operator, 73)
+      [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
 
       for period <- Enum.take(year.periods, 10) do
         {:ok, _} = Ledger.close_period(operator, 73, period.id, %{})

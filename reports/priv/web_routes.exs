@@ -16,5 +16,11 @@
     live: Bilimbi.Finance.Reports.Web.ApprovalExceptionsLive,
     session: :auth,
     capability: "finance.ledger.view"
+  },
+  %{
+    path: "/finance/reports/bookkeeping",
+    live: Bilimbi.Finance.Reports.Web.BookkeepingLive,
+    session: :auth,
+    capability: "finance.ledger.view"
   }
 ]

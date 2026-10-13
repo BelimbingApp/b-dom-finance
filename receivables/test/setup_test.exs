@@ -90,6 +90,7 @@ defmodule Bilimbi.Finance.Receivables.SetupTest do
       {:ok, _} = Ledger.update_account(operator, 73, accounts.receivable.id, %{active: false})
       sibling = TestFixtures.sign_in!(system, 74, 93, TestFixtures.ledger_capabilities())
       {:ok, _} = Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+      Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(sibling, 74)
 
       {:ok, foreign} =
         Ledger.create_account(sibling, 74, %{code: "4000", name: "Sales", account_type: "income"})

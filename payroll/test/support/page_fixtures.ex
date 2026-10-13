@@ -32,6 +32,7 @@ defmodule Bilimbi.Finance.Payroll.PageFixtures do
     {:ok, scope} = Tenancy.scope(41)
     operator = TestFixtures.sign_in!(scope, 73, 92, PayrollCase.all_capabilities())
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(operator, 73)
 
     context =
       PayrollCase.setup_accounts!(%{first_scope: scope, operator: operator})

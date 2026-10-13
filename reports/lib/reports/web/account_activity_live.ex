@@ -113,7 +113,7 @@ defmodule Bilimbi.Finance.Reports.Web.AccountActivityLive do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={@active_nav}>
       <.page variant={:detail}>
-        <.back_link navigate={~p"/finance/reports"} title="Financial reports" />
+        <.back_link navigate={~p"/finance/reports"} title="Management reports" />
 
         <%= if @activity do %>
           <.header>

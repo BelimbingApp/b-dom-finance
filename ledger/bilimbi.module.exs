@@ -18,7 +18,9 @@
     20_261_012_214_100 => :bilimbi_only,
     20_261_013_101_700 => :bilimbi_only,
     20_261_015_150_000 => :bilimbi_only,
-    20_261_016_100_000 => :bilimbi_only
+    20_261_016_100_000 => :bilimbi_only,
+    20_261_017_100_000 => :bilimbi_only,
+    20_261_017_100_100 => :bilimbi_only
   },
   web: nil,
   # Compatibility verification runs before pending Bilimbi-only migrations.

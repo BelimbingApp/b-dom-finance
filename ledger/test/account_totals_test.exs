@@ -17,6 +17,7 @@ defmodule Bilimbi.Finance.Ledger.AccountTotalsTest do
 
     operator = TestFixtures.sign_in!(context.first_scope, 73, 91, [@view, @manage, @post])
     {:ok, _book} = Ledger.open_book(operator, 73, %{currency_code: "XTS", minor_units: 2})
+    TestFixtures.open_fiscal_years!(context.first_scope, 73)
 
     accounts =
       for {code, type} <- [{"1000", "asset"}, {"3000", "equity"}, {"4000", "income"}],
@@ -250,7 +251,8 @@ defmodule Bilimbi.Finance.Ledger.AccountTotalsTest do
           retained_earnings: true
         })
 
-      {:ok, year} = Ledger.open_fiscal_year(closer, 73, %{start_date: ~D[2026-01-01]})
+      {:ok, years} = Ledger.list_fiscal_years(closer, 73)
+      [year] = Enum.filter(years, &(&1.start_date == ~D[2026-01-01]))
       {:ok, closed} = Ledger.close_fiscal_year(closer, 73, year.id)
       %{closer: closer, year: closed, accounts: Map.put(accounts, "3900", retained)}
     end

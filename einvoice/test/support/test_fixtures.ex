@@ -170,6 +170,7 @@ defmodule Bilimbi.Finance.Einvoice.TestFixtures do
   """
   def open_posting_book!(%Scope{} = operator, company_id) do
     {:ok, _book} = Ledger.open_book(operator, company_id, %{currency_code: "MYR", minor_units: 2})
+    Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(operator, company_id)
 
     accounts =
       Map.new(

@@ -190,6 +190,7 @@ defmodule Bilimbi.Finance.Receivables.DocumentsTest do
                })
 
       {:ok, _} = Ledger.open_book(clerk, 74, %{currency_code: "XTS", minor_units: 0})
+      Bilimbi.Finance.Ledger.TestFixtures.open_fiscal_years!(clerk, 74)
 
       assert {:error, :not_configured} =
                Receivables.create_draft(clerk, 74, %{

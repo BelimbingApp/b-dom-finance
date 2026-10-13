@@ -1,13 +1,26 @@
 # Reports
 
-Module ID: `finance/reports`. A company's financial statements, read live
+Module ID: `finance/reports`. A company's management reports, read live
 from its general ledger: profit and loss for any date range, the balance
 sheet and the cash position as of any date, headline figures against the
-previous period, and the entries behind any account's figure; and the page
-an independent reviewer reads the ledger's approval exceptions on. It owns no
-table; every figure comes from `finance/ledger`'s facade, and the only
-writes its pages make (the separation setting, a review) are that facade's
-calls.
+previous period, and the entries behind any account's figure; and the pages
+an independent reviewer reads the ledger's approval exceptions and entries
+recorded late on, with the company's bookkeeping controls. It owns no table;
+every figure comes from `finance/ledger`'s facade, and the only writes its
+pages make (the separation setting, controlled bookkeeping, a fiscal year, a
+review) are that facade's calls.
+
+## Management reports, not statutory statements
+
+Profit and loss, the balance sheet, and the cash position are management
+reports for the company's own use. Every page that shows them says so, and
+their exports, if any are added, must carry the same label: the Reports page
+states it above the figures, each statement is labelled "Management report:",
+and the overview's headings say "(management)". They are not statutory
+financial statements. There is no cash flow statement, no statement of
+changes in equity or other comprehensive income, no notes, and no
+consolidation, and currency translation is not built in. A statement layout
+that a standard requires (MFRS, IFRS, or another) is not produced here.
 
 ## Public API
 
@@ -124,14 +137,29 @@ through this facade.
 ## Pages
 
 `/finance/reports` (menu Finance › Reports, route capability
-`finance.ledger.view`) shows one period, chosen with the shared period
-filter, in four tabs: an overview of the headline figures against the
-previous period, profit and loss, balance sheet, and cash position. Each
+`finance.ledger.view`, titled Management reports) shows one period, chosen
+with the shared period filter, in four tabs: an overview of the headline
+figures against the previous period, profit and loss, balance sheet, and cash
+position, each labelled as a management report. Each
 account's amount links to `/finance/reports/accounts/:account_id`, which
 lists the entries behind it with who posted each and when. The page reads
 again when an entry posts. "Pin these figures" adds the report's entry
 number to the address, which then shows the same figures for good and does
 not update; that address is the reproducible reference to a report.
+
+`/finance/reports/bookkeeping` (menu Finance › Bookkeeping, route capability
+`finance.ledger.view`) shows whether the company is controlled, and why it
+was last changed, with every change. A controlled company with no fiscal year
+is told so, and the first year is opened on this page (`open_fiscal_year/3`,
+`finance.ledger.periods.manage`), explicitly, before anything posts; turning
+controlled bookkeeping on (`finance.ledger.controlled-bookkeeping.manage`) is
+one button, and turning it off asks for a reason, which the approval
+exceptions then list. Below it are the entries recorded 45 or more days after
+their transaction dates, approaching (45 to 60 days) or late (over 60), with
+who posted each and its review; an independent reviewer records the reason
+for each with `finance.ledger.late-recordings.review`, which the ledger's
+facade refuses from whoever posted the entry. The ledger's README describes
+both rules.
 
 `/finance/reports/approval-exceptions` (menu Finance › Approval
 exceptions, route capability `finance.ledger.view`) is the ledger's approval
@@ -155,8 +183,8 @@ four columns, and the overview four windows.
 
 ## Standards addressed
 
-The module is built to the audit and reporting standards a company's
-accounts are held to. What this slice covers:
+The module supports the audit trail a company's accounts are reviewed on.
+What it covers:
 
 - **Reproducible reports.** Every report states the last entry it counts,
   and that number reproduces its figures exactly at any later time. A
@@ -175,15 +203,18 @@ accounts are held to. What this slice covers:
 - **Independent review.** The approval exceptions page lists, by period,
   what an independent reviewer reads when a company cannot separate duties
   (same-person approvals) and every override of a control, and records each
-  review with the reviewer and time.
-- **No standard hard-coded.** Statements group by the five account types and
-  the company's own sections; no chart, heading, or statement format of any
-  accounting standard is built in. A company presents to its standard
-  (MFRS, IFRS, or another) by configuring sections.
+  review with the reviewer and time. The bookkeeping page lists the entries
+  recorded late the same way, with each review.
+- **No standard hard-coded.** Management reports group by the five account
+  types and the company's own sections; no chart, heading, or statement
+  format of any accounting standard is built in, and none is claimed.
 
 Gapless document numbering does not apply: reports issue no numbered
-documents. Not covered yet: a cash flow statement, notes, and export to a
-file.
+documents. Not covered, and not claimed: a cash flow statement, changes in
+equity or other comprehensive income, notes, consolidation, currency
+translation, statutory statement layouts, and the restatement of an earlier
+period's report (a current-period reversal is not one). Those are follow-up
+work, and until they exist these outputs are management reports only.
 
 ## Tests
 
@@ -191,6 +222,7 @@ Module tests run on the ledger's temporary tables
 (`Bilimbi.Finance.Ledger.TestFixtures`) and the Settings table;
 `test/support/test_fixtures.ex` builds a chart with a parent account and
 installs a contribution snapshot with the ledger's capabilities and this
-module's setting. `web_test/` drives the pages in the real host; a sandboxed
+module's setting. `web_test/` drives the pages in the real host, the
+bookkeeping page included; a sandboxed
 post never commits, so the live update is proved there by delivering the
 notice the ledger sends after a commit.
