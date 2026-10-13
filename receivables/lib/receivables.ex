@@ -35,7 +35,7 @@ defmodule Bilimbi.Finance.Receivables do
   alias Bilimbi.Core.Company
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
-  alias Bilimbi.Finance.Receivables.{Payments, Records, Series}
+  alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TaxReport}
   alias Ecto.Changeset
 
   @view "finance.receivables.view"
@@ -359,6 +359,50 @@ defmodule Bilimbi.Finance.Receivables do
       when is_list(options) do
     with :ok <- authorize(scope, company_id, @view),
          do: Documents.list_issued(scope, company_id, options)
+  end
+
+  @doc """
+  The tax on issued documents, summed by PostgreSQL per document `kind`,
+  tax code, rate, and tax account: `%{kind, credits_prior_period,
+  tax_code_id, tax_code, tax_rate, account_id, document_count,
+  taxable_amount, tax_amount}`, each amount as the document carries it (a
+  credit note's positive). `credits_prior_period` is true for a credit
+  note whose invoice was issued before `from`. Options:
+  `from` and `to`, issue dates (inclusive), and `through_entry_number`,
+  which counts only documents whose ledger entry is numbered up to it, so
+  a reading pinned to a ledger entry number reproduces exactly. A module
+  reporting tax to an authority reads it; a malformed option is
+  `{:error, :invalid_option}`.
+  """
+  @spec tax_totals(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def tax_totals(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         do: TaxReport.totals(scope, company_id, options)
+  end
+
+  @doc """
+  The tax share of what customers paid in a window, for tax that is due
+  when payment is received, or once an invoice has gone unpaid for
+  `unpaid_months` months (default 12) after its issue date: `%{measure,
+  tax_code_id, tax_code, tax_rate, account_id, document_count,
+  taxable_amount, tax_amount}` per measure, tax code, rate, and tax
+  account. `measure` is `received` (each allocation of a payment dated in
+  the window, before its invoice fell due under that rule, as its share of
+  the invoice total, less the share of such payments reversed in the
+  window), `unpaid` (an invoice whose due day falls in the window, as the
+  share it still owed the day before), or `credited_after_due` (credit
+  notes issued in the window on an invoice already due under the rule, as
+  they carry their tax). Amounts are exact shares, unrounded. Needs `from`
+  and `to`; `through_entry_number` pins every document, payment, and
+  reversal to the ledger entries it posted, so the reading reproduces. A
+  malformed option is `{:error, :invalid_option}`.
+  """
+  @spec received_tax_totals(Scope.t(), term(), keyword()) ::
+          {:ok, [map()]} | {:error, refusal() | :invalid_option}
+  def received_tax_totals(%Scope{} = scope, company_id, options) when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view),
+         do: TaxReport.received_totals(scope, company_id, options)
   end
 
   ## Payments
