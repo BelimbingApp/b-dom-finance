@@ -3,7 +3,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
   import Ecto.Query
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
-  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice}
+  alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice, Payroll, Sst}
   alias Bilimbi.Finance.Reports.{Serialization, Snapshot}
   alias Ecto.Adapters.SQL
 
@@ -12,10 +12,14 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"receivables", Receivables},
     {"payables", Payables},
     {"reconciliation", Reconciliation},
-    {"einvoice", Einvoice}
+    {"einvoice", Einvoice},
+    {"payroll", Payroll},
+    {"sst", Sst}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "2"
+  @version "4"
+
+  def sources, do: Enum.map(@owners, &elem(&1, 1))
 
   def generate(scope, company_id, as_of) do
     id = Ecto.UUID.generate()
@@ -154,7 +158,8 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
          through_entry_number: totals.through_entry_number,
          filters: %{
            evidence:
-             "all company records visible at the database snapshot, including drafts and reversals",
+             "all company records of the #{Enum.map_join(@owners, ", ", &elem(&1, 0))} modules " <>
+               "visible at the database snapshot, including drafts and reversals",
            trial_balance_and_aging_as_of: Date.to_iso8601(as_of)
          },
          decimal_encoding: "exact decimal strings; CSV numeric cells are unrounded",

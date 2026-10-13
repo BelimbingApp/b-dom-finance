@@ -84,10 +84,103 @@ defmodule Bilimbi.Finance.Ledger.Evidence do
          :recorded_by_user_id,
          :recorded_by_impersonator_id,
          :recorded_at
+       ]},
+    "journal" =>
+      {Bilimbi.Finance.Ledger.Journal,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :journal_number,
+         :entry_date,
+         :description,
+         :reference,
+         :currency_code,
+         :submitted_by_user_id,
+         :submitted_by_impersonator_id,
+         :submitted_at
+       ]},
+    "journal_line" =>
+      {Bilimbi.Finance.Ledger.JournalLine,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :journal_id,
+         :line_number,
+         :account_id,
+         :debit,
+         :credit,
+         :description
+       ]},
+    "journal_event" =>
+      {Bilimbi.Finance.Ledger.JournalEvent,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :journal_id,
+         :event,
+         :reason,
+         :entry_id,
+         :actor_user_id,
+         :actor_impersonator_id,
+         :occurred_at
+       ]},
+    "approval_exception" =>
+      {Bilimbi.Finance.Ledger.ApprovalException,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :exception_number,
+         :source,
+         :action,
+         :subject_type,
+         :subject_id,
+         :subject,
+         :same_person,
+         :override,
+         :prepared_by_user_id,
+         :prepared_by_impersonator_id,
+         :approved_by_user_id,
+         :approved_by_impersonator_id,
+         :reason,
+         :separation_change_id,
+         :recorded_at
+       ]},
+    "approval_exception_review" =>
+      {Bilimbi.Finance.Ledger.ApprovalExceptionReview,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :exception_id,
+         :note,
+         :reviewed_by_user_id,
+         :reviewed_by_impersonator_id,
+         :reviewed_at
+       ]},
+    "duty_separation_change" =>
+      {Bilimbi.Finance.Ledger.DutySeparationChange,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :change_number,
+         :required,
+         :reason,
+         :changed_by_user_id,
+         :changed_by_impersonator_id,
+         :changed_at
        ]}
   }
 
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
+
+  def tables do
+    for {_dataset, {schema, _fields}} <- @datasets, do: schema.__schema__(:source)
+  end
 
   def page(scope, company_id, dataset, options) do
     limit = Keyword.get(options, :limit, 500)

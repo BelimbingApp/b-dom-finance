@@ -37,7 +37,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         context.first_scope,
         73,
         95,
-        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.reports.reports-export)
+        ~w(finance.ledger.view finance.receivables.view finance.payables.view finance.reconciliation.view finance.einvoice.view finance.payroll.view finance.sst.view finance.reports.reports-export)
       )
 
     assert {:ok, reader_artifact} = Reports.export_auditor_pack(reader, 73, ~D[2026-10-31])
@@ -55,7 +55,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     assert manifest["tenant_id"] == 41
     assert manifest["through_entry_number"] == 501
     assert manifest["timezone"] == "Etc/UTC"
-    assert manifest["generator_version"] == "2"
+    assert manifest["generator_version"] == "4"
     assert manifest["files"]["ledger-entry.csv"]["row_count"] == 501
     assert manifest["files"]["ledger-line.csv"]["row_count"] == 1002
     assert manifest["files"]["general-ledger.csv"]["row_count"] == 1002
@@ -73,6 +73,19 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
     # Empty evidence sections are explicit files with a zero count, not silently omitted.
     assert manifest["files"]["payables-document.csv"]["row_count"] == 0
     assert manifest["files"]["reconciliation-reconciliation_event.csv"]["row_count"] == 0
+
+    for filename <-
+          ~w(ledger-journal.csv ledger-journal_line.csv ledger-journal_event.csv
+             ledger-approval_exception.csv ledger-approval_exception_review.csv
+             ledger-duty_separation_change.csv payables-payment_request.csv
+             payables-payment_request_allocation.csv payables-payment_request_event.csv
+             einvoice-code_override.csv payroll-settings.csv payroll-settings_change.csv
+             payroll-mapping.csv payroll-mapping_change.csv payroll-posting_event.csv
+             sst-registration.csv sst-mapping.csv sst-return.csv sst-return_event.csv
+             sst-return_box.csv sst-return_account.csv sst-return_source.csv
+             sst-adjustment.csv) do
+      assert manifest["files"][filename]["row_count"] == 0
+    end
   end
 
   test "only this company's evidence leaves the archive; read access is rechecked", context do
@@ -137,6 +150,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         Reconciliation.ReconciliationCase.all_capabilities()
 
     operator = Ledger.TestFixtures.sign_in!(context.first_scope, 73, 91, grants)
+    approver = Ledger.TestFixtures.sign_in!(context.first_scope, 73, 92, grants)
 
     ar_context =
       Receivables.TestFixtures.configure_receivables!(%{
@@ -193,7 +207,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         ]
       })
 
-    {:ok, _} = Payables.approve_document(operator, 73, bill.id)
+    {:ok, _} = Payables.approve_document(approver, 73, bill.id)
     {:ok, _} = Payables.post_document(operator, 73, bill.id)
 
     {:ok, bank} =
@@ -229,7 +243,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPackTest do
         statement_balance: "17.10"
       })
 
-    {:ok, _finalised} = Reconciliation.finalise_reconciliation(operator, 73, reconciliation.id)
+    {:ok, _finalised} = Reconciliation.finalise_reconciliation(approver, 73, reconciliation.id)
     assert {:ok, artifact} = Reports.export_auditor_pack(operator, 73, ~D[2026-10-31])
     {:ok, %{bytes: bytes}} = Reports.read_auditor_pack(operator, 73, artifact.id)
     {:ok, extracted} = :zip.extract(bytes, [:memory])

@@ -15,7 +15,9 @@ defmodule Bilimbi.Finance.Reports.Contributions do
         verbs: ["reports-export"],
         capabilities: ["finance.reports.issue", "finance.reports.reports-export"],
         roles: %{
-          "tenant_owner" => %{capabilities: ["finance.reports.issue", "finance.reports.reports-export"]}
+          "tenant_owner" => %{
+            capabilities: ["finance.reports.issue", "finance.reports.reports-export"]
+          }
         }
       },
       menu: [

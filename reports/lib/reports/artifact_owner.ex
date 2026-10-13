@@ -30,13 +30,7 @@ defmodule Bilimbi.Finance.Reports.ArtifactOwner do
 
   defp sources_readable?(scope, company) do
     Enum.all?(
-      [
-        Bilimbi.Finance.Ledger,
-        Bilimbi.Finance.Receivables,
-        Bilimbi.Finance.Payables,
-        Bilimbi.Finance.Reconciliation,
-        Bilimbi.Finance.Einvoice
-      ],
+      Bilimbi.Finance.Reports.AuditorPack.sources(),
       fn owner ->
         match?(
           {:ok, _},

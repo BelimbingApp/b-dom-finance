@@ -51,6 +51,21 @@ defmodule Bilimbi.Finance.Sst do
   @doc "The capability every SST read asks for."
   def view_capability, do: @view
 
+  @doc "Evidence datasets available to the company-authorized auditor export."
+  def evidence_datasets, do: Bilimbi.Finance.Sst.Evidence.datasets()
+
+  @doc """
+  One ID-ordered evidence page with explicit fields, rows and next cursor.
+  Requires this module's view grant. Consume all pages in one repeatable-read
+  transaction for a consistent export; individual pages are live reads.
+  """
+  def evidence_page(%Scope{} = scope, company_id, dataset, options \\ [])
+      when is_list(options) do
+    with :ok <- authorize(scope, company_id, @view) do
+      Bilimbi.Finance.Sst.Evidence.page(scope, company_id, dataset, options)
+    end
+  end
+
   @doc "The capability that records the registration and maps tax codes to boxes."
   def manage_settings_capability, do: @manage_settings
 

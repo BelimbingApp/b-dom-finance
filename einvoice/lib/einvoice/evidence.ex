@@ -100,10 +100,28 @@ defmodule Bilimbi.Finance.Einvoice.Evidence do
        ]},
     "consolidated_source" =>
       {Bilimbi.Finance.Einvoice.ConsolidatedSource,
-       [:id, :tenant_id, :company_id, :document_id, :source_document_id, :line_number]}
+       [:id, :tenant_id, :company_id, :document_id, :source_document_id, :line_number]},
+    "code_override" =>
+      {Bilimbi.Finance.Einvoice.CodeOverride,
+       [
+         :id,
+         :tenant_id,
+         :company_id,
+         :authority,
+         :list,
+         :code,
+         :description,
+         :active,
+         :inserted_at,
+         :updated_at
+       ]}
   }
 
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
+
+  def tables do
+    for {_dataset, {schema, _fields}} <- @datasets, do: schema.__schema__(:source)
+  end
 
   def page(scope, company_id, dataset, options) do
     limit = Keyword.get(options, :limit, 500)
