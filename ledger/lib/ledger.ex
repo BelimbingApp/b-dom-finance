@@ -217,7 +217,7 @@ defmodule Bilimbi.Finance.Ledger do
                %Book{tenant_id: Scope.tenant_id(scope), company_id: company_id}
                |> Book.changeset(attributes)
                |> Repo.insert(),
-             {:ok, _change, :recorded} <-
+             {:ok, _change, _outcome} <-
                Bookkeeping.change(scope, company_id, %{controlled: true}) do
           {:ok, book_view(book)}
         end

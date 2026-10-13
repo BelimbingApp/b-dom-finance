@@ -46,6 +46,20 @@ defmodule Bilimbi.Finance.Ledger.ControlledBookkeepingTest do
       assert %{change_number: 1, controlled: true, reason: nil, changed_by_user_id: 91} = change
     end
 
+    test "a setting turned on before the book opens does not stop the book opening",
+         %{first_scope: first} do
+      sibling = TestFixtures.sign_in!(first, 74, 91, [@view, @manage, @controlled])
+
+      assert {:ok, %{controlled: true}} =
+               Ledger.set_controlled_bookkeeping(sibling, 74, %{controlled: true})
+
+      assert {:ok, %{currency_code: "XTS"}} =
+               Ledger.open_book(sibling, 74, %{currency_code: "XTS", minor_units: 2})
+
+      assert {:ok, %{controlled: true}} = Ledger.get_controlled_bookkeeping(sibling, 74)
+      assert {:ok, [_only]} = Ledger.list_controlled_bookkeeping_changes(sibling, 74)
+    end
+
     test "turning it off needs a reason and is listed as an override", %{operator: operator} do
       assert {:error, changeset} =
                Ledger.set_controlled_bookkeeping(operator, 73, %{controlled: false})
