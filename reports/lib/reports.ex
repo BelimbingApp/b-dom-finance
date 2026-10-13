@@ -260,7 +260,7 @@ defmodule Bilimbi.Finance.Reports do
   def issue_capability, do: "finance.reports.issue"
 
   @doc "Capability for generating and downloading a company auditor pack."
-  def export_capability, do: "finance.reports.export"
+  def export_capability, do: "finance.reports.reports-export"
 
   @doc """
   Issues an immutable report. `kind` is `:profit_and_loss`, `:balance_sheet`,

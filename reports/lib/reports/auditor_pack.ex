@@ -1,7 +1,7 @@
 defmodule Bilimbi.Finance.Reports.AuditorPack do
   @moduledoc false
   import Ecto.Query
-  alias Bilimbi.Base.{Audit, Repo}
+  alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Finance.{Ledger, Receivables, Payables, Reconciliation, Einvoice}
   alias Bilimbi.Finance.Reports.{Serialization, Snapshot}
@@ -15,7 +15,7 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
     {"einvoice", Einvoice}
   ]
   # Bump whenever an evidence field list, serialization or filter changes.
-  @version "1"
+  @version "2"
 
   def generate(scope, company_id, as_of) do
     id = Ecto.UUID.generate()
@@ -136,41 +136,6 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
 
       summaries = Map.merge(summaries, summary_csvs(directory, trial, ar, ap))
 
-      audit =
-        for {name, fetch} <- [
-              {"actions", &Audit.list_actions/2},
-              {"mutations", &Audit.list_mutations/2}
-            ],
-            into: %{} do
-          filename = "audit-#{name}.csv"
-
-          meta =
-            write_pages(directory, filename, fn page ->
-              result =
-                fetch.(
-                  scope,
-                  [page: page + 1, page_size: 500, sort_dir: :asc] ++
-                    if(name == "actions", do: [diagnostics: "show"], else: [])
-                )
-
-              rows =
-                result.entries
-                |> Enum.filter(&(&1.company_id == company_id))
-                |> Enum.map(&Map.from_struct/1)
-
-              fields = audit_fields(name)
-
-              {:ok,
-               %{
-                 fields: fields,
-                 rows: Enum.map(rows, &Map.take(&1, fields)),
-                 next: if(result.page < result.total_pages, do: page + 1, else: nil)
-               }}
-            end)
-
-          {filename, meta}
-        end
-
       source_meta = source_index(scope, company_id, directory)
 
       {:ok,
@@ -200,7 +165,6 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
            evidence
            |> Map.put("general-ledger.csv", gl)
            |> Map.merge(summaries)
-           |> Map.merge(audit)
            |> Map.merge(source_meta),
          control_totals: %{
            debits: Serialization.value(debit_total),
@@ -468,38 +432,6 @@ defmodule Bilimbi.Finance.Reports.AuditorPack do
         source_pages(file, scope, company, directory, owner, dataset, result.next, count, files),
       else: {count, files}
   end
-
-  defp audit_fields("actions"),
-    do: [
-      :id,
-      :company_id,
-      :actor_type,
-      :actor_id,
-      :impersonator_id,
-      :system_principal,
-      :event,
-      :payload,
-      :occurred_at,
-      :trace_id
-    ]
-
-  defp audit_fields("mutations"),
-    do: [
-      :id,
-      :company_id,
-      :actor_type,
-      :actor_id,
-      :impersonator_id,
-      :system_principal,
-      :event,
-      :auditable_type,
-      :auditable_id,
-      :old_values,
-      :new_values,
-      :withheld,
-      :occurred_at,
-      :trace_id
-    ]
 
   defp summary_count(%{rows: rows}), do: length(rows)
 

@@ -4,7 +4,7 @@
     controller: Bilimbi.Finance.Reports.Web.AuditorPackController,
     action: :show,
     session: :auth,
-    capability: "finance.reports.export"
+    capability: "finance.reports.reports-export"
   },
   %{
     path: "/finance/reports",
