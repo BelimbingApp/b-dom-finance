@@ -33,6 +33,8 @@ defmodule Bilimbi.Finance.Receivables do
   alias Bilimbi.Base.Repo
   alias Bilimbi.Base.Tenancy.Scope
   alias Bilimbi.Core.Company
+  alias Bilimbi.Finance.Attachments
+  alias Bilimbi.Finance.Receivables.Attachments.Document, as: AttachmentsDocument
   alias Bilimbi.Finance.Ledger
   alias Bilimbi.Finance.Receivables.{Aging, Configuration, Customers, Document, Documents}
   alias Bilimbi.Finance.Receivables.{Payments, Records, Series, TaxReport, TieOut}
@@ -304,7 +306,10 @@ defmodule Bilimbi.Finance.Receivables do
   and each tax code's account; a credit note posts the reverse, against the
   receivable account its invoice recorded. The document records that
   account (`receivable_account_id`), the entry's ID and number, and who
-  issued it; the database stamps when.
+  issued it; the database stamps when. Once the issue commits, the document's
+  source documents are given the retention its issue date says
+  (`Bilimbi.Finance.Attachments.refresh_retention/4`), if the issuer holds the
+  attachments capabilities it needs.
   """
   @spec issue_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -315,9 +320,19 @@ defmodule Bilimbi.Finance.Receivables do
              | :not_a_draft
              | Changeset.t()}
   def issue_document(%Scope{} = scope, company_id, document_id) do
-    write(scope, company_id, @issue_documents, fn ->
-      Documents.issue(scope, company_id, document_id)
-    end)
+    with {:ok, document} <-
+           write(scope, company_id, @issue_documents, fn ->
+             Documents.issue(scope, company_id, document_id)
+           end) do
+      refresh_attachments(scope, company_id, document)
+      {:ok, document}
+    end
+  end
+
+  defp refresh_attachments(scope, company_id, document) do
+    unless Repo.in_transaction?() do
+      Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id)
+    end
   end
 
   @doc """

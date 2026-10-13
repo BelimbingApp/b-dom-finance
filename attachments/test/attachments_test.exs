@@ -351,11 +351,92 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert {:ok, %{metadata: %{retain_until: ~U[2040-01-01 23:59:59.999999Z]}}} =
                Artifacts.read(operator, 73, ArtifactOwner, attachment.artifact_id)
 
+      assert_agrees(operator, attachment.id)
+
       assert {:error, :unauthorized} =
                Attachments.extend_retention(viewer, 73, attachment.id, %{
                  retain_until: ~D[2041-01-01],
                  reason: "no"
                })
+    end
+
+    test "a failed event after Base changed is repaired by the same call again", %{
+      operator: operator
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      assert_agrees(operator, attachment.id)
+
+      reason = [reason: "partial"]
+      until = ~U[2041-01-01 23:59:59.999999Z]
+
+      {:ok, _} =
+        Artifacts.retain(operator, 73, ArtifactOwner, attachment.artifact_id, until, reason)
+
+      {:ok, _} = Artifacts.place_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
+
+      assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z], on_hold: false}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:ok, %{retain_until: ^until}} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2041-01-01],
+                 reason: "repair"
+               })
+
+      assert {:error, :retention_not_extended} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2041-01-01],
+                 reason: "again"
+               })
+
+      assert {:ok, %{on_hold: true}} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "repair"})
+
+      assert {:error, :already_on_hold} =
+               Attachments.place_hold(operator, 73, attachment.id, %{reason: "again"})
+
+      assert_agrees(operator, attachment.id)
+
+      {:ok, _} =
+        Artifacts.release_hold(operator, 73, ArtifactOwner, attachment.artifact_id, reason)
+
+      assert {:ok, %{on_hold: false}} =
+               Attachments.release_hold(operator, 73, attachment.id, %{reason: "repair"})
+
+      assert_agrees(operator, attachment.id)
+    end
+
+    test "refresh_retention extends to the record's new date and never shortens", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+
+      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      StubSource.put_document!(1, %{date: ~D[2027-02-01]})
+
+      assert {:ok, [%{id: id, retain_until: ~U[2034-12-31 23:59:59.999999Z]}]} =
+               Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      assert id == attachment.id
+      assert_agrees(operator, attachment.id)
+      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      StubSource.put_document!(1, %{date: ~D[2026-02-01]})
+      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert {:error, :unauthorized} =
+               Attachments.refresh_retention(
+                 TestFixtures.sign_in!(scope, 73, 98, ~w(finance.attachments.view)),
+                 73,
+                 StubSource,
+                 1
+               )
     end
 
     test "a legal hold is placed and released with reasons", %{operator: operator} do
@@ -579,5 +660,14 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
         )
       end
     end
+  end
+
+  defp assert_agrees(scope, attachment_id) do
+    {:ok, view} = Attachments.get_attachment(scope, 73, attachment_id)
+    {:ok, history} = Artifacts.retention_history(scope, 73, ArtifactOwner, view.artifact_id)
+    base = List.last(history)
+
+    assert view.retain_until == base.retain_until
+    assert view.on_hold == base.legal_hold
   end
 end

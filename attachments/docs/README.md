@@ -14,7 +14,7 @@ captured it when, and never changed afterwards.
   record; `capture_file/5` and `attach_capture/5` for a record created in
   the same transaction as its file; `replace/4` and `remove/4` while the
   record is not final; `extend_retention/4`, `place_hold/4`, and
-  `release_hold/4`; the company's `get_retention/2`, `set_retention/3`, and
+  `release_hold/4`; `refresh_retention/4` for a record whose date changed; the company's `get_retention/2`, `set_retention/3`, and
   `list_retention_changes/2`; `retain_until/3`; and the reads
   `list_attachments/4`, `list_company_attachments/3`, `list_sources/2`,
   `get_attachment/3`, and `read_attachment/3`.
@@ -50,7 +50,15 @@ captured it when, and never changed afterwards.
   selects them; a legal hold refuses deletion after it. `extend_retention/4`
   only moves a retain-until later, as a `retention_extended` event; the
   retain-until and `on_hold` a read shows follow the latest `retention_extended`
-  and hold events, and nothing shortens one.
+  and hold events, and nothing shortens one. Base Artifacts changes first and
+  the event follows, so a failure between them leaves Base ahead of the
+  events; the same call again finds Base already there and records only the
+  event. A record whose date can change while it is not final (a draft
+  invoice) may be re-dated after its attachments were kept; its module calls
+  `refresh_retention/4` once the record is final, after its own transaction
+  commits, which extends each standing attachment to what the final date says
+  (needs `finance.attachments.view` and `.create`; repeatable) and never
+  shortens one.
 - **Standing.** An attachment row is append-only; its standing is its
   latest event. A record that is not final (a draft bill, a submitted
   journal, a draft invoice, an undecided payment request) can have an

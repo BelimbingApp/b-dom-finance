@@ -68,6 +68,50 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              Attachments.list_attachments(context.operator, 73, Document, draft.id)
   end
 
+  test "issuing a re-dated draft extends its attachments to the issue date's retention",
+       context do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-03-01],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    {:ok, attachment} =
+      Attachments.attach(
+        context.operator,
+        73,
+        Document,
+        draft.id,
+        AttachmentsFixtures.file("contract.txt")
+      )
+
+    assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
+
+    {:ok, _draft} =
+      Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
+
+    assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+
+    {:ok, _issued} = Receivables.issue_document(context.operator, 73, draft.id)
+
+    assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
+             Attachments.get_attachment(context.operator, 73, attachment.id)
+
+    assert event.event == "retention_extended"
+
+    assert {:ok, %{metadata: %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}}} =
+             Bilimbi.Base.Artifacts.read(
+               context.operator,
+               73,
+               Bilimbi.Finance.Attachments.ArtifactOwner,
+               attachment.artifact_id
+             )
+  end
+
   test "a payment received is final from the start", context do
     {:ok, invoice} =
       Receivables.create_draft(context.operator, 73, %{

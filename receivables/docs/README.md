@@ -126,7 +126,12 @@ from the start, as a payment posts as it is recorded). The file is kept as a
 records-grade document retained for the company's retention years after
 the end of the financial year the document's date falls in; a draft's
 attachments can be replaced or removed, an issued document's are kept as
-they are. This module has no pages, so attachments are made through the
+they are. A draft's date may change after its attachments were kept, so
+issuing a document extends each attachment's retain-until to the issue
+date's financial year (`Attachments.refresh_retention/4`, after the issue
+commits; it needs the issuer to hold `finance.attachments.view` and
+`finance.attachments.create`, else it is skipped and can be called again).
+This module has no pages, so attachments are made through the
 facade and read on the source documents page, `/finance/attachments`.
 
 ## Payments
