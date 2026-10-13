@@ -995,11 +995,17 @@ defmodule Bilimbi.Finance.FixedAssets do
     |> Map.put(:reversed?, reversed_run?(scope, company_id, run.id))
     |> Map.put(
       :exceptions,
-      query(RunException, scope, company_id)
-      |> where([x], x.run_id == ^run.id)
-      |> join(:inner, [x], a in Asset, on: a.id == x.asset_id)
-      |> order_by([_x, a], a.asset_number)
-      |> select([_x, a], %{
+      query(Asset, scope, company_id)
+      |> where(
+        [a],
+        a.id in subquery(
+          query(RunException, scope, company_id)
+          |> where([x], x.run_id == ^run.id)
+          |> select([x], x.asset_id)
+        )
+      )
+      |> order_by([a], a.asset_number)
+      |> select([a], %{
         asset_id: a.id,
         asset_number: a.asset_number,
         description: a.description
