@@ -240,7 +240,7 @@ Payroll, SST, Fixed Assets and Attachments modules: each facade's `evidence_page
 the module, including payroll posting events, mapping and settings changes,
 and SST registrations, mappings, returns, return events, boxes, accounts,
 sources and adjustments; fixed-asset categories, revisions, assets, runs, items, exceptions and events; and
-source documents (every attachment, its events, and the company's retention changes). Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
+source documents (every attachment, its events, and the company's retention changes; the attachment and event rows are filtered by the exporter's read access to each owning module, so an auditor without, say, payables view receives no payables attachments). Ledger evidence and line-level GL include owner module/record and legacy flags; e-invoice source links identify already-recognised transactions. The manifest's `filters.evidence` names these modules.
 A test lists every table of those modules and fails unless the pack exports it
 or an exclusion names it with a reason (the only exclusion is the issued
 report table, which the pack writes as `issued-reports.csv`), so a new table

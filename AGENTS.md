@@ -114,7 +114,11 @@ here; they govern this code and are not copied here.
   the retention counts from, and whether it is final, after which nothing is
   replaced or removed. A record's page embeds
   `Bilimbi.Finance.Attachments.Web.Panel`; the retention years are the
-  company's setting, never a module constant.
+  company's setting, never a module constant. Finance code that must change
+  retention without a user's grant (a record's finalisation) calls
+  `Attachments.refresh_retention/4`, which queues
+  `Attachments.RetentionRefreshWorker`; never call Base Artifacts or
+  `Bilimbi.Base.Tenancy.Authentication` for it.
 - A Finance migration version must be unique across Bilimbi's modules too,
   not only Finance's: `find apps -path '*/priv/repo/migrations/*'` in the
   mounted checkout before picking one (einvoice's `20261013090000` clashed

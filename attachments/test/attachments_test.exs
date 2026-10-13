@@ -3,7 +3,9 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
 
   alias Bilimbi.Base.Artifacts
   alias Bilimbi.Base.Repo
+  alias Bilimbi.Base.Tenancy.Authentication
   alias Bilimbi.Finance.Attachments.ArtifactOwner
+  alias Bilimbi.Finance.Attachments.RetentionRefreshWorker
   alias Ecto.Adapters.SQL
 
   @sha256_of_scan :crypto.hash(:sha256, "made-up scan") |> Base.encode16(case: :lower)
@@ -471,7 +473,7 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
       assert_agrees(operator, attachment.id)
     end
 
-    test "refresh_retention extends to the record's final date and never shortens", %{
+    test "refresh_retention queues the extension to the record's final date, never a shortening", %{
       operator: operator
     } do
       {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
@@ -481,25 +483,41 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
                Attachments.refresh_retention(operator, 73, StubSource, 1)
 
       StubSource.put_document!(1, %{final?: true})
-      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+      assert queued_jobs() == []
 
       StubSource.put_document!(1, %{date: ~D[2027-02-01], final?: true})
+      assert {:ok, :queued} = Attachments.refresh_retention(operator, 73, StubSource, 1)
 
-      assert {:ok, [%{id: id, retain_until: ~U[2034-12-31 23:59:59.999999Z]}]} =
-               Attachments.refresh_retention(operator, 73, StubSource, 1)
+      assert [%{args: args}] = queued_jobs()
 
-      assert id == attachment.id
+      assert args == %{
+               "tenant_id" => 41,
+               "company_id" => 73,
+               "source" => Atom.to_string(StubSource),
+               "document_id" => 1,
+               "retain_until" => "2034-12-31T23:59:59.999999Z"
+             }
+
+      assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert :ok = perform_queued!()
+
+      assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
+               Attachments.get_attachment(operator, 73, attachment.id)
+
+      assert %{event: "retention_extended", actor_user_id: 0} = event
+      assert event.actor_system_principal == ArtifactOwner.refresh_principal()
       assert_agrees(operator, attachment.id)
-      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
+
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
 
       StubSource.put_document!(1, %{date: ~D[2026-02-01], final?: true})
-      assert {:ok, []} = Attachments.refresh_retention(operator, 73, StubSource, 1)
-
-      assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
-               Attachments.get_attachment(operator, 73, attachment.id)
+      assert {:ok, :none} = Attachments.refresh_retention(operator, 73, StubSource, 1)
     end
 
-    test "refresh_retention asks the actor no attachments grant", %{
+    test "the refresh job asks the issuer no attachments grant and runs as the principal", %{
       operator: operator,
       first_scope: scope
     } do
@@ -514,21 +532,94 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
                  reason: "no"
                })
 
-      assert {:ok, [%{retain_until: ~U[2034-12-31 23:59:59.999999Z]}]} =
-               Attachments.refresh_retention(issuer, 73, StubSource, 1)
-
+      assert {:ok, :queued} = Attachments.refresh_retention(issuer, 73, StubSource, 1)
+      assert :ok = perform_queued!()
       assert_agrees(operator, attachment.id)
 
-      {:ok, history} = Artifacts.retention_history(operator, 73, ArtifactOwner, attachment.artifact_id)
+      {:ok, history} =
+        Artifacts.retention_history(operator, 73, ArtifactOwner, attachment.artifact_id)
 
       assert %{event: "retention_extended", actor_type: "system", system_principal: principal} =
                List.last(history)
 
       assert principal == ArtifactOwner.refresh_principal()
-      assert {:ok, %{events: events}} = Attachments.get_attachment(operator, 73, attachment.id)
+    end
 
-      assert [%{event: "retention_extended", retain_until: ~U[2034-12-31 23:59:59.999999Z]}] =
-               events
+    test "the refresh job takes identifiers and one date, and nothing else" do
+      valid = %{
+        "tenant_id" => 41,
+        "company_id" => 73,
+        "source" => Atom.to_string(StubSource),
+        "document_id" => 1,
+        "retain_until" => "2034-12-31T23:59:59.999999Z"
+      }
+
+      assert {:ok, ^valid} = RetentionRefreshWorker.validate_args(valid)
+
+      for invalid <- [
+            Map.put(valid, "file_name", "x"),
+            Map.delete(valid, "document_id"),
+            Map.put(valid, "source", "Elixir.NoSuchSource"),
+            Map.put(valid, "retain_until", "tomorrow"),
+            Map.put(valid, "company_id", "73")
+          ] do
+        assert {:error, :invalid_refresh} = RetentionRefreshWorker.validate_args(invalid)
+      end
+    end
+
+    test "a read records a missed change as whoever Base Artifacts recorded, once", %{
+      operator: operator,
+      first_scope: scope
+    } do
+      {:ok, attachment} = Attachments.attach(operator, 73, StubSource, 1, TestFixtures.file())
+      id = attachment.artifact_id
+
+      assert {:ok, %{retain_until: ~U[2038-01-01 23:59:59.999999Z]}} =
+               Attachments.extend_retention(operator, 73, attachment.id, %{
+                 retain_until: ~D[2038-01-01],
+                 reason: "A's reason"
+               })
+
+      writer = TestFixtures.sign_in!(scope, 73, 94, ~w(finance.attachments.retention.manage))
+
+      {:ok, _} =
+        Artifacts.retain(writer, 73, ArtifactOwner, id, ~U[2041-01-01 23:59:59.999999Z],
+          reason: "B's reason"
+        )
+
+      reader = TestFixtures.sign_in!(scope, 73, 95, ~w(finance.ledger.view finance.attachments.view))
+
+      for _read <- 1..2 do
+        assert {:ok, %{retain_until: ~U[2041-01-01 23:59:59.999999Z], events: events}} =
+                 Attachments.get_attachment(reader, 73, attachment.id)
+
+        assert [
+                 %{reason: "A's reason", actor_user_id: 91},
+                 %{reason: "B's reason", actor_user_id: 94, actor_system_principal: nil}
+               ] = events
+      end
+
+      {:ok, token} =
+        Authentication.delegate_system(scope, ArtifactOwner.refresh_principal(), 73)
+
+      {:ok, system} = Authentication.resume_system(token)
+
+      {:ok, _} =
+        Artifacts.retain(system, 73, ArtifactOwner, id, ~U[2045-01-01 23:59:59.999999Z],
+          reason: "by the queue"
+        )
+
+      assert {:ok, %{retain_until: ~U[2045-01-01 23:59:59.999999Z], events: events}} =
+               Attachments.get_attachment(reader, 73, attachment.id)
+
+      assert %{
+               reason: "by the queue",
+               actor_user_id: 0,
+               actor_system_principal: "finance.attachments.retention_refresh"
+             } = List.last(events)
+
+      assert length(events) == 3
+      assert_agrees(operator, attachment.id)
     end
 
     test "a legal hold is placed and released with reasons", %{operator: operator} do
@@ -627,6 +718,11 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
 
       none = TestFixtures.sign_in!(scope, 73, 99, ~w(finance.ledger.view))
       assert {:error, :unauthorized} = Attachments.evidence_page(none, 73, "attachment")
+
+      blind = TestFixtures.sign_in!(scope, 73, 96, ~w(finance.attachments.view))
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "attachment")
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "attachment_event")
+      assert {:ok, %{rows: []}} = Attachments.evidence_page(blind, 73, "retention_change")
     end
   end
 
@@ -795,5 +891,21 @@ defmodule Bilimbi.Finance.Attachments.AttachmentsTest do
 
     assert view.retain_until == base.retain_until
     assert view.on_hold == base.legal_hold
+  end
+
+  defp queued_jobs do
+    import Ecto.Query
+
+    Repo.all(
+      from(j in Oban.Job,
+        where: j.worker == "Bilimbi.Finance.Attachments.RetentionRefreshWorker.ObanAdapter",
+        order_by: [asc: j.id]
+      )
+    )
+  end
+
+  defp perform_queued! do
+    job = List.last(queued_jobs())
+    Bilimbi.Base.Queue.Worker.perform(RetentionRefreshWorker, job)
   end
 end

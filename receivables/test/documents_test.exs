@@ -230,7 +230,7 @@ defmodule Bilimbi.Finance.Receivables.DocumentsTest do
       assert Decimal.equal?(invoice.outstanding, "150.00")
       assert {:ok, read} = Receivables.get_document(operator, 73, invoice.id)
       assert read == Map.delete(invoice, :retention_refresh)
-      assert invoice.retention_refresh == :ok
+      assert invoice.retention_refresh == :none
 
       assert {:ok, entry} = Ledger.get_entry(operator, 73, invoice.ledger_entry_id)
       assert entry.entry_number == invoice.ledger_entry_number

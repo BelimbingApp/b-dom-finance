@@ -14,7 +14,8 @@ captured it when, and never changed afterwards.
   record; `capture_file/5` and `attach_capture/5` for a record created in
   the same transaction as its file; `replace/4` and `remove/4` while the
   record is not final; `extend_retention/4`, `place_hold/4`, and
-  `release_hold/4`; `refresh_retention/4` for a record whose date changed; the company's `get_retention/2`, `set_retention/3`, and
+  `release_hold/4`; `refresh_retention/4` for a record whose date changed (it
+  queues `RetentionRefreshWorker`); the company's `get_retention/2`, `set_retention/3`, and
   `list_retention_changes/2`; `retain_until/3`; `evidence_page/4`; and the reads
   `list_attachments/4`, `list_company_attachments/3`, `list_sources/2`,
   `get_attachment/3`, and `read_attachment/3`.
@@ -50,24 +51,28 @@ captured it when, and never changed afterwards.
   selects them; a legal hold refuses deletion after it. `extend_retention/4`
   only moves a retain-until later, as a `retention_extended` event; the
   retain-until and `on_hold` a read shows follow the latest `retention_extended`
-  and hold events that Base Artifacts did not refuse, and nothing shortens
-  one. A change is recorded first under the company lock (what Base would
-  refuse is checked against the events there), then Base Artifacts makes it
-  outside any transaction; if Base refuses or fails, a
-  `retention_change_failed` event naming the first is appended and the change
-  no longer counts, so a read never shows a date or hold Base does not
-  enforce. A record whose date can change while it is not final (a draft
-  invoice) may be re-dated after its attachments were kept; its module calls
-  `refresh_retention/4` once the record is final, after its own transaction
-  commits, which extends each standing attachment to what the final date says
-  and never shortens one. That refresh asks the actor no attachments grant
-  (the owning module must read the record, the company must be live, and the
-  ledger's fiscal years need `finance.ledger.view`): it is a consequence of the
-  owning module's own authorized write, and the owner adapter accepts any
-  signed-in user of a live company for `:retain`, while the facade gates
-  every discretionary extension and hold with
-  `finance.attachments.retention.manage`. It is repeatable, so a failed refresh
-  is redone by calling it again.
+  and hold events, and nothing shortens one. Base Artifacts makes a change
+  first, outside any transaction, after a short transaction under the company
+  lock has checked it against the events; the event follows without that lock
+  (`{:error, {:recorded_in_storage, reason}}` if it cannot be recorded). Base
+  is the fact, so `get_attachment/3` and `read_attachment/3` append any
+  retention event Base holds and the events lack, with the actor, impersonator
+  or system principal and reason Base recorded (never the reader's), under a
+  lock on the attachment's row so it is recorded once. A record whose date can
+  change while it is not final (a draft invoice) may be re-dated after its
+  attachments were kept; its module calls `refresh_retention/4` once the
+  record is final, after its own transaction commits. That checks, with the
+  caller's own scope, that the record is readable and final and computes the
+  retain-until its date gives (`finance.ledger.view` for the fiscal years),
+  then queues `RetentionRefreshWorker` with Base Queue's
+  `enqueue_as_system/4` under the declared principal
+  `finance.attachments.retention_refresh`, so the issuer needs no attachments
+  grant. The job extends each standing attachment kept for less (never
+  shortens one) and records `retention_extended` as the principal. Finance
+  code that must change retention without a user's grant queues that worker
+  through `refresh_retention/4`; the owner adapter accepts the principal for
+  `:retain`, and the facade gates every discretionary extension and hold with
+  `finance.attachments.retention.manage` (and view).
 - **Standing.** An attachment row is append-only; its standing is its
   latest event. A record that is not final (a draft bill, a submitted
   journal, a draft invoice, an undecided payment request) can have an

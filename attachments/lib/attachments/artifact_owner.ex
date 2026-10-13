@@ -5,7 +5,7 @@ defmodule Bilimbi.Finance.Attachments.ArtifactOwner do
 
   Every operation re-asks the capability the facade asks for the same
   action, for the company, and that the company is live; a system scope is
-  refused. Storing (`:create`) and retaining at capture (`:retain`) need
+  refused, but for the one exception below. Storing (`:create`) and retaining at capture (`:retain`) need
   `finance.attachments.create`; a later retention change needs
   `finance.attachments.retention.manage`, which also satisfies `:retain`;
   reading needs `finance.attachments.view`; deleting and purging need
@@ -16,8 +16,10 @@ defmodule Bilimbi.Finance.Attachments.ArtifactOwner do
   `finance.attachments.retention_refresh`, which `:retain` also accepts: the
   lengthening that follows a record's finalisation
   (`Bilimbi.Finance.Attachments.refresh_retention/4`) is a consequence of the
-  owning module's own authorized write, so it runs under that principal and
-  the person who finalised the record need hold no attachments grant.
+  owning module's own authorized write, so it runs as a Base Queue job
+  (`Bilimbi.Finance.Attachments.RetentionRefreshWorker`, enqueued as that
+  principal) and the person who finalised the record need hold no attachments
+  grant.
   """
 
   @behaviour Bilimbi.Base.Artifacts.Owner

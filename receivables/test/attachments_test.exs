@@ -68,8 +68,7 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              Attachments.list_attachments(context.operator, 73, Document, draft.id)
   end
 
-  test "issuing a re-dated draft extends its attachments to the issue date's retention",
-       context do
+  test "issuing a re-dated draft queues the extension of its attachments", context do
     issuer = issuer!(context, TestFixtures.ledger_capabilities())
     {:ok, draft, attachment} = draft_with_contract!(context)
     assert attachment.retain_until == ~U[2033-12-31 23:59:59.999999Z]
@@ -77,10 +76,12 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
     {:ok, _draft} =
       Receivables.update_draft(issuer, 73, draft.id, %{issue_date: ~D[2027-02-01]})
 
+    assert {:ok, %{retention_refresh: :queued}} = Receivables.issue_document(issuer, 73, draft.id)
+
     assert {:ok, %{retain_until: ~U[2033-12-31 23:59:59.999999Z]}} =
              Attachments.get_attachment(context.operator, 73, attachment.id)
 
-    assert {:ok, %{retention_refresh: :ok}} = Receivables.issue_document(issuer, 73, draft.id)
+    assert :ok = perform_refresh_job!()
 
     assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z], events: [event]}} =
              Attachments.get_attachment(context.operator, 73, attachment.id)
@@ -96,7 +97,7 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
              )
   end
 
-  test "a refresh Base Artifacts refuses is reported and logged, and what it extended stays",
+  test "a refresh job Base Artifacts refuses fails for the queue to retry, and what it extended stays",
        context do
     {:ok, draft, attachment} = draft_with_contract!(context)
     orphan!(attachment.id)
@@ -104,19 +105,27 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
     {:ok, _draft} =
       Receivables.update_draft(context.operator, 73, draft.id, %{issue_date: ~D[2027-02-01]})
 
-    log =
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert {:ok, %{status: "issued", retention_refresh: {:error, :not_found}}} =
-                 Receivables.issue_document(context.operator, 73, draft.id)
-      end)
+    assert {:ok, %{status: "issued", retention_refresh: :queued}} =
+             Receivables.issue_document(context.operator, 73, draft.id)
 
-    assert log =~ "source documents of receivables document #{draft.id}"
+    assert {:error, :retention_refresh_failed} = perform_refresh_job!()
 
     assert {:ok, %{retain_until: ~U[2034-12-31 23:59:59.999999Z]}} =
              Attachments.get_attachment(context.operator, 73, attachment.id)
+  end
 
-    assert {:error, :not_found} =
-             Attachments.refresh_retention(context.operator, 73, Document, draft.id)
+  test "an issue with no source documents queues nothing", context do
+    {:ok, draft} =
+      Receivables.create_draft(context.operator, 73, %{
+        kind: "invoice",
+        series_id: context.invoice_series.id,
+        customer_id: context.customer.id,
+        issue_date: ~D[2026-03-01],
+        lines: [%{description: "Service", quantity: "1", unit_price: "100.00"}]
+      })
+
+    assert {:ok, %{retention_refresh: :none}} =
+             Receivables.issue_document(context.operator, 73, draft.id)
   end
 
   test "a payment received is final from the start", context do
@@ -231,5 +240,21 @@ defmodule Bilimbi.Finance.Receivables.AttachmentsTest do
       """,
       [attachment_id]
     )
+  end
+
+  defp perform_refresh_job! do
+    import Ecto.Query
+    worker = Bilimbi.Finance.Attachments.RetentionRefreshWorker
+
+    job =
+      Bilimbi.Base.Repo.one!(
+        from(j in Oban.Job,
+          where: j.worker == ^"#{inspect(worker)}.ObanAdapter",
+          order_by: [desc: j.id],
+          limit: 1
+        )
+      )
+
+    Bilimbi.Base.Queue.Worker.perform(worker, job)
   end
 end

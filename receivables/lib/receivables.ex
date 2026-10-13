@@ -327,10 +327,11 @@ defmodule Bilimbi.Finance.Receivables do
 
   Call it outside a transaction, as `Bilimbi.Finance.Reconciliation.import_statement/4`
   is (`{:error, :inside_transaction}` otherwise, before anything is issued):
-  once the issue commits, the document's source documents are given the
+  once the issue commits, the document's source documents are queued for the
   retention its issue date says
-  (`Bilimbi.Finance.Attachments.refresh_retention/4`, which asks the issuer no
-  attachments grant). The issued document answers `retention_refresh`, `:ok` or
+  (`Bilimbi.Finance.Attachments.refresh_retention/4`, a Base Queue job that
+  asks the issuer no attachments grant). The issued document answers
+  `retention_refresh`: `:queued`, `:none` when no source document needs it, or
   `{:error, reason}` (also logged); calling `refresh_retention/4` again redoes
   a failed one.
   """
@@ -359,8 +360,8 @@ defmodule Bilimbi.Finance.Receivables do
 
   defp refresh_attachments(scope, company_id, document) do
     case Attachments.refresh_retention(scope, company_id, AttachmentsDocument, document.id) do
-      {:ok, _extended} ->
-        :ok
+      {:ok, status} ->
+        status
 
       {:error, reason} = error ->
         Logger.warning(

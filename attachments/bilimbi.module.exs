@@ -10,6 +10,7 @@
     "base/authz",
     "base/database",
     "base/module_registry",
+    "base/queue",
     "base/tenancy",
     "base/ui",
     "core/company",

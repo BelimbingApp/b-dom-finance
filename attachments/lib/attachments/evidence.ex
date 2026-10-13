@@ -43,6 +43,7 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
          :reason,
          :actor_user_id,
          :actor_impersonator_id,
+         :actor_system_principal,
          :occurred_at
        ]},
     "retention_change" =>
@@ -60,13 +61,30 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
        ]}
   }
 
+  # The attachments of a source the caller cannot read, and their events,
+  # are left out; the company's retention changes belong to no source.
+  defp readable(query, "attachment", _scope, _company_id, modules),
+    do: where(query, [r], r.source_module in ^modules)
+
+  defp readable(query, "attachment_event", scope, company_id, modules) do
+    readable =
+      from(a in Tenancy.scope_query(Bilimbi.Finance.Attachments.Attachment, scope),
+        where: a.company_id == ^company_id and a.source_module in ^modules,
+        select: a.id
+      )
+
+    where(query, [r], r.attachment_id in subquery(readable))
+  end
+
+  defp readable(query, _dataset, _scope, _company_id, _modules), do: query
+
   def datasets, do: Map.keys(@datasets) |> Enum.sort()
 
   def tables do
     for {_dataset, {schema, _fields}} <- @datasets, do: schema.__schema__(:source)
   end
 
-  def page(scope, company_id, dataset, options) do
+  def page(scope, company_id, dataset, options, readable_modules) do
     limit = Keyword.get(options, :limit, 500)
     cursor = Keyword.get(options, :after, 0)
 
@@ -79,6 +97,7 @@ defmodule Bilimbi.Finance.Attachments.Evidence do
           limit: ^limit,
           select: map(r, ^fields)
         )
+        |> readable(dataset, scope, company_id, readable_modules)
         |> Repo.all()
 
       {:ok,

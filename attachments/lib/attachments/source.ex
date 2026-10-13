@@ -23,8 +23,10 @@ defmodule Bilimbi.Finance.Attachments.Source do
     final (a draft invoice) makes its module call
     `Bilimbi.Finance.Attachments.refresh_retention/4` once the record is
     final and its transaction has committed, so the retention follows the
-    final date (it needs no attachments grant from the caller, only that
-    `document/3` reads the record for them);
+    final date: that confirms the record through `document/3` with the
+    caller's own scope, then queues a Base Queue job
+    (`Bilimbi.Finance.Attachments.RetentionRefreshWorker`) that extends the
+    retention as a system principal, so the caller needs no attachments grant;
   - `final?`: whether the record is beyond change (posted, issued,
     approved, imported), after which its attachments are kept as they are:
     one can still be added, none replaced or removed.

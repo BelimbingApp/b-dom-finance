@@ -105,6 +105,7 @@ defmodule Bilimbi.Finance.Attachments.SchemaContract do
             "reason" => column({:varchar, 500}, true),
             "actor_user_id" => column(:bigint, false),
             "actor_impersonator_id" => column(:bigint, true),
+            "actor_system_principal" => column({:varchar, 100}, true),
             "occurred_at" => column({:timestamp, 6}, false)
           }),
         indexes: %{
