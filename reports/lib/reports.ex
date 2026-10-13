@@ -12,7 +12,9 @@ defmodule Bilimbi.Finance.Reports do
   signed-in actor and that company when it runs, through
   `Bilimbi.Core.Company.authorize_company_target/3`: a system scope or a
   missing grant is `{:error, :unauthorized}` and a company the scope cannot
-  see is `{:error, :company_not_found}`.
+  see is `{:error, :company_not_found}`. Issuing a report and exporting an
+  auditor pack ask for their own capabilities as well (`issue_capability/0`,
+  `export_capability/0`).
 
   A report names `through_entry_number`, the last ledger entry it counts.
   The cutoff freezes postings, but live reports still read current chart,
