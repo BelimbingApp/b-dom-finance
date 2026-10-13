@@ -38,6 +38,7 @@ defmodule Bilimbi.Finance.Payables.PayablesCase do
     finance.payables.documents.approve
     finance.payables.documents.post
     finance.payables.payments.post
+    finance.payables.match.approve
   )
 
   @doc "Every ledger and payables capability."

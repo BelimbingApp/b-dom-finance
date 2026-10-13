@@ -6,7 +6,7 @@ defmodule Bilimbi.Finance.Payables.Document do
   alias Bilimbi.Finance.Payables.{DocumentLine, TaxLine}
 
   @types ~w(bill debit_note)
-  @statuses ~w(draft approved posted voided)
+  @statuses ~w(draft approved held posted voided)
 
   schema "finance_payables_documents" do
     field(:tenant_id, :integer)

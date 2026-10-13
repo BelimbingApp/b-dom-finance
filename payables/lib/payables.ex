@@ -28,9 +28,23 @@ defmodule Bilimbi.Finance.Payables do
   is never changed: a bill is corrected by a debit note against it. A payment
   is posted with its allocations to bills and corrected by its reversal.
   Nothing is deleted; the database refuses the same things on its own (see
-  the migration). A change to the payable account or a tax code is recorded
-  with who made it, why, and the values before and after, and never altered
-  (`list_settings_changes/2`, `list_tax_code_changes/2`).
+  the migration). A change to the payable account, the match tolerances, or
+  a tax code is recorded with who made it, why, and the values before and
+  after, and never altered (`list_settings_changes/2`,
+  `list_tax_code_changes/2`).
+
+  A bill line may name a purchase order line of the installed order source
+  (`Bilimbi.Finance.Payables.OrderSource`; Supply Chain purchasing and
+  receiving when mounted) with the quantity billed against it. Posting such a
+  bill is a three-way match: the billed quantity and unit price are compared
+  with what was ordered and with what was received and not yet billed,
+  within the company's tolerances. A bill within tolerance posts as any
+  other; one outside is `held` instead, with the exceptions recorded, and
+  posts only after a user holding `finance.payables.match.approve` approves
+  them with a reason (`approve_match_exception/4`). Every attempt is an
+  append-only match event with the figures it compared. A bill naming no
+  order line is never matched, and when no order source is installed a line
+  cannot name one.
 
   Results are plain maps; the schemas stay private to this module.
   """
@@ -48,6 +62,11 @@ defmodule Bilimbi.Finance.Payables do
   alias Bilimbi.Finance.Payables.Balances
   alias Bilimbi.Finance.Payables.Document
   alias Bilimbi.Finance.Payables.DocumentLine
+  alias Bilimbi.Finance.Payables.MatchEvent
+  alias Bilimbi.Finance.Payables.MatchException
+  alias Bilimbi.Finance.Payables.MatchLine
+  alias Bilimbi.Finance.Payables.Matching
+  alias Bilimbi.Finance.Payables.OrderSource
   alias Bilimbi.Finance.Payables.Payment
   alias Bilimbi.Finance.Payables.Settings
   alias Bilimbi.Finance.Payables.SettingsChange
@@ -62,6 +81,10 @@ defmodule Bilimbi.Finance.Payables do
   @approve_documents "finance.payables.documents.approve"
   @post_documents "finance.payables.documents.post"
   @post_payments "finance.payables.payments.post"
+  @approve_match_exceptions "finance.payables.match.approve"
+
+  @match_statuses ~w(pending held exception_approved matched posted_with_exceptions)
+  @page_sizes [25, 50, 100]
 
   @party_fields [:party_key, :party_name, :party_tax_id, :party_registration_id, :party_address]
 
@@ -94,6 +117,9 @@ defmodule Bilimbi.Finance.Payables do
   @doc "The capability that posts and reverses payments."
   def post_payments_capability, do: @post_payments
 
+  @doc "The capability that approves a held bill's match exceptions."
+  def approve_match_exceptions_capability, do: @approve_match_exceptions
+
   @doc "The document types: a party's bill, and our debit note against one."
   @spec document_types() :: [String.t()]
   def document_types, do: Document.types()
@@ -102,11 +128,31 @@ defmodule Bilimbi.Finance.Payables do
   @spec document_statuses() :: [String.t()]
   def document_statuses, do: Document.statuses()
 
+  @doc """
+  The match statuses a bill naming order lines shows as `match_status`:
+  `pending` until it is first posted, `held` with unapproved exceptions,
+  `exception_approved` once they are approved and it awaits posting,
+  `matched` when it posted within tolerance, and `posted_with_exceptions`
+  when it posted on approved exceptions. A bill naming no order line, or a
+  debit note, shows `nil`.
+  """
+  @spec match_statuses() :: [String.t()]
+  def match_statuses, do: @match_statuses
+
+  @doc "The codes a match exception carries; see `approve_match_exception/4`."
+  @spec match_exception_codes() :: [String.t()]
+  def match_exception_codes, do: Matching.exception_codes()
+
+  @doc "The page sizes `page_documents/3` accepts."
+  def page_sizes, do: @page_sizes
+
   ## Settings
 
   @doc """
-  The company's payables settings: `%{company_id, payable_account_id}`, or
-  `{:error, :payables_not_configured}` before `put_settings/3`.
+  The company's payables settings: `company_id`, `payable_account_id`, and
+  the match tolerances `quantity_tolerance_kind`, `quantity_tolerance`,
+  `price_tolerance_kind`, and `price_tolerance` (nil until set: an exact
+  match), or `{:error, :payables_not_configured}` before `put_settings/3`.
   """
   @spec get_settings(Scope.t(), term()) ::
           {:ok, map()} | {:error, refusal() | :payables_not_configured}
@@ -121,10 +167,15 @@ defmodule Bilimbi.Finance.Payables do
 
   @doc """
   Sets `payable_account_id`, the active liability account a posted bill
-  credits. A change applies to documents posted afterwards; each posted
-  document keeps the account it posted to, and payments against it debit
-  that account. An optional `reason` is kept with the change in
-  `list_settings_changes/2`.
+  credits, and the three-way match tolerances: `quantity_tolerance_kind`
+  and `price_tolerance_kind`, each `percent` (of the ordered quantity or
+  unit price) or `amount` (units of quantity, or currency per unit), with
+  `quantity_tolerance` and `price_tolerance` (zero or more, up to four
+  decimal places); a kind and its value come together, and nil means an
+  exact match. A change applies to documents posted afterwards; each posted
+  document keeps the account it posted to, and each match record the
+  tolerances it was checked against. An optional `reason` is kept with the
+  change in `list_settings_changes/2`.
   """
   @spec put_settings(Scope.t(), term(), map()) ::
           {:ok, map()} | {:error, write_refusal() | Changeset.t()}
@@ -147,10 +198,11 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   @doc """
-  The changes made to the payable account, oldest first: `old_payable_account_id`
-  (nil the first time), `new_payable_account_id`, the optional `reason`, who
-  made it (`changed_by_user_id`, `changed_by_impersonator_id`), and
-  `changed_at`, the database's time.
+  The changes made to the settings, oldest first: the `old_` and `new_`
+  values of the payable account and of each tolerance kind and value (the
+  `old_` ones nil the first time), the optional `reason`, who made it
+  (`changed_by_user_id`, `changed_by_impersonator_id`), and `changed_at`,
+  the database's time.
   """
   @spec list_settings_changes(Scope.t(), term()) :: {:ok, [map()]} | {:error, refusal()}
   def list_settings_changes(%Scope{} = scope, company_id) do
@@ -161,17 +213,7 @@ defmodule Bilimbi.Finance.Payables do
          order_by: [asc: c.id]
        )
        |> Repo.all()
-       |> Enum.map(
-         &Map.take(&1, [
-           :id,
-           :old_payable_account_id,
-           :new_payable_account_id,
-           :reason,
-           :changed_by_user_id,
-           :changed_by_impersonator_id,
-           :changed_at
-         ])
-       )}
+       |> Enum.map(&Map.take(&1, SettingsChange.fields()))}
     end
   end
 
@@ -295,16 +337,27 @@ defmodule Bilimbi.Finance.Payables do
   half up to the book's minor units. Optional `tax_lines`, each
   `%{tax_code_id, tax_amount}`, records the party's own tax figure for a
   code instead.
+
+  A line may name a purchase order line of the installed order source with
+  `order_line_id` and the `quantity` billed against it (positive, up to four
+  decimal places); the two come together. The line must exist in the
+  source, read with this scope, so the actor also holds the source's view
+  capabilities; with no source installed a line cannot name one. The match
+  itself runs when the bill posts (`post_document/3`). A refusal from the
+  source other than a missing line is `{:error, {:order_source, reason}}`.
   """
   @spec create_bill(Scope.t(), term(), map()) ::
-          {:ok, map()} | {:error, write_refusal() | :book_not_open | Changeset.t()}
+          {:ok, map()}
+          | {:error, write_refusal() | :book_not_open | {:order_source, term()} | Changeset.t()}
   def create_bill(%Scope{} = scope, company_id, attributes) when is_map(attributes) do
     write(scope, company_id, @create_documents, fn ->
       with {:ok, book} <- Ledger.get_book(scope, company_id),
-           {:ok, accounts} <- ledger_accounts(scope, company_id) do
-        scope
-        |> document_changeset(book, "bill", attributes, accounts)
-        |> insert_document(scope)
+           {:ok, accounts} <- ledger_accounts(scope, company_id),
+           {:ok, changeset} <-
+             scope
+             |> document_changeset(book, "bill", attributes, accounts)
+             |> check_order_lines(scope, company_id) do
+        insert_document(changeset, scope)
       end
     end)
   end
@@ -318,6 +371,13 @@ defmodule Bilimbi.Finance.Payables do
   from the debit note's date on, counting each later payment, reversal, and
   debit note date and now (`{:error, :exceeds_outstanding}`, checked again
   when it posts).
+
+  A debit note line may name an order line the bill's lines name, with the
+  `quantity` the party credits back, which is taken off what this module
+  counts as billed against that order line once the note posts. With the
+  bill's earlier posted debit notes, that quantity fits what the bill billed
+  on the line (checked again when it posts: `{:error,
+  :exceeds_billed_quantity}`).
   """
   @spec create_debit_note(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -345,6 +405,7 @@ defmodule Bilimbi.Finance.Payables do
               do: [document_date: "cannot be before the corrected bill's date"],
               else: []
           end)
+          |> check_note_order_lines(scope, company_id, bill)
 
         with :ok <- within_outstanding(scope, company_id, bill, changeset) do
           insert_document(changeset, scope)
@@ -374,9 +435,10 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   @doc """
-  Voids a draft or approved document with a `void_reason`; it stays on
-  record and frees its party document number. A posted or voided document is
-  `{:error, :not_voidable}`: correct a posted bill with a debit note.
+  Voids a draft, approved, or held document with a `void_reason`; it stays
+  on record and frees its party document number. A posted or voided
+  document is `{:error, :not_voidable}`: correct a posted bill with a debit
+  note.
   """
   @spec void_document(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -385,7 +447,7 @@ defmodule Bilimbi.Finance.Payables do
       when is_map(attributes) do
     write(scope, company_id, @approve_documents, fn ->
       with {:ok, document} <- fetch_document(scope, company_id, document_id) do
-        if document.status in ["draft", "approved"] do
+        if document.status in ["draft", "approved", "held"] do
           document
           |> Document.void_changeset(attributes, Scope.actor(scope))
           |> update_document(scope)
@@ -397,13 +459,28 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   @doc """
-  Posts an approved document to the ledger on its document date and numbers
-  it. A bill debits each line's account and each tax line's account and
-  credits the payable account with its total; a debit note posts the
-  opposite. Anything but an approved document is `{:error, :not_approved}`;
-  `{:error, :payables_not_configured}` before `put_settings/3`. A refusal
-  from the ledger, such as an account deactivated since the document was
-  recorded, is the ledger's changeset.
+  Posts an approved or held document to the ledger on its document date and
+  numbers it. A bill debits each line's account and each tax line's account
+  and credits the payable account from the settings with its total; a debit
+  note posts the opposite. Anything but an approved or held document is
+  `{:error, :not_approved}`; `{:error, :payables_not_configured}` before
+  `put_settings/3`. A refusal from the ledger, such as an account deactivated
+  since the document was recorded, is the ledger's changeset.
+
+  A bill whose lines name order lines is matched first (the three-way match
+  in the moduledoc), with the source read under this scope, so the actor
+  also holds the source's view capabilities; the source refusing is
+  `{:error, {:order_source, reason}}`. Every line within tolerance, or every
+  exception found covered by an approval (`approve_match_exception/4`) of
+  the bill's last hold, with figures no worse than that hold recorded, posts the bill and records a `posted` match event
+  with the figures compared. Otherwise the bill is not posted: it becomes
+  (or stays) `held`, a `held` event records each line's figures and
+  exceptions, and the result is `{:ok, document}` with `status` `held` and
+  `match_status` `held`, for the caller to read. Posting a held bill matches
+  it afresh, so goods received since may clear a hold on their own.
+
+  A debit note naming order lines is checked against its bill's billed
+  quantities again (`{:error, :exceeds_billed_quantity}`).
   """
   @spec post_document(Scope.t(), term(), term()) ::
           {:ok, map()}
@@ -413,35 +490,210 @@ defmodule Bilimbi.Finance.Payables do
              | :not_approved
              | :payables_not_configured
              | :exceeds_outstanding
+             | :exceeds_billed_quantity
+             | {:order_source, term()}
              | Changeset.t()}
   def post_document(%Scope{} = scope, company_id, document_id) do
     write(scope, company_id, @post_documents, fn ->
       with {:ok, document} <- fetch_document(scope, company_id, document_id),
-           :ok <- require_status(document, "approved", :not_approved),
-           {:ok, payable_account_id} <- posting_account(scope, company_id, document),
-           {:ok, entry} <-
-             Ledger.post_entry(scope, company_id, document_entry(document, payable_account_id)) do
-        %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
-
-        document
-        |> Changeset.change(
-          status: "posted",
-          posted_by_user_id: user_id,
-          posted_by_impersonator_id: impersonator_id,
-          payable_account_id: payable_account_id,
-          entry_id: entry.id,
-          entry_number: entry.entry_number
-        )
-        |> update_document(scope)
+           :ok <- require_postable(document),
+           {:ok, match} <- match_for_posting(scope, company_id, document) do
+        case match do
+          {:hold, lines} -> hold_document(scope, document, lines)
+          {:post, lines} -> post_now(scope, company_id, document, lines)
+        end
       end
     end)
+  end
+
+  defp require_postable(%Document{status: status}) when status in ["approved", "held"], do: :ok
+  defp require_postable(_document), do: {:error, :not_approved}
+
+  # A bill naming order lines is matched; the decision is to post or to hold.
+  defp match_for_posting(scope, company_id, %Document{document_type: "bill"} = document) do
+    if Enum.any?(document.lines, & &1.order_line_id) do
+      with {:ok, settings} <- fetch_settings(scope, company_id),
+           {:ok, book} <- Ledger.get_book(scope, company_id),
+           {:ok, lines} <- Matching.evaluate(scope, company_id, document, settings, book) do
+        cond do
+          Enum.all?(lines, &(&1.exceptions == [])) ->
+            {:ok, {:post, lines}}
+
+          Matching.covered?(approved_lines(scope, company_id, document), lines) ->
+            {:ok, {:post, lines}}
+
+          true ->
+            {:ok, {:hold, lines}}
+        end
+      end
+    else
+      {:ok, {:post, nil}}
+    end
+  end
+
+  defp match_for_posting(_scope, _company_id, _debit_note), do: {:ok, {:post, nil}}
+
+  # The lines of the hold the bill's latest approval covers, with the figures
+  # the approver saw, or none when the latest event is not an approval.
+  defp approved_lines(scope, company_id, document) do
+    events = scope |> match_events(company_id, [document.id]) |> Map.get(document.id, [])
+
+    case Enum.reverse(events) do
+      [%MatchEvent{event: "exception_approved"}, %MatchEvent{event: "held"} = held | _earlier] ->
+        held.lines
+
+      _other ->
+        []
+    end
+  end
+
+  defp hold_document(scope, document, lines) do
+    with {:ok, _event} <- record_match_event(scope, document, "held", lines, %{}) do
+      if document.status == "held" do
+        {:ok, document} = fetch_document(scope, document.company_id, document.id)
+        {:ok, hd(document_views(scope, document.company_id, [document]))}
+      else
+        document
+        |> Changeset.change(status: "held")
+        |> update_document(scope)
+      end
+    end
+  end
+
+  defp post_now(scope, company_id, document, lines) do
+    with {:ok, payable_account_id} <- posting_account(scope, company_id, document),
+         {:ok, entry} <-
+           Ledger.post_entry(scope, company_id, document_entry(document, payable_account_id)),
+         {:ok, _event} <- record_posting_match(scope, document, lines) do
+      %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+
+      document
+      |> Changeset.change(
+        status: "posted",
+        posted_by_user_id: user_id,
+        posted_by_impersonator_id: impersonator_id,
+        payable_account_id: payable_account_id,
+        entry_id: entry.id,
+        entry_number: entry.entry_number
+      )
+      |> update_document(scope)
+    end
+  end
+
+  defp record_posting_match(_scope, _document, nil), do: {:ok, nil}
+
+  defp record_posting_match(scope, document, lines),
+    do: record_match_event(scope, document, "posted", lines, %{})
+
+  @doc """
+  Approves a held bill's match exceptions with a `reason` and the
+  `held_event_id` of the hold the approver saw (both required; the hold's
+  `id` in `match_events`): the exceptions that hold recorded may then be
+  posted over. A hold recorded since is `{:error, :stale_hold}`. The bill
+  stays held until `post_document/3` posts it, matching afresh; an exception the
+  approval does not cover, or one whose figures are worse than the hold the
+  approver saw (more billed over the order, less received, a wider price
+  gap), holds it again, for a new approval. Anything but a held bill is
+  `{:error, :not_held}`; one whose last hold is already approved is
+  `{:error, :already_approved}`. The approval is a match event
+  naming the approver, with any impersonator, the hold, and the database's
+  time.
+  """
+  @spec approve_match_exception(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error,
+             write_refusal()
+             | :document_not_found
+             | :not_held
+             | :already_approved
+             | :stale_hold
+             | Changeset.t()}
+  def approve_match_exception(%Scope{} = scope, company_id, document_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @approve_match_exceptions, fn ->
+      with {:ok, document} <- fetch_document(scope, company_id, document_id),
+           :ok <- require_status(document, "held", :not_held),
+           {:ok, held} <- latest_hold(scope, company_id, document),
+           :ok <- require_seen_hold(held, attributes),
+           {:ok, _event} <-
+             record_match_event(
+               scope,
+               document,
+               "exception_approved",
+               [],
+               Map.take(attributes, [:reason, "reason", :held_event_id, "held_event_id"])
+             ) do
+        {:ok, hd(document_views(scope, company_id, [document]))}
+      end
+    end)
+  end
+
+  defp latest_hold(scope, company_id, document) do
+    events = scope |> match_events(company_id, [document.id]) |> Map.get(document.id, [])
+
+    case List.last(events) do
+      %MatchEvent{event: "held"} = held -> {:ok, held}
+      _other -> {:error, :already_approved}
+    end
+  end
+
+  # A missing or malformed id is left to the event's changeset to refuse.
+  defp require_seen_hold(held, attributes) do
+    seen = Map.get(attributes, :held_event_id, Map.get(attributes, "held_event_id"))
+
+    case Ecto.Type.cast(:integer, seen) do
+      {:ok, id} when is_integer(id) and id != held.id -> {:error, :stale_hold}
+      _seen -> :ok
+    end
+  end
+
+  # One match event with its lines and their exceptions, in the transaction
+  # that decides it; the database stamps the time and checks the status.
+  defp record_match_event(scope, document, event, lines, attributes) do
+    %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
+    owner = %{tenant_id: document.tenant_id, company_id: document.company_id}
+
+    match_lines =
+      Enum.map(lines, fn line ->
+        exceptions =
+          Enum.map(line.exceptions, fn exception ->
+            struct(MatchException, Map.merge(owner, Map.take(exception, [:code, :detail])))
+          end)
+
+        struct(
+          MatchLine,
+          owner
+          |> Map.merge(Map.take(line, MatchLine.fields()))
+          |> Map.merge(%{document_id: document.id, exceptions: exceptions})
+        )
+      end)
+
+    match_event =
+      struct(
+        MatchEvent,
+        Map.merge(owner, %{
+          document_id: document.id,
+          event: event,
+          actor_user_id: user_id,
+          actor_impersonator_id: impersonator_id
+        })
+      )
+
+    match_event
+    |> MatchEvent.changeset(attributes)
+    |> Changeset.put_assoc(:lines, match_lines)
+    |> Repo.insert()
   end
 
   @doc """
   One document with its lines and tax lines, and `debit_note_ids`, the
   debit notes recorded against it. A posted bill also shows `outstanding`,
   what is still owed on it now; `list_payments/3` with `document_id` lists
-  the payments allocated to it.
+  the payments allocated to it. A bill naming order lines shows
+  `match_status` (`match_statuses/0`) and `match_events`, oldest first,
+  each with its `event`, `reason`, actor, `occurred_at`, and `lines`: the
+  figures compared for each bill line and the `exceptions` found
+  (`%{code, detail}`); other documents show `nil` and `[]`.
   """
   @spec get_document(Scope.t(), term(), term()) ::
           {:ok, map()} | {:error, refusal() | :document_not_found}
@@ -449,6 +701,91 @@ defmodule Bilimbi.Finance.Payables do
     with :ok <- authorize(scope, company_id, @view),
          {:ok, document} <- fetch_document(scope, company_id, document_id) do
       {:ok, hd(document_views(scope, company_id, [document]))}
+    end
+  end
+
+  @doc """
+  A page of documents for a list, newest first: `page` (from 1) and
+  `page_size` (one of `page_sizes/0`), with optional `document_type`,
+  `status`, and `search`, which matches the party's name or the party's
+  document number. The result is `%{entries, page, page_size, total_entries,
+  total_pages, has_prev?, has_next?}`, each entry as `get_document/3`
+  shows it; a page past the end is the last page. A malformed option is
+  `{:error, :invalid_option}`.
+  """
+  @spec page_documents(Scope.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, refusal() | :invalid_option}
+  def page_documents(%Scope{} = scope, company_id, options \\ []) when is_list(options) do
+    page = Keyword.get(options, :page, 1)
+    page_size = Keyword.get(options, :page_size, hd(@page_sizes))
+    search = Keyword.get(options, :search)
+
+    with :ok <- authorize(scope, company_id, @view),
+         {:ok, filters} <- document_filters(Keyword.take(options, [:document_type, :status])),
+         true <-
+           (is_integer(page) and page > 0 and page_size in @page_sizes and
+              (is_nil(search) or is_binary(search))) || {:error, :invalid_option} do
+      query =
+        scope
+        |> documents_query(company_id)
+        |> where(^filters)
+        |> search_documents(search)
+
+      total = Repo.aggregate(query, :count)
+      total_pages = ceil(total / page_size)
+      page = if total_pages == 0, do: 1, else: min(page, total_pages)
+
+      documents =
+        query
+        |> order_by([d], desc: d.document_date, desc: d.id)
+        |> offset(^((page - 1) * page_size))
+        |> limit(^page_size)
+        |> preload(^document_preloads(scope))
+        |> Repo.all()
+
+      {:ok,
+       %{
+         entries: document_views(scope, company_id, documents),
+         page: page,
+         page_size: page_size,
+         total_entries: total,
+         total_pages: total_pages,
+         has_prev?: total_pages > 0 and page > 1,
+         has_next?: total_pages > 0 and page < total_pages
+       }}
+    end
+  end
+
+  defp search_documents(query, search) when is_binary(search) and search != "" do
+    pattern = "%" <> escape_like(search) <> "%"
+
+    where(
+      query,
+      [d],
+      ilike(d.party_name, ^pattern) or ilike(d.party_document_number, ^pattern)
+    )
+  end
+
+  defp search_documents(query, _search), do: query
+
+  defp escape_like(text), do: Regex.replace(~r/[\\%_]/, text, &("\\" <> &1))
+
+  @doc """
+  The quantity billed against each of the order lines, by ID: the
+  quantities of posted bill lines naming it, less those of posted debit
+  note lines, in the company. An order line nothing posted names is absent.
+  This is this module's own record of billed quantities, the figure the
+  match takes off what was received.
+  """
+  @spec billed_quantities(Scope.t(), term(), [term()]) ::
+          {:ok, %{optional(integer()) => Decimal.t()}} | {:error, refusal() | :invalid_option}
+  def billed_quantities(%Scope{} = scope, company_id, order_line_ids)
+      when is_list(order_line_ids) do
+    with :ok <- authorize(scope, company_id, @view),
+         true <-
+           Enum.all?(order_line_ids, &(is_integer(&1) and &1 in 1..@max_bigint)) ||
+             {:error, :invalid_option} do
+      {:ok, Matching.billed_quantities(scope, company_id, order_line_ids, nil)}
     end
   end
 
@@ -762,14 +1099,26 @@ defmodule Bilimbi.Finance.Payables do
     else
       %Actor{user_id: user_id, impersonator_id: impersonator_id} = Scope.actor(scope)
 
-      %SettingsChange{
-        tenant_id: settings.tenant_id,
-        company_id: settings.company_id,
-        old_payable_account_id: previous && previous.payable_account_id,
-        new_payable_account_id: settings.payable_account_id,
-        changed_by_user_id: user_id,
-        changed_by_impersonator_id: impersonator_id
-      }
+      values =
+        for field <- [:payable_account_id | Settings.tolerance_fields()], into: %{} do
+          {{:"old_#{field}", previous && Map.fetch!(previous, field)},
+           {:"new_#{field}", Map.fetch!(settings, field)}}
+        end
+        |> Enum.flat_map(&Tuple.to_list/1)
+        |> Map.new()
+
+      change =
+        struct(
+          SettingsChange,
+          Map.merge(values, %{
+            tenant_id: settings.tenant_id,
+            company_id: settings.company_id,
+            changed_by_user_id: user_id,
+            changed_by_impersonator_id: impersonator_id
+          })
+        )
+
+      change
       |> SettingsChange.changeset(Map.take(attributes, [:reason, "reason"]))
       |> Repo.insert()
       |> kept(saved)
@@ -848,10 +1197,105 @@ defmodule Bilimbi.Finance.Payables do
   end
 
   defp payable_account(scope, company_id) do
+    with {:ok, settings} <- fetch_settings(scope, company_id),
+         do: {:ok, settings.payable_account_id}
+  end
+
+  defp fetch_settings(scope, company_id) do
     case settings(scope, company_id) do
       nil -> {:error, :payables_not_configured}
-      settings -> {:ok, settings.payable_account_id}
+      settings -> {:ok, settings}
     end
+  end
+
+  ## Order lines
+
+  # Each bill line naming an order line names one the installed source
+  # knows; with no source installed, none may.
+  defp check_order_lines(changeset, scope, company_id) do
+    lines = Changeset.get_change(changeset, :lines, [])
+    named = Enum.filter(lines, &Changeset.get_field(&1, :order_line_id))
+
+    cond do
+      named == [] or not changeset.valid? ->
+        {:ok, changeset}
+
+      not OrderSource.available?() ->
+        {:ok,
+         put_line_errors(changeset, lines, fn line ->
+           if Changeset.get_field(line, :order_line_id),
+             do: Changeset.add_error(line, :order_line_id, "names no installed order source"),
+             else: line
+         end)}
+
+      true ->
+        named
+        |> Enum.map(&Changeset.get_field(&1, :order_line_id))
+        |> Enum.uniq()
+        |> Enum.reduce_while({:ok, MapSet.new()}, fn id, {:ok, missing} ->
+          case OrderSource.order_line(scope, company_id, id) do
+            {:ok, _line} -> {:cont, {:ok, missing}}
+            {:error, :line_not_found} -> {:cont, {:ok, MapSet.put(missing, id)}}
+            {:error, reason} -> {:halt, {:error, {:order_source, reason}}}
+          end
+        end)
+        |> case do
+          {:ok, missing} ->
+            {:ok,
+             put_line_errors(changeset, lines, fn line ->
+               if MapSet.member?(missing, Changeset.get_field(line, :order_line_id)),
+                 do:
+                   Changeset.add_error(
+                     line,
+                     :order_line_id,
+                     "is not an order line of this company in the order source"
+                   ),
+                 else: line
+             end)}
+
+          error ->
+            error
+        end
+    end
+  end
+
+  # A debit note's order lines are the corrected bill's, within what it billed.
+  defp check_note_order_lines(changeset, scope, company_id, bill) do
+    lines = Changeset.get_change(changeset, :lines, [])
+
+    if changeset.valid? and Enum.any?(lines, &Changeset.get_field(&1, :order_line_id)) do
+      fields =
+        Enum.map(
+          lines,
+          &Map.new([:line_number, :order_line_id, :quantity], fn f ->
+            {f, Changeset.get_field(&1, f)}
+          end)
+        )
+
+      case Matching.within_billed(scope, company_id, bill, fields, nil) do
+        :ok ->
+          changeset
+
+        {:error, {line_number, field, message}} ->
+          put_line_errors(changeset, lines, fn line ->
+            if Changeset.get_field(line, :line_number) == line_number,
+              do: Changeset.add_error(line, field, message),
+              else: line
+          end)
+      end
+    else
+      changeset
+    end
+  end
+
+  # Replaces the lines with the checked ones; the changeset is invalid once
+  # a line is.
+  defp put_line_errors(changeset, lines, check) do
+    checked = Enum.map(lines, check)
+
+    if Enum.all?(checked, & &1.valid?) and Enum.all?(lines, & &1.valid?),
+      do: changeset,
+      else: changeset |> Changeset.put_assoc(:lines, checked) |> Map.put(:valid?, false)
   end
 
   ## Documents
@@ -1055,18 +1499,30 @@ defmodule Bilimbi.Finance.Payables do
 
   # A debit note posts against the account its bill posted to, and is checked
   # again when it posts: payments may have reduced what is owed on its bill
-  # since it was recorded.
-  defp posting_account(scope, company_id, %Document{
-         document_type: "debit_note",
-         corrects_document_id: bill_id,
-         document_date: date,
-         total: total
-       }) do
+  # since it was recorded, and other debit notes what it billed on an order
+  # line.
+  defp posting_account(
+         scope,
+         company_id,
+         %Document{
+           document_type: "debit_note",
+           corrects_document_id: bill_id,
+           document_date: date,
+           total: total
+         } = note
+       ) do
     {:ok, bill} = fetch_document(scope, company_id, bill_id)
 
-    if exceeds?(scope, company_id, bill, total, date),
-      do: {:error, :exceeds_outstanding},
-      else: {:ok, bill.payable_account_id}
+    cond do
+      exceeds?(scope, company_id, bill, total, date) ->
+        {:error, :exceeds_outstanding}
+
+      Matching.within_billed(scope, company_id, bill, note.lines, note.id) != :ok ->
+        {:error, :exceeds_billed_quantity}
+
+      true ->
+        {:ok, bill.payable_account_id}
+    end
   end
 
   defp posting_account(scope, company_id, _bill), do: payable_account(scope, company_id)
@@ -1427,9 +1883,27 @@ defmodule Bilimbi.Finance.Payables do
 
   defp fetch(attributes, key), do: Map.get(attributes, key, Map.get(attributes, to_string(key)))
 
+  # Each document's match events, oldest first, with their lines and
+  # exceptions in line order.
+  defp match_events(_scope, _company_id, []), do: %{}
+
+  defp match_events(scope, company_id, document_ids) do
+    exceptions = order_by(Tenancy.scope_query(MatchException, scope), [x], asc: x.id)
+    lines = from(l in Tenancy.scope_query(MatchLine, scope), order_by: [asc: l.line_number])
+
+    from(e in Tenancy.scope_query(MatchEvent, scope),
+      where: e.company_id == ^company_id and e.document_id in ^document_ids,
+      order_by: [asc: e.id],
+      preload: [lines: ^{lines, exceptions: exceptions}]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.document_id)
+  end
+
   ## Views
 
-  defp settings_view(settings), do: Map.take(settings, [:company_id, :payable_account_id])
+  defp settings_view(settings),
+    do: Map.take(settings, [:company_id, :payable_account_id | Settings.tolerance_fields()])
 
   defp tax_code_view(tax_code),
     do: Map.take(tax_code, [:id, :code, :name, :rate, :account_id, :active])
@@ -1449,11 +1923,60 @@ defmodule Bilimbi.Finance.Payables do
       |> Repo.all()
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
+    events = match_events(scope, company_id, ids)
+
     Enum.map(documents, fn document ->
+      document_events = Map.get(events, document.id, [])
+
       document
       |> document_view(outstanding)
       |> Map.put(:debit_note_ids, Map.get(debit_notes, document.id, []))
+      |> Map.put(:match_status, match_status(document, document_events))
+      |> Map.put(:match_events, Enum.map(document_events, &match_event_view/1))
     end)
+  end
+
+  # Nil unless a bill names an order line; else what its latest match event
+  # says, or pending before any.
+  defp match_status(%Document{document_type: "bill", status: status} = document, events)
+       when status != "voided" do
+    if Enum.any?(document.lines, & &1.order_line_id) do
+      case List.last(events) do
+        nil -> "pending"
+        %MatchEvent{event: "held"} -> "held"
+        %MatchEvent{event: "exception_approved"} -> "exception_approved"
+        %MatchEvent{event: "posted"} = posted -> posted_match_status(posted)
+      end
+    end
+  end
+
+  defp match_status(_document, _events), do: nil
+
+  defp posted_match_status(%MatchEvent{lines: lines}) do
+    if Enum.any?(lines, &(&1.exceptions != [])),
+      do: "posted_with_exceptions",
+      else: "matched"
+  end
+
+  defp match_event_view(event) do
+    event
+    |> Map.take([
+      :id,
+      :event,
+      :reason,
+      :held_event_id,
+      :actor_user_id,
+      :actor_impersonator_id,
+      :occurred_at
+    ])
+    |> Map.put(
+      :lines,
+      Enum.map(event.lines, fn line ->
+        line
+        |> Map.take(MatchLine.fields())
+        |> Map.put(:exceptions, Enum.map(line.exceptions, &Map.take(&1, [:code, :detail])))
+      end)
+    )
   end
 
   defp document_view(document, outstanding) do
@@ -1505,7 +2028,9 @@ defmodule Bilimbi.Finance.Payables do
           :account_id,
           :amount,
           :tax_code_id,
-          :external_order_line_id
+          :external_order_line_id,
+          :order_line_id,
+          :quantity
         ])
       )
     )

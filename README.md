@@ -7,7 +7,7 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
 | [`ledger/`](ledger/docs/README.md) | `finance/ledger` | each company's book and currency, chart of accounts, balanced and immutable journal entries, fiscal years and period closing, year-end close, trial balance, and posting notices |
-| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, payments allocated to bills, and aged payables |
+| [`payables/`](payables/docs/README.md) | `finance/payables` | bills and debit notes from parties, approval and posting, the three-way match of a bill against the purchase order and goods receipts behind it when Supply Chain is mounted, payments allocated to bills, and aged payables |
 | [`einvoice/`](einvoice/docs/README.md) | `finance/einvoice` | fiscal documents cleared by a tax authority (first, Malaysia's MyInvois): immutable documents and notes, self-billed documents, monthly consolidated documents, submissions and status events, the submit and poll jobs, the authority's code lists, each company's credentials and certificate, the printable document, and the ledger bridge |
 | [`reports/`](reports/docs/README.md) | `finance/reports` | profit and loss, balance sheet, cash position, and headline figures read live from the ledger, with the entries behind each figure |
 | [`receivables/`](receivables/docs/README.md) | `finance/receivables` | customers, numbered and immutable invoices and credit notes, payments received and their allocation, and aged receivables |
@@ -15,8 +15,9 @@ that an adopter mounts into a Bilimbi checkout; it does not build on its own.
 The ledger is the first module. Other Finance modules, such as receivables,
 payables, e-invoicing, and reports, sit beside it as sibling module folders
 and post or read through its public API; other Domains post through the same
-API. The ledger, receivables, and payables expose their APIs with no pages,
-menu entries, or agent operations. E-invoicing issues documents through its
+API. The ledger and receivables expose their APIs with no pages, menu
+entries, or agent operations; payables has pages for its bills and the ones
+the three-way match holds. E-invoicing issues documents through its
 own facade, posts validated ones through the ledger's, and has pages for its
 documents, its reconciliation, and its setup. Reports reads the ledger's
 figures and has the financial reports pages. Each module's "Standards

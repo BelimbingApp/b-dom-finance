@@ -3,11 +3,12 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
   Ledger and payables tables, authorization, and two tenants' companies for
   module tests.
 
-  The payables tables are temporary copies built from the migration's own
-  statements (`CreatePayables.statements(temporary: true)`), constraints
-  and triggers included, so a test that makes PostgreSQL refuse proves the
-  migration's rule. The ledger's come from its own fixtures.
-  `test/schema_contract_test.exs` checks the real migration itself.
+  The payables tables are temporary copies built from the migrations' own
+  statements (each migration's `statements(temporary: true)`, in version
+  order), constraints and triggers included, so a test that makes
+  PostgreSQL refuse proves a migration's rule. The ledger's come from its
+  own fixtures. `test/schema_contract_test.exs` checks the real migrations
+  themselves.
   """
 
   alias Bilimbi.Base.Authz
@@ -24,16 +25,26 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
   alias Bilimbi.Finance.Payables
   alias Ecto.Adapters.SQL
 
-  @migration Path.expand(
-               "../../priv/repo/migrations/20261012213700_create_finance_payables.exs",
-               __DIR__
-             )
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
-  @doc "The migration module, loaded from its file once."
-  def migration do
-    module = Bilimbi.Finance.Payables.Migrations.CreatePayables
-    unless Code.ensure_loaded?(module), do: Code.require_file(@migration)
-    module
+  @migration_files [
+    {20_261_012_213_700, Bilimbi.Finance.Payables.Migrations.CreatePayables,
+     "20261012213700_create_finance_payables.exs"},
+    {20_261_014_100_000, Bilimbi.Finance.Payables.Migrations.AddMatching,
+     "20261014100000_add_finance_payables_matching.exs"}
+  ]
+
+  @doc "The first migration's module, loaded from its file once."
+  def migration, do: migrations() |> hd() |> elem(1)
+
+  @doc "The module's migrations as `{version, module}` in version order, each loaded once."
+  def migrations do
+    for {version, module, file} <- @migration_files do
+      unless Code.ensure_loaded?(module),
+        do: Code.require_file(Path.join(@migrations_path, file))
+
+      {version, module}
+    end
   end
 
   @doc """
@@ -96,9 +107,10 @@ defmodule Bilimbi.Finance.Payables.TestFixtures do
   end
 
   def create_payables_tables! do
-    # The migration is loaded at run time, so the call is dynamic.
-    migration()
-    |> apply(:statements, [[temporary: true]])
-    |> Enum.each(&SQL.query!(Repo, &1, []))
+    # The migrations are loaded at run time, so the calls are dynamic.
+    for {_version, module} <- migrations(),
+        statement <- apply(module, :statements, [[temporary: true]]) do
+      SQL.query!(Repo, statement, [])
+    end
   end
 end

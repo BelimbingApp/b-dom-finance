@@ -8,10 +8,14 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
   """
   @behaviour Bilimbi.Base.Database.SchemaContract
 
+  alias Bilimbi.Finance.Payables.Matching
+
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_version, do: 20_261_012_213_700
+  def migration_versions, do: [20_261_012_213_700, 20_261_014_100_000]
+
+  def migration_version, do: List.last(migration_versions())
 
   @impl true
   def tables do
@@ -22,6 +26,10 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
           owned_columns("finance_payables_settings")
           |> Map.merge(%{
             "payable_account_id" => column(:bigint, false),
+            "quantity_tolerance_kind" => column({:varchar, 8}, true),
+            "quantity_tolerance" => column({:numeric, 20, 4}, true),
+            "price_tolerance_kind" => column({:varchar, 8}, true),
+            "price_tolerance" => column({:numeric, 20, 4}, true),
             "inserted_at" => column({:timestamp, 0}, false),
             "updated_at" => column({:timestamp, 0}, false)
           }),
@@ -32,7 +40,10 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
             index(["tenant_id", "company_id"])
         },
         foreign_keys: %{},
-        checks: %{}
+        checks: %{
+          "finance_payables_settings_quantity_tolerance" => tolerance_check("quantity_tolerance"),
+          "finance_payables_settings_price_tolerance" => tolerance_check("price_tolerance")
+        }
       },
       %{
         name: "finance_payables_tax_codes",
@@ -64,6 +75,14 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
           |> Map.merge(%{
             "old_payable_account_id" => column(:bigint, true),
             "new_payable_account_id" => column(:bigint, false),
+            "old_quantity_tolerance_kind" => column({:varchar, 8}, true),
+            "new_quantity_tolerance_kind" => column({:varchar, 8}, true),
+            "old_quantity_tolerance" => column({:numeric, 20, 4}, true),
+            "new_quantity_tolerance" => column({:numeric, 20, 4}, true),
+            "old_price_tolerance_kind" => column({:varchar, 8}, true),
+            "new_price_tolerance_kind" => column({:varchar, 8}, true),
+            "old_price_tolerance" => column({:numeric, 20, 4}, true),
+            "new_price_tolerance" => column({:numeric, 20, 4}, true),
             "reason" => column({:varchar, 500}, true),
             "changed_by_user_id" => column(:bigint, false),
             "changed_by_impersonator_id" => column(:bigint, true),
@@ -188,8 +207,8 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
           "finance_payables_documents_status" =>
             check(
               "(status)::text = ANY ((ARRAY['draft'::character varying, " <>
-                "'approved'::character varying, 'posted'::character varying, " <>
-                "'voided'::character varying])::text[])"
+                "'approved'::character varying, 'held'::character varying, " <>
+                "'posted'::character varying, 'voided'::character varying])::text[])"
             ),
           "finance_payables_documents_currency_code" =>
             check("(currency_code)::text ~ '^[A-Z]{3}$'::text"),
@@ -211,7 +230,8 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
             check(
               "((approved_at IS NULL) = (approved_by_user_id IS NULL)) AND " <>
                 "(((status)::text <> ALL ((ARRAY['approved'::character varying, " <>
-                "'posted'::character varying])::text[])) OR (approved_at IS NOT NULL)) AND " <>
+                "'held'::character varying, 'posted'::character varying])::text[])) OR " <>
+                "(approved_at IS NOT NULL)) AND " <>
                 "(((status)::text <> 'draft'::text) OR (approved_at IS NULL))"
             ),
           "finance_payables_documents_posting" =>
@@ -245,12 +265,19 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
             "account_id" => column(:bigint, false),
             "amount" => column({:numeric, 20, 4}, false),
             "tax_code_id" => column(:bigint, true),
-            "external_order_line_id" => column({:varchar, 100}, true)
+            "external_order_line_id" => column({:varchar, 100}, true),
+            "order_line_id" => column(:bigint, true),
+            "quantity" => column({:numeric, 20, 4}, true)
           }),
         indexes: %{
           "finance_payables_document_lines_pkey" => index(["id"], true),
           "finance_payables_document_lines_document_line_unique" =>
-            index(["document_id", "line_number"], true)
+            index(["document_id", "line_number"], true),
+          "finance_payables_document_lines_order_line_index" => %{
+            columns: ["company_id", "order_line_id"],
+            unique: false,
+            where: "(order_line_id IS NOT NULL)"
+          }
         },
         foreign_keys: %{
           "finance_payables_document_lines_document_fkey" =>
@@ -260,7 +287,13 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
         },
         checks: %{
           "finance_payables_document_lines_line_number" => check("line_number > 0"),
-          "finance_payables_document_lines_amount" => check("amount > (0)::numeric")
+          "finance_payables_document_lines_amount" => check("amount > (0)::numeric"),
+          "finance_payables_document_lines_order_line" =>
+            check(
+              "((order_line_id IS NULL) = (quantity IS NULL)) AND " <>
+                "((order_line_id IS NULL) OR (order_line_id > 0)) AND " <>
+                "((quantity IS NULL) OR (quantity > (0)::numeric))"
+            )
         }
       },
       %{
@@ -375,8 +408,138 @@ defmodule Bilimbi.Finance.Payables.SchemaContract do
           "finance_payables_payment_allocations_line_number" => check("line_number > 0"),
           "finance_payables_payment_allocations_amount" => check("amount > (0)::numeric")
         }
+      },
+      %{
+        name: "finance_payables_match_events",
+        columns:
+          owned_columns("finance_payables_match_events")
+          |> Map.merge(%{
+            "document_id" => column(:bigint, false),
+            "event" => column({:varchar, 20}, false),
+            "reason" => column({:varchar, 500}, true),
+            "held_event_id" => column(:bigint, true),
+            "actor_user_id" => column(:bigint, false),
+            "actor_impersonator_id" => column(:bigint, true),
+            "occurred_at" => column({:timestamp, 6}, false)
+          }),
+        indexes: %{
+          "finance_payables_match_events_pkey" => index(["id"], true),
+          "finance_payables_match_events_id_company_unique" => index(["id", "company_id"], true),
+          "finance_payables_match_events_document_index" => index(["company_id", "document_id"]),
+          "finance_payables_match_events_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_match_events_document_fkey" =>
+            company_reference("document_id", "finance_payables_documents"),
+          "finance_payables_match_events_held_event_fkey" =>
+            company_reference("held_event_id", "finance_payables_match_events")
+        },
+        checks: %{
+          "finance_payables_match_events_event" =>
+            check(
+              "(event)::text = ANY ((ARRAY['held'::character varying, " <>
+                "'exception_approved'::character varying, 'posted'::character varying])::text[])"
+            ),
+          "finance_payables_match_events_reason" =>
+            check("((event)::text <> 'exception_approved'::text) OR (reason IS NOT NULL)"),
+          "finance_payables_match_events_held_event" =>
+            check("(held_event_id IS NULL) OR ((event)::text = 'exception_approved'::text)")
+        }
+      },
+      %{
+        name: "finance_payables_match_lines",
+        columns:
+          owned_columns("finance_payables_match_lines")
+          |> Map.merge(%{
+            "event_id" => column(:bigint, false),
+            "document_id" => column(:bigint, false),
+            "line_number" => column(:integer, false),
+            "order_line_id" => column(:bigint, false),
+            "order_number" => column(:bigint, true),
+            "billed_quantity" => column({:numeric, 20, 4}, false),
+            "billed_unit_price" => column({:numeric, 20, 4}, false),
+            "previously_billed_quantity" => column({:numeric, 20, 4}, false),
+            "ordered_quantity" => column({:numeric, 20, 4}, true),
+            "ordered_unit_price" => column({:numeric, 20, 4}, true),
+            "received_quantity" => column({:numeric, 20, 4}, true),
+            "quantity_tolerance_kind" => column({:varchar, 8}, true),
+            "quantity_tolerance" => column({:numeric, 20, 4}, true),
+            "price_tolerance_kind" => column({:varchar, 8}, true),
+            "price_tolerance" => column({:numeric, 20, 4}, true)
+          }),
+        indexes: %{
+          "finance_payables_match_lines_pkey" => index(["id"], true),
+          "finance_payables_match_lines_id_company_unique" => index(["id", "company_id"], true),
+          "finance_payables_match_lines_event_line_unique" =>
+            index(["event_id", "line_number"], true),
+          "finance_payables_match_lines_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_match_lines_event_fkey" =>
+            company_reference("event_id", "finance_payables_match_events"),
+          "finance_payables_match_lines_document_fkey" =>
+            company_reference("document_id", "finance_payables_documents")
+        },
+        checks: %{
+          "finance_payables_match_lines_line_number" => check("line_number > 0"),
+          "finance_payables_match_lines_order_line_id" => check("order_line_id > 0"),
+          "finance_payables_match_lines_quantities" =>
+            check(
+              "(billed_quantity > (0)::numeric) AND (billed_unit_price >= (0)::numeric) AND " <>
+                "(previously_billed_quantity >= (0)::numeric) AND " <>
+                "((ordered_quantity IS NULL) OR (ordered_quantity > (0)::numeric)) AND " <>
+                "((ordered_unit_price IS NULL) OR (ordered_unit_price >= (0)::numeric)) AND " <>
+                "((received_quantity IS NULL) OR (received_quantity >= (0)::numeric))"
+            ),
+          "finance_payables_match_lines_tolerances" =>
+            check(
+              "((quantity_tolerance_kind IS NULL) = (quantity_tolerance IS NULL)) AND " <>
+                "((price_tolerance_kind IS NULL) = (price_tolerance IS NULL))"
+            )
+        }
+      },
+      %{
+        name: "finance_payables_match_exceptions",
+        columns:
+          owned_columns("finance_payables_match_exceptions")
+          |> Map.merge(%{
+            "match_line_id" => column(:bigint, false),
+            "code" => column({:varchar, 40}, false),
+            "detail" => column({:varchar, 500}, false)
+          }),
+        indexes: %{
+          "finance_payables_match_exceptions_pkey" => index(["id"], true),
+          "finance_payables_match_exceptions_line_code_unique" =>
+            index(["match_line_id", "code"], true),
+          "finance_payables_match_exceptions_tenant_id_company_id_index" =>
+            index(["tenant_id", "company_id"])
+        },
+        foreign_keys: %{
+          "finance_payables_match_exceptions_match_line_fkey" =>
+            company_reference("match_line_id", "finance_payables_match_lines")
+        },
+        checks: %{
+          "finance_payables_match_exceptions_code" =>
+            check(
+              "(code)::text = ANY ((ARRAY[" <>
+                Enum.map_join(Matching.exception_codes(), ", ", &"'#{&1}'::character varying") <>
+                "])::text[])"
+            )
+        }
       }
     ]
+  end
+
+  # A tolerance kind and value come together; the kind is percent or amount.
+  defp tolerance_check(field) do
+    check(
+      "((#{field}_kind IS NULL) = (#{field} IS NULL)) AND " <>
+        "((#{field}_kind IS NULL) OR ((#{field}_kind)::text = ANY ((ARRAY['percent'::character varying, " <>
+        "'amount'::character varying])::text[]))) AND " <>
+        "((#{field} IS NULL) OR (#{field} >= (0)::numeric))"
+    )
   end
 
   defp owned_columns(table) do
