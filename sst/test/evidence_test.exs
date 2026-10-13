@@ -4,7 +4,8 @@ defmodule Bilimbi.Finance.Sst.EvidenceTest do
   test "an evidence page returns every registration version, paged in ID order", context do
     %{operator: operator} = context
 
-    {:ok, _} = Sst.register(operator, 73, %{service_tax_number: "X00-2601-00000009", reason: "Fix"})
+    {:ok, _} =
+      Sst.register(operator, 73, %{service_tax_number: "X00-2601-00000009", reason: "Fix"})
 
     assert "registration" in Sst.evidence_datasets()
 

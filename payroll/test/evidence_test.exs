@@ -15,6 +15,7 @@ defmodule Bilimbi.Finance.Payroll.EvidenceTest do
       })
 
     assert "mapping_change" in Payroll.evidence_datasets()
+
     assert {:ok, %{rows: [first], next: cursor}} =
              Payroll.evidence_page(operator, 73, "mapping_change", limit: 1)
 
