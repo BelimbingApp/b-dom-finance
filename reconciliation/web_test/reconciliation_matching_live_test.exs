@@ -56,6 +56,23 @@ defmodule BilimbiWeb.FinanceReconciliationMatchingLiveTest do
     refute has_element?(view, "#match-selected-submit")
   end
 
+  test "returns to the bank accounts with a flash for an account that does not exist",
+       %{conn: conn} do
+    grant_capabilities!([@view, @ledger_view])
+    conn = log_in_as(conn)
+
+    for id <- ["2147483647", "not-a-number"] do
+      path = "/finance/reconciliation/accounts/#{id}/matching"
+
+      assert redirected_to(get(conn, path)) == "/finance/reconciliation"
+
+      assert {:ok, view, _html} =
+               conn |> live(path) |> follow_redirect(conn, "/finance/reconciliation")
+
+      assert has_element?(view, "#flash-error", "The bank account no longer exists.")
+    end
+  end
+
   test "accepts a suggestion, matches a selection of many, and unmatches with a reason",
        %{conn: conn} = scene do
     grant_capabilities!([@view, @match, @ledger_view])

@@ -64,7 +64,6 @@ defmodule Bilimbi.Finance.Reconciliation.Web.MatchingLive do
 
       socket
       |> assign(:account, account)
-      |> assign(:refusal, nil)
       |> assign(:page_title, "#{account.name}: matching")
       |> assign(:lines, unmatched.lines)
       |> assign(:entries, unmatched.entries)
@@ -81,7 +80,10 @@ defmodule Bilimbi.Finance.Reconciliation.Web.MatchingLive do
         LiveAuthorization.allowed_now?(current_scope, Reconciliation.manage_matches_capability())
       )
     else
-      {:error, reason} -> socket |> assign(:account, nil) |> assign(:refusal, reason)
+      {:error, reason} ->
+        socket
+        |> put_flash(:error, Format.refusal(reason))
+        |> push_navigate(to: ~p"/finance/reconciliation")
     end
   end
 
@@ -252,242 +254,229 @@ defmodule Bilimbi.Finance.Reconciliation.Web.MatchingLive do
       <.page id="matching" variant={:detail}>
         <.back_link
           id="matching-back"
-          navigate={
-            if @account,
-              do: ~p"/finance/reconciliation/accounts/#{@account.id}",
-              else: ~p"/finance/reconciliation"
-          }
-          title={if @account, do: @account.name, else: "Bank accounts"}
+          navigate={~p"/finance/reconciliation/accounts/#{@account.id}"}
+          title={@account.name}
         />
 
-        <.empty_state
-          :if={@refusal}
-          id="matching-refusal"
-          title="Matching unavailable"
-          reason={Format.refusal(@refusal)}
-        />
+        <.header>
+          {@account.name}: matching
+          <:subtitle>
+            Tick statement lines and ledger entries whose amounts agree, then match them; or accept a suggestion.
+          </:subtitle>
+        </.header>
 
-        <%= if @account do %>
-          <.header>
-            {@account.name}: matching
-            <:subtitle>
-              Tick statement lines and ledger entries whose amounts agree, then match them; or accept a suggestion.
-            </:subtitle>
-          </.header>
+        <.empty_state :if={!@can_match?} id="matching-forbidden" forbidden="match statement lines" />
 
-          <.empty_state :if={!@can_match?} id="matching-forbidden" forbidden="match statement lines" />
-
-          <.form for={%{}} id="matching-form" phx-change="select" phx-submit="match">
-            <div class="grid gap-4 lg:grid-cols-2">
-              <.card
-                id="unmatched-lines"
-                inner_class="p-0"
-                role="region"
-                aria-labelledby="unmatched-lines-heading"
+        <.form for={%{}} id="matching-form" phx-change="select" phx-submit="match">
+          <div class="grid gap-4 lg:grid-cols-2">
+            <.card
+              id="unmatched-lines"
+              inner_class="p-0"
+              role="region"
+              aria-labelledby="unmatched-lines-heading"
+            >
+              <.section_heading
+                id="unmatched-lines-heading"
+                title="Statement lines not in the books"
+                count={length(@lines)}
+                class="p-5 pb-0"
+              />
+              <.table
+                id="unmatched-lines-table"
+                rows={@lines}
+                framed={false}
+                row_id={&"line-#{&1.id}"}
               >
-                <.section_heading
-                  id="unmatched-lines-heading"
-                  title="Statement lines not in the books"
-                  count={length(@lines)}
-                  class="p-5 pb-0"
-                />
-                <.table
-                  id="unmatched-lines-table"
-                  rows={@lines}
-                  framed={false}
-                  row_id={&"line-#{&1.id}"}
-                >
-                  <:col :let={line} label="">
-                    <input
-                      :if={@can_match?}
-                      type="checkbox"
-                      name="lines[]"
-                      value={line.id}
-                      id={"line-#{line.id}-select"}
-                      checked={MapSet.member?(@selected_lines, line.id)}
-                      aria-label={"Select statement line #{line.description}"}
-                    />
-                  </:col>
-                  <:col :let={line} label="Date">{line.line_date}</:col>
-                  <:col :let={line} label="Description">
-                    {line.description}
-                    <span :if={line.reference} class="block text-xs text-ink-muted">{line.reference}</span>
-                  </:col>
-                  <:col :let={line} label="Amount" align={:right}>
-                    <span class="tabular-nums">{Format.money(line.amount, @minor_units)}</span>
-                  </:col>
-                  <:col :let={line} label="Suggested">
-                    <%= if suggestion = @suggestions[line.id] do %>
-                      <span id={"line-#{line.id}-suggestion"}>Entry {suggestion.entry_number} on {suggestion.entry_date}</span>
-                      <.button
-                        :if={@can_match?}
-                        type="button"
-                        id={"line-#{line.id}-accept"}
-                        phx-click="accept"
-                        phx-value-line={line.id}
-                      >
-                        Accept
-                      </.button>
-                    <% end %>
-                  </:col>
-                  <:empty
-                    title="Every statement line is matched"
-                    reason="Import the next statement to continue."
+                <:col :let={line} label="">
+                  <input
+                    :if={@can_match?}
+                    type="checkbox"
+                    name="lines[]"
+                    value={line.id}
+                    id={"line-#{line.id}-select"}
+                    checked={MapSet.member?(@selected_lines, line.id)}
+                    aria-label={"Select statement line #{line.description}"}
                   />
-                </.table>
-              </.card>
-
-              <.card
-                id="unmatched-entries"
-                inner_class="p-0"
-                role="region"
-                aria-labelledby="unmatched-entries-heading"
-              >
-                <.section_heading
-                  id="unmatched-entries-heading"
-                  title="Ledger entries not on a statement"
-                  count={length(@entries)}
-                  class="p-5 pb-0"
-                />
-                <.table
-                  id="unmatched-entries-table"
-                  rows={@entries}
-                  framed={false}
-                  row_id={&"entry-#{&1.entry_id}"}
-                >
-                  <:col :let={entry} label="">
-                    <input
+                </:col>
+                <:col :let={line} label="Date">{line.line_date}</:col>
+                <:col :let={line} label="Description">
+                  {line.description}
+                  <span :if={line.reference} class="block text-xs text-ink-muted">{line.reference}</span>
+                </:col>
+                <:col :let={line} label="Amount" align={:right}>
+                  <span class="tabular-nums">{Format.money(line.amount, @minor_units)}</span>
+                </:col>
+                <:col :let={line} label="Suggested">
+                  <%= if suggestion = @suggestions[line.id] do %>
+                    <span id={"line-#{line.id}-suggestion"}>Entry {suggestion.entry_number} on {suggestion.entry_date}</span>
+                    <.button
                       :if={@can_match?}
-                      type="checkbox"
-                      name="entries[]"
-                      value={entry.entry_id}
-                      id={"entry-#{entry.entry_id}-select"}
-                      checked={MapSet.member?(@selected_entries, entry.entry_id)}
-                      aria-label={"Select entry #{entry.entry_number}"}
-                    />
-                  </:col>
-                  <:col :let={entry} label="Entry">{entry.entry_number}</:col>
-                  <:col :let={entry} label="Date">{entry.entry_date}</:col>
-                  <:col :let={entry} label="Description">
-                    {entry.description}
-                    <span :if={entry.reference} class="block text-xs text-ink-muted">{entry.reference}</span>
-                  </:col>
-                  <:col :let={entry} label="Amount" align={:right}>
-                    <span class="tabular-nums">{Format.money(entry.amount, @minor_units)}</span>
-                  </:col>
-                  <:empty
-                    title="Every entry on this account is matched"
-                    reason="Entries posted to the bank account appear here until a statement line matches them."
-                  />
-                </.table>
-              </.card>
-            </div>
-
-            <.card :if={@can_match?} id="match-selected" inner_class="p-5 sm:p-6" class="mt-4">
-              <div class="flex flex-wrap items-end gap-4">
-                <p class="text-sm">
-                  Selected: <span id="selected-lines-count">{MapSet.size(@selected_lines)}</span>
-                  lines totalling <span id="selected-lines-sum" class="tabular-nums">{Format.money(@statement_sum, @minor_units)}</span>,
-                  <span id="selected-entries-count">{MapSet.size(@selected_entries)}</span>
-                  entries totalling <span id="selected-entries-sum" class="tabular-nums">{Format.money(@ledger_sum, @minor_units)}</span>.
-                </p>
-                <.input
-                  type="text"
-                  name="note"
-                  id="match-note"
-                  value={@note}
-                  label="Note"
-                  maxlength="500"
-                  wrapper_class="mb-0 grow"
+                      type="button"
+                      id={"line-#{line.id}-accept"}
+                      phx-click="accept"
+                      phx-value-line={line.id}
+                    >
+                      Accept
+                    </.button>
+                  <% end %>
+                </:col>
+                <:empty
+                  title="Every statement line is matched"
+                  reason="Import the next statement to continue."
                 />
-                <.button type="submit" id="match-selected-submit" variant="primary">Match selected</.button>
-              </div>
+              </.table>
             </.card>
-          </.form>
 
-          <.card
-            id="standing-matches"
-            inner_class="p-0"
-            class="mt-4"
-            role="region"
-            aria-labelledby="standing-matches-heading"
-          >
-            <.section_heading
-              id="standing-matches-heading"
-              title="Standing matches"
-              count={length(@matches)}
-              class="p-5 pb-0"
-            />
-            <.table
-              id="standing-matches-table"
-              rows={@matches}
-              framed={false}
-              row_id={&"match-#{&1.id}"}
+            <.card
+              id="unmatched-entries"
+              inner_class="p-0"
+              role="region"
+              aria-labelledby="unmatched-entries-heading"
             >
-              <:col :let={match} label="Match">{match.match_number}</:col>
-              <:col :let={match} label="Statement lines">{length(match.statement_line_ids)}</:col>
-              <:col :let={match} label="Entries">
-                {Enum.map_join(match.entries, ", ", &"#{&1.entry_number}")}
-              </:col>
-              <:col :let={match} label="Amount" align={:right}>
-                <span class="tabular-nums">
-                  {Format.money(
-                    Enum.reduce(match.entries, Decimal.new(0), &Decimal.add(&1.amount, &2)),
-                    @minor_units
-                  )}
-                </span>
-              </:col>
-              <:col :let={match} label="Note">{match.note}</:col>
-              <:col :let={match} label="Matched">
-                <.datetime id={"match-#{match.id}-at"} value={match.matched_at} />
-              </:col>
-              <:action :let={match}>
-                <.button
-                  :if={@can_match?}
-                  id={"match-#{match.id}-unmatch"}
-                  phx-click="unmatching"
-                  phx-value-id={match.id}
-                >
-                  Unmatch
-                </.button>
-              </:action>
-              <:empty
-                title="No standing matches"
-                reason="Matches made above are listed here and can be unmatched with a reason."
+              <.section_heading
+                id="unmatched-entries-heading"
+                title="Ledger entries not on a statement"
+                count={length(@entries)}
+                class="p-5 pb-0"
               />
-            </.table>
-          </.card>
+              <.table
+                id="unmatched-entries-table"
+                rows={@entries}
+                framed={false}
+                row_id={&"entry-#{&1.entry_id}"}
+              >
+                <:col :let={entry} label="">
+                  <input
+                    :if={@can_match?}
+                    type="checkbox"
+                    name="entries[]"
+                    value={entry.entry_id}
+                    id={"entry-#{entry.entry_id}-select"}
+                    checked={MapSet.member?(@selected_entries, entry.entry_id)}
+                    aria-label={"Select entry #{entry.entry_number}"}
+                  />
+                </:col>
+                <:col :let={entry} label="Entry">{entry.entry_number}</:col>
+                <:col :let={entry} label="Date">{entry.entry_date}</:col>
+                <:col :let={entry} label="Description">
+                  {entry.description}
+                  <span :if={entry.reference} class="block text-xs text-ink-muted">{entry.reference}</span>
+                </:col>
+                <:col :let={entry} label="Amount" align={:right}>
+                  <span class="tabular-nums">{Format.money(entry.amount, @minor_units)}</span>
+                </:col>
+                <:empty
+                  title="Every entry on this account is matched"
+                  reason="Entries posted to the bank account appear here until a statement line matches them."
+                />
+              </.table>
+            </.card>
+          </div>
 
-          <.modal
-            :if={@unmatching}
-            id="unmatch-modal"
-            title={"Unmatch match #{@unmatching.match_number}"}
-            on_cancel={JS.push("cancel_unmatch")}
-          >
-            <:description>
-              Its statement lines and ledger entries become unmatched again; the match and this reason stay on record.
-            </:description>
-            <.form
-              for={@unmatch_form}
-              id="unmatch-form"
-              phx-change="unmatch_change"
-              phx-submit="unmatch"
-              class="space-y-3"
-            >
+          <.card :if={@can_match?} id="match-selected" inner_class="p-5 sm:p-6" class="mt-4">
+            <div class="flex flex-wrap items-end gap-4">
+              <p class="text-sm">
+                Selected: <span id="selected-lines-count">{MapSet.size(@selected_lines)}</span>
+                lines totalling <span id="selected-lines-sum" class="tabular-nums">{Format.money(@statement_sum, @minor_units)}</span>,
+                <span id="selected-entries-count">{MapSet.size(@selected_entries)}</span>
+                entries totalling <span id="selected-entries-sum" class="tabular-nums">{Format.money(@ledger_sum, @minor_units)}</span>.
+              </p>
               <.input
-                field={@unmatch_form[:reason]}
-                id="unmatch-reason"
-                label="Reason"
+                type="text"
+                name="note"
+                id="match-note"
+                value={@note}
+                label="Note"
                 maxlength="500"
-                required
+                wrapper_class="mb-0 grow"
               />
-              <div class="flex gap-2">
-                <.button type="submit" id="unmatch-submit" variant="danger">Unmatch</.button>
-                <.button type="button" id="unmatch-cancel" phx-click="cancel_unmatch">Cancel</.button>
-              </div>
-            </.form>
-          </.modal>
-        <% end %>
+              <.button type="submit" id="match-selected-submit" variant="primary">Match selected</.button>
+            </div>
+          </.card>
+        </.form>
+
+        <.card
+          id="standing-matches"
+          inner_class="p-0"
+          class="mt-4"
+          role="region"
+          aria-labelledby="standing-matches-heading"
+        >
+          <.section_heading
+            id="standing-matches-heading"
+            title="Standing matches"
+            count={length(@matches)}
+            class="p-5 pb-0"
+          />
+          <.table
+            id="standing-matches-table"
+            rows={@matches}
+            framed={false}
+            row_id={&"match-#{&1.id}"}
+          >
+            <:col :let={match} label="Match">{match.match_number}</:col>
+            <:col :let={match} label="Statement lines">{length(match.statement_line_ids)}</:col>
+            <:col :let={match} label="Entries">
+              {Enum.map_join(match.entries, ", ", &"#{&1.entry_number}")}
+            </:col>
+            <:col :let={match} label="Amount" align={:right}>
+              <span class="tabular-nums">
+                {Format.money(
+                  Enum.reduce(match.entries, Decimal.new(0), &Decimal.add(&1.amount, &2)),
+                  @minor_units
+                )}
+              </span>
+            </:col>
+            <:col :let={match} label="Note">{match.note}</:col>
+            <:col :let={match} label="Matched">
+              <.datetime id={"match-#{match.id}-at"} value={match.matched_at} />
+            </:col>
+            <:action :let={match}>
+              <.button
+                :if={@can_match?}
+                id={"match-#{match.id}-unmatch"}
+                phx-click="unmatching"
+                phx-value-id={match.id}
+              >
+                Unmatch
+              </.button>
+            </:action>
+            <:empty
+              title="No standing matches"
+              reason="Matches made above are listed here and can be unmatched with a reason."
+            />
+          </.table>
+        </.card>
+
+        <.modal
+          :if={@unmatching}
+          id="unmatch-modal"
+          title={"Unmatch match #{@unmatching.match_number}"}
+          on_cancel={JS.push("cancel_unmatch")}
+        >
+          <:description>
+            Its statement lines and ledger entries become unmatched again; the match and this reason stay on record.
+          </:description>
+          <.form
+            for={@unmatch_form}
+            id="unmatch-form"
+            phx-change="unmatch_change"
+            phx-submit="unmatch"
+            class="space-y-3"
+          >
+            <.input
+              field={@unmatch_form[:reason]}
+              id="unmatch-reason"
+              label="Reason"
+              maxlength="500"
+              required
+            />
+            <div class="flex gap-2">
+              <.button type="submit" id="unmatch-submit" variant="danger">Unmatch</.button>
+              <.button type="button" id="unmatch-cancel" phx-click="cancel_unmatch">Cancel</.button>
+            </div>
+          </.form>
+        </.modal>
       </.page>
     </Layouts.app>
     """
