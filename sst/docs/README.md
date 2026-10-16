@@ -78,8 +78,8 @@ cannot see is `{:error, :company_not_found}`. Writes take
 an archived company is `{:error, :company_archived}` and one company's SST
 writes run one at a time.
 
-Authz verbs are owned once across every mounted Domain, so this module
-declares its own verbs with an `sst-` prefix no other Domain uses:
+Authz verbs are shared vocabulary and only capability keys need one owner;
+this module declares its own verbs with an `sst-` prefix:
 `sst-prepare`, `sst-finalise`, and `sst-amend`; `view` and `manage` are the
 platform's. Preparing, finalising, and amending are separate capabilities,
 so a company can have one person prepare a return and another finalise it.

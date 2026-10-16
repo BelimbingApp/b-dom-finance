@@ -45,8 +45,7 @@ an archived company is `{:error, :company_archived}` and one company's
 payroll writes run one at a time.
 
 The module declares no verb of its own: `view` and `manage` are Base
-Authz's and `post` is the ledger's, so no verb here can clash with one
-another Domain declares. Posting and reversing need `finance.ledger.view`
+Authz's and `post` is the ledger's. Posting and reversing need `finance.ledger.view`
 and `finance.ledger.entries.post` too, because the ledger authorizes its own
 calls, and listing or posting runs and claims needs the source's read
 capabilities (for People, `people.payroll.view` and `people.claims.approve`),

@@ -161,13 +161,12 @@ here; they govern this code and are not copied here.
   and a declared edge makes Finance fail to compose without that Domain.
   Module tests substitute the seam (`test/support/stub_order_source.ex`,
   `test/support/stub_people_source.ex`); the last test in each module's
-  `web_test/` proves the real one with both Domains mounted. Until
-  Receiving stops declaring the authz verb `post` that Ledger owns, the Web
-  host refuses to boot with both mounted and the payables test only runs
-  its unmounted branch. Declare no new authz verb in a Finance module
-  (`view` and `manage` are Base's, `post` is Ledger's) unless it carries the
-  module's own prefix (`sst-prepare`, `reports-export`): a verb two mounted
-  Domains both declare is that boot failure.
+  `web_test/` proves the real one with both Domains mounted. Authz verbs
+  are shared vocabulary: Bilimbi merges the valid verbs idempotently across
+  providers, so two Domains declaring `post` is not a boot failure; only a
+  capability key needs one owner. Declare no new authz verb in a Finance
+  module (`view` and `manage` are Base's, `post` is Ledger's) unless it
+  carries the module's own prefix (`sst-prepare`, `reports-export`).
 - Post a payroll run or a claim only through `Bilimbi.Finance.Payroll`'s
   `post_payroll_run/3`, `post_claim/3`, or `post_claims/3` (a batch posted
   from one read of the source taken before the company lock; the `posted`
