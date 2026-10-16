@@ -57,7 +57,7 @@ both public facades.
    with nothing to reverse records an event without a ledger entry. Reversing a run later leaves a voided asset's charge alone.
 
 Every action rechecks its own `finance.fixed-assets` capability. Its verb names
-start with `finance-asset-` and cannot duplicate another Domain's `post` verb.
+start with `finance-asset-`.
 Ledger view/post and Payables view permissions are additionally checked by their
 facades. Writes take the writable-company lock; an archived company is frozen.
 Actors and impersonators come from the scope, never form attributes.
